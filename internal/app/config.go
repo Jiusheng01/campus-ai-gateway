@@ -15,6 +15,7 @@ type Config struct {
 	ThinkWatchURL string
 	ThinkWatchKey string
 	ThinkWatchConfigPath string
+	ThinkWatchExe string
 	AdminToken string
 }
 
@@ -28,6 +29,7 @@ func LoadConfig() (Config, error) {
 		ThinkWatchURL: getenv("THINKWATCH_URL", "http://127.0.0.1:8788"),
 		ThinkWatchKey: os.Getenv("THINKWATCH_GATEWAY_KEY"),
 		ThinkWatchConfigPath: getenv("THINKWATCH_CONFIG_PATH", defaultThinkWatchConfigPath()),
+		ThinkWatchExe: os.Getenv("TWCORE_EXE"),
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
 	}
 	if cfg.DatabaseURL == "" { return Config{}, errors.New("DATABASE_URL is required") }
