@@ -14,6 +14,13 @@ var (
 )
 
 func (p *Postgres) ListModelRoutes(ctx context.Context, modelID string) ([]model.ModelRoute, error) {
+	var exists bool
+	if err := p.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway_model WHERE id=$1::uuid)", modelID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, pgx.ErrNoRows
+	}
 	rows, err := p.Pool.Query(ctx, `
 SELECT
 	r.id::text,
