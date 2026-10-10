@@ -5,7 +5,9 @@ services:
       POSTGRES_DB: campus_gateway
       POSTGRES_USER: campus
       POSTGRES_PASSWORD: campus
-    volumes: [postgres_data:/var/lib/postgresql/data]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../migrations/0001_init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
@@ -22,6 +24,8 @@ services:
       THINKWATCH_URL: "http://host.docker.internal:8788"
       THINKWATCH_GATEWAY_KEY: ""
     depends_on: [postgres, redis]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   nginx:
     image: nginx:1.27-alpine
     ports: ["8088:80"]
