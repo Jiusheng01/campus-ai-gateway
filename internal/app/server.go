@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"sort"
@@ -302,7 +304,11 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	maxBody := int64(16 << 20)
+	if r.URL.Path == "/v1/audio/transcriptions" {
+		maxBody = 64 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Unable to read request body", reqID)
 		return
@@ -311,10 +317,12 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+		parsed, err := parseRequestEnvelope(body, r.Header.Get("Content-Type"))
+		if err != nil {
+			httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Request body could not be parsed", reqID)
 			return
 		}
+		envelope = parsed
 	}
 	if requiresModel(r.URL.Path) && envelope.Model == "" {
 		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
@@ -347,9 +355,45 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	s.proxy.ServeHTTP(aw, r)
 }
 
+func parseRequestEnvelope(body []byte, contentType string) (requestEnvelope, error) {
+	var out requestEnvelope
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return out, fmt.Errorf("multipart boundary is missing")
+		}
+		mr := multipart.NewReader(bytes.NewReader(body), boundary)
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return out, err
+			}
+			if part.FormName() == "model" {
+				value, err := io.ReadAll(io.LimitReader(part, 1024))
+				_ = part.Close()
+				if err != nil {
+					return out, err
+				}
+				out.Model = strings.TrimSpace(string(value))
+				break
+			}
+			_ = part.Close()
+		}
+		return out, nil
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 func requiresModel(path string) bool {
 	switch path {
-	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings":
+	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions":
 		return true
 	default:
 		return false
