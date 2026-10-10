@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/jackc/pgx/v5"
 )
 
 func (p *Postgres) ListProviders(ctx context.Context) ([]model.Provider, error) {
@@ -76,7 +77,13 @@ ORDER BY m.created_at DESC
 }
 
 func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.ModelConfig, error) {
-	err := p.Pool.QueryRow(ctx, `
+	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
 INSERT INTO gateway_model(alias, provider_id, upstream_model, status)
 VALUES ($1, $2::uuid, $3, $4)
 RETURNING id::text, alias, provider_id::text, upstream_model, status, created_at, updated_at
@@ -86,23 +93,81 @@ RETURNING id::text, alias, provider_id::text, upstream_model, status, created_at
 	if err != nil {
 		return v, err
 	}
-	_ = p.Pool.QueryRow(ctx, "SELECT name FROM gateway_provider WHERE id=$1::uuid", v.ProviderID).Scan(&v.ProviderName)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
+VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
+`, v.ID, v.ProviderID, v.UpstreamModel); err != nil {
+		return v, err
+	}
+	if err := tx.QueryRow(ctx, "SELECT name FROM gateway_provider WHERE id=$1::uuid", v.ProviderID).Scan(&v.ProviderName); err != nil {
+		return v, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return v, err
+	}
 	return v, nil
 }
 
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
-	err := p.Pool.QueryRow(ctx, `
+	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 UPDATE gateway_model
-SET alias=$2, provider_id=$3::uuid, upstream_model=$4, status=$5, updated_at=NOW()
+SET alias=$2, status=$3, updated_at=NOW()
 WHERE id=$1::uuid
-RETURNING id::text, alias, provider_id::text, upstream_model, status, created_at, updated_at
-`, id, v.Alias, v.ProviderID, v.UpstreamModel, v.Status).Scan(
-		&v.ID, &v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
+`, id, v.Alias, v.Status); err != nil {
+		return v, err
+	}
+
+	var routeID string
+	err = tx.QueryRow(ctx, `
+SELECT id::text
+FROM gateway_model_route
+WHERE model_id=$1::uuid
+ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
+LIMIT 1
+FOR UPDATE
+`, id).Scan(&routeID)
+	if err == pgx.ErrNoRows {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
+VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
+`, id, v.ProviderID, v.UpstreamModel); err != nil {
+			return v, err
+		}
+	} else if err != nil {
+		return v, err
+	} else {
+		if _, err := tx.Exec(ctx, `
+UPDATE gateway_model_route
+SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
+WHERE id=$1::uuid
+`, routeID, v.ProviderID, v.UpstreamModel); err != nil {
+			return v, err
+		}
+	}
+
+	if err := syncLegacyModelRoute(ctx, tx, id); err != nil {
+		return v, err
+	}
+	err = tx.QueryRow(ctx, `
+SELECT m.id::text, m.alias, m.provider_id::text, p.name, m.upstream_model, m.status, m.created_at, m.updated_at
+FROM gateway_model m
+JOIN gateway_provider p ON p.id=m.provider_id
+WHERE m.id=$1::uuid
+`, id).Scan(
+		&v.ID, &v.Alias, &v.ProviderID, &v.ProviderName, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
 		return v, err
 	}
-	_ = p.Pool.QueryRow(ctx, "SELECT name FROM gateway_provider WHERE id=$1::uuid", v.ProviderID).Scan(&v.ProviderName)
+	if err := tx.Commit(ctx); err != nil {
+		return v, err
+	}
 	return v, nil
 }
 
