@@ -17,6 +17,10 @@ type Config struct {
 	ThinkWatchConfigPath string
 	ThinkWatchExe string
 	AdminToken string
+	AdminAuthMode string
+	AdminProxySecret string
+	AdminUserHeader string
+	AdminRolesHeader string
 }
 
 func LoadConfig() (Config, error) {
@@ -31,6 +35,10 @@ func LoadConfig() (Config, error) {
 		ThinkWatchConfigPath: getenv("THINKWATCH_CONFIG_PATH", defaultThinkWatchConfigPath()),
 		ThinkWatchExe: os.Getenv("TWCORE_EXE"),
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
+		AdminAuthMode: getenv("ADMIN_AUTH_MODE", "token"),
+		AdminProxySecret: os.Getenv("ADMIN_PROXY_SECRET"),
+		AdminUserHeader: getenv("ADMIN_USER_HEADER", "X-Forwarded-User"),
+		AdminRolesHeader: getenv("ADMIN_ROLES_HEADER", "X-Forwarded-Groups"),
 	}
 	if cfg.DatabaseURL == "" { return Config{}, errors.New("DATABASE_URL is required") }
 	if cfg.KeyHMACSecret == "" { return Config{}, errors.New("API_KEY_HMAC_SECRET is required") }
