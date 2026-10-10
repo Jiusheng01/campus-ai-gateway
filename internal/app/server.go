@@ -217,6 +217,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 
 	aw := &auditResponseWriter{ResponseWriter: w}
 	var envelope requestEnvelope
+	var reservation *ratelimit.TPMReservation
 	defer func() {
 		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
 		status := aw.status
@@ -249,6 +250,9 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
+		if reservation != nil && totalTokens > 0 {
+			_ = reservation.Reconcile(ctx, totalTokens)
+		}
 		_ = s.pg.InsertRequestLog(ctx, log)
 	}()
 
@@ -294,7 +298,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reserveAmount := estimateTPM(body, envelope)
-	reservation, allowed, err := s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
+	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
