@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -137,12 +138,41 @@ func (s *Server) routes() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	s.mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if s.pg.Pool.Ping(ctx) != nil || s.redis.Client.Ping(ctx).Err() != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
 	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
 	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	stats, err := s.pg.DashboardStats(ctx)
+	if err != nil {
+		http.Error(w, "metrics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintf(w, "# HELP campus_gateway_requests_today Requests recorded since local database day boundary.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_requests_today gauge\ncampus_gateway_requests_today %d\n", stats.TodayRequests)
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_tokens_today gauge\ncampus_gateway_tokens_today %d\n", stats.TodayTokens)
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_errors_today gauge\ncampus_gateway_errors_today %d\n", stats.TodayErrors)
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_latency_avg_ms gauge\ncampus_gateway_latency_avg_ms %.3f\n", stats.AvgLatencyMS)
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_latency_p95_ms gauge\ncampus_gateway_latency_p95_ms %.3f\n", stats.P95LatencyMS)
+	_, _ = fmt.Fprintf(w, "# TYPE campus_gateway_failover_today gauge\ncampus_gateway_failover_today %d\n", stats.FailoverCount)
 }
 
 func requestIDMiddleware(next http.Handler) http.Handler {
