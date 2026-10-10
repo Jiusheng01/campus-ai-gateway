@@ -180,3 +180,260 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		allowed := make(map[string]struct{}, len(k.AllowedModels))
 		for _, m := range k.AllowedModels {
+			allowed[m] = struct{}{}
+		}
+		id := model.Identity{
+			TenantID:       k.TenantID,
+			APIKeyID:       k.ID,
+			AllowedModels:  allowed,
+			AllowedIPs:     k.AllowedIPs,
+			RPMLimit:       k.RPMLimit,
+			TPMLimit:       k.TPMLimit,
+			MaxConcurrency: k.MaxConcurrency,
+			RouteGroup:     k.RouteGroup,
+		}
+
+		s.pg.TouchAPIKey(r.Context(), k.ID)
+		r.Header.Del("Authorization")
+		next.ServeHTTP(w, r.WithContext(httpx.WithIdentity(r.Context(), id)))
+	})
+}
+
+func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	reqID := r.Header.Get("X-Request-Id")
+	id, ok := httpx.IdentityFrom(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusInternalServerError, "internal_error", "Gateway identity is unavailable", reqID)
+		return
+	}
+
+	aw := &auditResponseWriter{ResponseWriter: w}
+	var envelope requestEnvelope
+	defer func() {
+		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
+		status := aw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log := model.RequestLog{
+			RequestID:      reqID,
+			TenantID:       id.TenantID,
+			APIKeyID:       id.APIKeyID,
+			ClientIP:       clientIP(r),
+			RequestedModel: envelope.Model,
+			ActualModel:    actualModel,
+			Stream:         envelope.Stream,
+			InputTokens:    inputTokens,
+			OutputTokens:   outputTokens,
+			TotalTokens:    totalTokens,
+			LatencyMS:      time.Since(started).Milliseconds(),
+			StatusCode:     status,
+			ErrorCode:      parseErrorCode(aw.capture.Bytes()),
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.pg.InsertRequestLog(ctx, log)
+	}()
+
+	allowed, err := s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
+	if err != nil || !allowed {
+		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
+		return
+	}
+
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+		if len(id.AllowedModels) > 0 {
+			writeAllowedModels(aw, id.AllowedModels)
+			return
+		}
+		s.proxy.ServeHTTP(aw, r)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	if err != nil {
+		httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Unable to read request body", reqID)
+		return
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+			return
+		}
+	}
+	if requiresModel(r.URL.Path) && envelope.Model == "" {
+		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
+		return
+	}
+	if envelope.Model != "" && len(id.AllowedModels) > 0 {
+		if _, ok := id.AllowedModels[envelope.Model]; !ok {
+			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
+			return
+		}
+	}
+
+	reserveAmount := estimateTPM(body, envelope)
+	reservation, allowed, err := s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
+	if err != nil || !allowed {
+		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
+		return
+	}
+
+	release, allowed, err := s.limit.AcquireConcurrency(r.Context(), id.APIKeyID, id.MaxConcurrency)
+	if err != nil || !allowed {
+		_ = reservation.Refund(r.Context())
+		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
+		return
+	}
+	defer release()
+
+	s.proxy.ServeHTTP(aw, r)
+}
+
+func requiresModel(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings":
+		return true
+	default:
+		return false
+	}
+}
+
+func estimateTPM(body []byte, envelope requestEnvelope) int64 {
+	if len(body) == 0 {
+		return 0
+	}
+	outputBudget := envelope.MaxTokens
+	if envelope.MaxCompletionTokens > outputBudget {
+		outputBudget = envelope.MaxCompletionTokens
+	}
+	if envelope.MaxOutputTokens > outputBudget {
+		outputBudget = envelope.MaxOutputTokens
+	}
+	estimatedInput := int64(len(body)/4 + 1)
+	return estimatedInput + outputBudget
+}
+
+func parseUsage(body []byte, stream bool) (modelName string, input, output, total int64) {
+	type usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		InputTokens      int64 `json:"input_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		OutputTokens     int64 `json:"output_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	}
+	type response struct {
+		Model string `json:"model"`
+		Usage *usage `json:"usage"`
+	}
+
+	apply := func(raw []byte) {
+		var v response
+		if json.Unmarshal(raw, &v) != nil {
+			return
+		}
+		if v.Model != "" {
+			modelName = v.Model
+		}
+		if v.Usage != nil {
+			input = v.Usage.PromptTokens
+			if v.Usage.InputTokens > input {
+				input = v.Usage.InputTokens
+			}
+			output = v.Usage.CompletionTokens
+			if v.Usage.OutputTokens > output {
+				output = v.Usage.OutputTokens
+			}
+			total = v.Usage.TotalTokens
+			if total == 0 {
+				total = input + output
+			}
+		}
+	}
+
+	if !stream {
+		apply(body)
+		return
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		apply(payload)
+	}
+	return
+}
+
+func parseErrorCode(body []byte) string {
+	var v struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &v) == nil {
+		return v.Error.Code
+	}
+	return ""
+}
+
+func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
+	models := make([]string, 0, len(allowed))
+	for name := range allowed {
+		models = append(models, name)
+	}
+	sort.Strings(models)
+
+	data := make([]map[string]any, 0, len(models))
+	for _, name := range models {
+		data = append(data, map[string]any{
+			"id":       name,
+			"object":   "model",
+			"owned_by": "campus-ai-gateway",
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func ipAllowed(ip string, allowed []string) bool {
+	parsed := net.ParseIP(ip)
+	for _, rule := range allowed {
+		rule = strings.TrimSpace(rule)
+		if rule == "" {
+			continue
+		}
+		if strings.Contains(rule, "/") {
+			_, cidr, err := net.ParseCIDR(rule)
+			if err == nil && parsed != nil && cidr.Contains(parsed) {
+				return true
+			}
+		} else if rule == ip {
+			return true
+		}
+	}
+	return false
+}
