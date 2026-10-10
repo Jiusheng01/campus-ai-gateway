@@ -37,6 +37,10 @@ type RequestLog struct {
 	RequestedModel string
 	ActualModel    string
 	Provider       string
+	UpstreamModel  string
+	RoutePriority  int
+	Attempts       int
+	Failover       bool
 	Stream         bool
 	InputTokens    int64
 	OutputTokens   int64
