@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
+	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
 )
 
 type adminAuditResponseWriter struct {
@@ -106,6 +108,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeyByID(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
+	case r.URL.Path == "/admin/request-logs/export":
+		s.handleRequestLogsExport(w, r)
 	case r.URL.Path == "/admin/admin-audit":
 		s.handleAdminAuditLogs(w, r)
 	case r.URL.Path == "/admin/security-events":
@@ -477,25 +481,84 @@ func parseAdminLimit(r *http.Request) int {
 	return limit
 }
 
+func requestLogFilterFrom(r *http.Request, defaultLimit int) storage.RequestLogFilter {
+	limit := defaultLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 5000 {
+			limit = n
+		}
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	status := 0
+	if raw := r.URL.Query().Get("status"); raw != "" {
+		status, _ = strconv.Atoi(raw)
+	}
+	failover := -1
+	switch r.URL.Query().Get("failover") {
+	case "true", "1":
+		failover = 1
+	case "false", "0":
+		failover = 0
+	}
+	return storage.RequestLogFilter{
+		Limit: limit,
+		Offset: offset,
+		Model: strings.TrimSpace(r.URL.Query().Get("model")),
+		Provider: strings.TrimSpace(r.URL.Query().Get("provider")),
+		Status: status,
+		RequestID: strings.TrimSpace(r.URL.Query().Get("request_id")),
+		Failover: failover,
+	}
+}
+
 func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodGet {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	limit := 100
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
-			limit = n
-		}
-	}
-	items, err := s.pg.ListRequestLogs(r.Context(), limit)
+	f := requestLogFilterFrom(r, 100)
+	items, err := s.pg.SearchRequestLogs(r.Context(), f)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list request logs", reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
 }
+
+func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	f := requestLogFilterFrom(r, 5000)
+	f.Offset = 0
+	items, err := s.pg.SearchRequestLogs(r.Context(), f)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to export request logs", reqID)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=campus-gateway-request-logs.csv")
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"created_at","request_id","tenant_id","requested_model","actual_model","provider","upstream_model","route_priority","attempts","failover","tokens","latency_ms","status_code","error_code"})
+	for _, v := range items {
+		_ = cw.Write([]string{
+			v.CreatedAt.Format(time.RFC3339), v.RequestID, v.TenantID, v.RequestedModel, v.ActualModel,
+			v.Provider, v.UpstreamModel, strconv.Itoa(v.RoutePriority), strconv.Itoa(v.Attempts),
+			strconv.FormatBool(v.Failover), strconv.FormatInt(v.TotalTokens, 10), strconv.FormatInt(v.LatencyMS, 10),
+			strconv.Itoa(v.StatusCode), v.ErrorCode,
+		})
+	}
+	cw.Flush()
+}
+
 
 func validateProvider(v *model.Provider) string {
 	v.Name = strings.TrimSpace(v.Name)
