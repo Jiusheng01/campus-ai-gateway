@@ -272,16 +272,30 @@ if (-not $env:THINKWATCH_GATEWAY_KEY) {
 }
 
 Write-Step "Building Admin UI v2..."
-$adminNodeModules = Join-Path $RepoRoot "web\admin\node_modules"
-if (-not (Test-Path $adminNodeModules)) {
-    & npm --prefix ".\web\admin" install --no-audit --no-fund
+$adminDir = Join-Path $RepoRoot "web\admin"
+$adminPackage = Join-Path $adminDir "package.json"
+$adminNodeModules = Join-Path $adminDir "node_modules"
+
+if (-not (Test-Path $adminPackage)) {
+    Fail ("Admin UI package.json not found: " + $adminPackage)
+}
+
+Push-Location $adminDir
+try {
+    if (-not (Test-Path $adminNodeModules)) {
+        & npm install --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Unable to install Admin UI dependencies."
+        }
+    }
+
+    & npm run build
     if ($LASTEXITCODE -ne 0) {
-        Fail "Unable to install Admin UI dependencies."
+        Fail "Admin UI build failed."
     }
 }
-& npm --prefix ".\web\admin" run build
-if ($LASTEXITCODE -ne 0) {
-    Fail "Admin UI build failed."
+finally {
+    Pop-Location
 }
 Write-Ok "Admin UI v2 built"
 
