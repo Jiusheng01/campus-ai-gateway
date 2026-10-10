@@ -251,3 +251,27 @@ http://127.0.0.1:8080/admin-ui
 管理页面只保存 Provider 的 `credential_env`（例如 `DASHSCOPE_API_KEY`），不会把真实厂商 API Key 写入网页或数据库。
 
 ThinkWatch-Lite 仍然可以并行使用，用于观察 ThinkWatch Core 的路由、Trace、Guard 等底层能力；本项目的内置后台负责租户、Virtual Key、限流、模型授权和网关审计。
+
+
+## ThinkWatch 配置同步与网页模型测试
+
+管理后台的“模型管理”页面新增两个操作：
+
+- **同步到 ThinkWatch**：读取数据库中启用的 Provider / Model，只替换 ThinkWatch `config.yaml` 顶层的 `providers` 与 `aliases`，保留现有 `listen`、`clients` 等其它配置。写入前会创建 `config.yaml.campus.bak` 备份。
+- **测试模型**：从浏览器选择启用的虚拟模型，直接通过 ThinkWatch 的 OpenAI-compatible 接口发送一次非流式测试，并返回响应、Token 用量和延迟。
+
+Windows 默认使用：
+
+```text
+%APPDATA%\ThinkWatch\config.yaml
+```
+
+也可以显式覆盖：
+
+```powershell
+$env:THINKWATCH_CONFIG_PATH="C:\Users\<user>\AppData\Roaming\ThinkWatch\config.yaml"
+```
+
+一键开发脚本会自动尝试设置这个路径。Provider 仍然只保存类似 `DASHSCOPE_API_KEY` 的环境变量名，真实厂商 API Key 不写入数据库或管理页面。
+
+同步成功后 ThinkWatch 通常会在约 1 秒内检测配置变更；如果状态仍未恢复，先确认 `twcore.exe serve` 正在运行，并检查对应 Provider 凭据环境变量是否存在于 ThinkWatch 进程环境中。
