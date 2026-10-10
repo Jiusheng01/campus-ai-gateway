@@ -29,6 +29,7 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
     <button data-page="dashboard" class="active">总览</button>
     <button data-page="providers">Provider 管理</button>
     <button data-page="models">模型管理</button>
+    <button data-page="tenants">租户管理</button>
     <button data-page="keys">API Key 管理</button>
     <button data-page="logs">请求日志</button>
   </nav>
@@ -64,6 +65,12 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
     <div id="modelTest" class="panel hidden"></div>
     <div id="syncResult"></div>
     <div id="modelTable"></div>
+  </section>
+
+  <section id="tenants" class="page hidden">
+    <div class="toolbar"><h2>租户</h2><button class="primary" onclick="openTenant()">新增租户</button></div>
+    <div id="tenantForm" class="panel hidden"></div>
+    <div id="tenantTable"></div>
   </section>
 
   <section id="keys" class="page hidden">
@@ -111,7 +118,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
   document.querySelectorAll('.page').forEach(x=>x.classList.add('hidden'));document.getElementById(b.dataset.page).classList.remove('hidden');
   document.getElementById('title').textContent=b.textContent;
-  ({dashboard:loadDashboard,providers:loadProviders,models:loadModels,keys:loadKeys,logs:loadLogs}[b.dataset.page])().catch(e=>notify(e.message));
+  ({dashboard:loadDashboard,providers:loadProviders,models:loadModels,tenants:loadTenants,keys:loadKeys,logs:loadLogs}[b.dataset.page])().catch(e=>notify(e.message));
 });
 
 async function loadDashboard(){
@@ -172,6 +179,22 @@ async function openModelTest(){
     }finally{btn.disabled=false;btn.textContent='发送测试'}
   };
 }
+async function loadTenants(){
+  const d=await api('/admin/tenants');state.tenants=d.data||[];
+  document.getElementById('tenantTable').innerHTML='<table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th></th></tr></thead><tbody>'+
+  state.tenants.map(v=>'<tr><td><code>'+esc(v.code)+'</code></td><td><b>'+esc(v.name)+'</b></td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openTenant('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+}
+function openTenant(v={}){
+  const f=document.getElementById('tenantForm');f.classList.remove('hidden');
+  f.innerHTML='<div class="formgrid"><label>租户编码<input id="tCode" value="'+esc(v.code||'')+'" placeholder="itc"></label><label>租户名称<input id="tName" value="'+esc(v.name||'')+'" placeholder="信息网络中心"></label><label>状态<select id="tStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="tSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
+  document.getElementById('tStatus').value=v.status||1;
+  document.getElementById('tSave').onclick=async()=>{
+    const body={code:document.getElementById('tCode').value,name:document.getElementById('tName').value,status:+document.getElementById('tStatus').value};
+    await api(v.id?'/admin/tenants/'+v.id:'/admin/tenants',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});
+    notify('租户已保存');f.classList.add('hidden');await loadTenants();
+  };
+}
+
 async function loadKeys(){
   const [k,t,m]=await Promise.all([api('/admin/api-keys'),api('/admin/tenants'),api('/admin/models')]);state.keys=k.data||[];state.tenants=t.data||[];state.models=m.data||[];
   document.getElementById('keyTable').innerHTML='<table><thead><tr><th>名称</th><th>租户</th><th>Key 前缀</th><th>模型</th><th>RPM/TPM/并发</th><th>状态</th><th></th></tr></thead><tbody>'+
