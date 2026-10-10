@@ -1,6 +1,6 @@
 # Campus AI Gateway
 
-校园大模型统一接入、路由、限流与安全审计网关。当前仓库先实现 M0：**Virtual Key → RPM/TPM/并发控制 → SSE 透明代理 → ThinkWatch Core**。
+校园大模型统一接入、路由、限流与安全审计网关。当前 M0 已完成真实链路验收，并开始进入 M1：**Virtual Key → RPM/TPM/并发控制 → SSE 透明代理 → ThinkWatch Core → 请求审计**。
 
 ## 架构
 
@@ -16,6 +16,7 @@ Go Gateway Edge
   |- IP / Model allowlist
   |- RPM / TPM / Concurrency
   |- Request-ID
+  |- Request audit
   v
 ThinkWatch Core
   |- Routing
@@ -31,7 +32,7 @@ LLM Providers
 ```text
 cmd/server            HTTP 服务入口
 cmd/keygen            Virtual Key 生成工具
-internal/app          服务装配与中间件
+internal/app          服务装配、中间件与审计采集
 internal/security     API Key HMAC
 internal/ratelimit    Redis 限流
 internal/proxy        ThinkWatch 透明代理
@@ -40,7 +41,7 @@ migrations            数据库初始化
 deploy                Docker / Nginx
 ```
 
-## M0 已包含
+## M0 已验证
 
 - HMAC-SHA256 Virtual API Key 校验
 - Key 状态与过期时间校验
@@ -51,16 +52,43 @@ deploy                Docker / Nginx
 - 并发数限制
 - X-Request-Id
 - SSE 透明转发，关闭代理缓冲
+- ThinkWatch Core 路由
+- `campus-smart` 模型别名
+- 阿里百炼 Qwen 真实调用
+- OpenAI-compatible usage 返回
 - PostgreSQL 基础数据模型
-- Dockerfile / Docker Compose / Nginx 配置
+
+真实验收已覆盖：错误 Key 返回 401、模型越权返回 403、RPM 超限返回 429、并发超限返回 429、SSE 流式返回正常。
+
+## M1 当前已加入
+
+认证通过的 `/v1/*` 请求会写入 `gateway_request_log`，当前记录：
+
+- `request_id`
+- `tenant_id`
+- `api_key_id`
+- `client_ip`
+- `requested_model`
+- 响应中的 `model`
+- `stream`
+- input / output / total tokens
+- `latency_ms`
+- `status_code`
+- `error_code`
+
+流式 OpenAI SSE 会从最终 usage chunk 中提取 token 用量。审计采集只复制响应数据用于解析，不缓冲客户端响应。
+
+当前还没有从 ThinkWatch telemetry 中回填实际 provider / 最终上游模型；这部分放在后续 M1。
 
 ## 本地启动
 
-1. 准备 PostgreSQL 与 Redis。
-2. 执行 `migrations/0001_init.sql`。
-3. 复制 `.env.example` 并配置环境变量。
-4. 确保 ThinkWatch Core 已启动，并填写 `THINKWATCH_URL` 与 `THINKWATCH_GATEWAY_KEY`。
-5. 启动网关：
+本机直接运行 Go Gateway 时，使用开发 override 只把 PostgreSQL / Redis 暴露到 `127.0.0.1`：
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d postgres redis
+```
+
+执行 `migrations/0001_init.sql` 后，配置环境变量并确保 ThinkWatch Core 已启动：
 
 ```bash
 go run ./cmd/server
@@ -94,7 +122,7 @@ WHERE code='itc';
 客户端调用：
 
 ```bash
-curl http://localhost:8088/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-campus-..." \
   -H "Content-Type: application/json" \
   -d '{
@@ -104,66 +132,50 @@ curl http://localhost:8088/v1/chat/completions \
   }'
 ```
 
-## 下一阶段
+## 查看审计日志
 
-M1 将补齐：Provider / Model 管理、租户管理、Key 管理 API、ThinkWatch 配置渲染、请求审计、安全事件与 Casbin RBAC。
+完成一次请求后：
+
+```sql
+SELECT
+  request_id,
+  requested_model,
+  actual_model,
+  stream,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  latency_ms,
+  status_code,
+  error_code,
+  created_at
+FROM gateway_request_log
+ORDER BY id DESC
+LIMIT 20;
+```
+
+Docker 本地环境可直接执行：
+
+```bash
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U campus -d campus_gateway \
+  -c "SELECT request_id, requested_model, actual_model, stream, input_tokens, output_tokens, total_tokens, latency_ms, status_code, error_code, created_at FROM gateway_request_log ORDER BY id DESC LIMIT 20;"
+```
 
 ## ThinkWatch Core
 
-本项目不直接复制 ThinkWatch Core 源码，M0 通过 HTTP 数据面接入。路由、Failover、Circuit Breaker、Guard 等能力继续由 ThinkWatch Core 承担，避免过早深改 Rust 核心。
+本项目不直接复制 ThinkWatch Core 源码，通过 HTTP 数据面接入。路由、Failover、Circuit Breaker、Guard 等能力继续由 ThinkWatch Core 承担，避免过早深改 Rust 核心。
 
+## 下一阶段
 
-## 本地验收建议
+M1 后续继续补齐：
 
-仓库里的单元测试和 CI 只能验证代码级行为。正式进入 M1 前，建议在你的本机再做一次真实环境验收，重点确认 PostgreSQL、Redis、Nginx、ThinkWatch Core 和真实模型 Provider 能协同工作。
+- Provider / Model 管理
+- Tenant / Virtual Key 管理 API
+- ThinkWatch 配置渲染与热更新
+- 实际 Provider / 上游模型回填
+- 安全事件
+- Casbin RBAC
+- Vue 管理后台
 
-建议顺序：
-
-```bash
-git clone https://github.com/Jiusheng01/campus-ai-gateway.git
-cd campus-ai-gateway
-
-go test ./...
-go build ./...
-```
-
-然后启动本机 ThinkWatch Core，确认其 Gateway 默认监听 `127.0.0.1:8788`，并准备一把 ThinkWatch client key。再启动本项目依赖：
-
-```bash
-cd deploy
-docker compose up -d postgres redis
-```
-
-生成 Virtual Key：
-
-```bash
-export API_KEY_HMAC_SECRET='your-local-test-secret'
-go run ./cmd/keygen
-```
-
-把输出的 `key_prefix` 与 `key_digest` 写入数据库后，启动 Gateway：
-
-```bash
-export DATABASE_URL='postgres://campus:campus@localhost:5432/campus_gateway?sslmode=disable'
-export REDIS_ADDR='localhost:6379'
-export API_KEY_HMAC_SECRET='your-local-test-secret'
-export THINKWATCH_URL='http://127.0.0.1:8788'
-export THINKWATCH_GATEWAY_KEY='tw-...'
-
-go run ./cmd/server
-```
-
-至少检查：
-
-- `GET /healthz` 返回 200。
-- 错误 Virtual Key 返回 401。
-- 不在白名单的模型返回 403。
-- `GET /v1/models` 只返回该 Key 允许的模型。
-- RPM 超限后返回 429。
-- TPM 超限后返回 429。
-- 并发超限后返回 429。
-- `stream:true` 时首个 SSE chunk 能立即返回，不等待完整响应。
-- ThinkWatch 主 Provider 故障时，Failover 行为符合 ThinkWatch 配置。
-- 客户端始终只使用 `sk-campus-*`，不会接触 ThinkWatch 或上游 Provider 的真实 Key。
-
-M0 通过以上本地验收后，再进入 Provider / Model / Tenant 管理后台开发。
+正式部署前还需要把本地开发密码、HMAC secret 和 Provider credentials 全部改成外部安全配置。
