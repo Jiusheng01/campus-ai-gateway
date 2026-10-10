@@ -91,7 +91,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 	if p.Roles["auditor"] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
-			path == "/admin/request-logs",
+			strings.HasPrefix(path, "/admin/request-logs"),
 			path == "/admin/admin-audit",
 			path == "/admin/security-events":
 			return true

@@ -109,4 +109,13 @@ type DashboardStats struct {
 	TodayTokens   int64   `json:"today_tokens"`
 	TodayErrors   int64   `json:"today_errors"`
 	AvgLatencyMS  float64 `json:"avg_latency_ms"`
+	P95LatencyMS  float64 `json:"p95_latency_ms"`
+	FailoverCount int64   `json:"failover_count"`
+}
+
+type ProviderStats struct {
+	Provider    string  `json:"provider"`
+	Requests    int64   `json:"requests"`
+	SuccessRate float64 `json:"success_rate"`
+	AvgLatencyMS float64 `json:"avg_latency_ms"`
 }
