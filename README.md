@@ -218,3 +218,36 @@ PUT  /admin/models/{id}
 Provider 只保存凭据环境变量名，例如 `DASHSCOPE_API_KEY`，不把真实 Provider API Key 写入数据库。
 
 当前这一版是 Control Plane 的数据库管理层；它还不会自动修改 ThinkWatch `config.yaml`。下一步会增加配置渲染与原子更新，把启用的 Provider / Model 自动同步给 ThinkWatch。
+
+## 内置 Web 管理后台
+
+为了减少 PowerShell / curl 操作，Go Gateway 现在直接内置一个轻量管理界面，不需要 Node.js 或单独启动前端。
+
+启动 Gateway 前设置：
+
+```powershell
+$env:ADMIN_TOKEN="campus-admin-local-secret"
+go run ./cmd/server
+```
+
+然后浏览器打开：
+
+```text
+http://127.0.0.1:8080/admin-ui
+```
+
+输入与 `ADMIN_TOKEN` 相同的管理 Token 后即可使用。
+
+当前页面包含：
+
+- 总览：Gateway / PostgreSQL / Redis / ThinkWatch 状态、今日请求、Token、错误数、平均延迟
+- Provider：新增、编辑、启用/停用
+- 模型：维护 `campus-smart` 等虚拟模型与上游模型绑定
+- Virtual API Key：创建、编辑、模型白名单、IP 白名单、RPM、TPM、并发数
+- 请求日志：最近请求的模型、Token、延迟与状态码
+
+新建 Virtual Key 时完整 `sk-campus-*` 只在创建成功后显示一次；数据库仍然只保存摘要。
+
+管理页面只保存 Provider 的 `credential_env`（例如 `DASHSCOPE_API_KEY`），不会把真实厂商 API Key 写入网页或数据库。
+
+ThinkWatch-Lite 仍然可以并行使用，用于观察 ThinkWatch Core 的路由、Trace、Guard 等底层能力；本项目的内置后台负责租户、Virtual Key、限流、模型授权和网关审计。
