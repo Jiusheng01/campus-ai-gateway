@@ -307,6 +307,10 @@ SELECT
 	COALESCE(requested_model,''),
 	COALESCE(actual_model,''),
 	COALESCE(provider,''),
+	COALESCE(upstream_model,''),
+	COALESCE(route_priority,0),
+	COALESCE(attempts,0),
+	COALESCE(failover,false),
 	stream,
 	COALESCE(input_tokens,0),
 	COALESCE(output_tokens,0),
@@ -329,7 +333,8 @@ LIMIT $1
 		var v model.RequestLogAdmin
 		if err := rows.Scan(
 			&v.RequestID, &v.TenantID, &v.APIKeyID, &v.ClientIP,
-			&v.RequestedModel, &v.ActualModel, &v.Provider, &v.Stream,
+			&v.RequestedModel, &v.ActualModel, &v.Provider, &v.UpstreamModel,
+			&v.RoutePriority, &v.Attempts, &v.Failover, &v.Stream,
 			&v.InputTokens, &v.OutputTokens, &v.TotalTokens, &v.LatencyMS,
 			&v.StatusCode, &v.ErrorCode, &v.CreatedAt,
 		); err != nil {
