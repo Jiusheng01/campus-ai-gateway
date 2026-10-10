@@ -156,6 +156,15 @@ $env:DATABASE_URL = "postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslm
 $env:REDIS_ADDR = "127.0.0.1:6379"
 $env:THINKWATCH_URL = "http://127.0.0.1:8788"
 
+if (-not $env:THINKWATCH_CONFIG_PATH) {
+    if ($env:APPDATA) {
+        $env:THINKWATCH_CONFIG_PATH = Join-Path $env:APPDATA "ThinkWatch\config.yaml"
+    }
+}
+if ($env:THINKWATCH_CONFIG_PATH) {
+    Write-Host ("       ThinkWatch config: " + $env:THINKWATCH_CONFIG_PATH)
+}
+
 $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 1
 if (-not $thinkWatchRunning) {
     $twExe = $env:TWCORE_EXE
