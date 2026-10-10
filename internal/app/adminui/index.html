@@ -38,7 +38,8 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
     <h1 id="title">总览</h1>
     <div class="tokenbox">
       <input id="adminToken" type="password" placeholder="ADMIN_TOKEN">
-      <button class="primary" id="saveToken">连接</button>
+      <button class="primary" id="saveToken">连接并记住</button>
+      <button class="secondary" id="clearToken">清除</button>
     </div>
   </div>
 
@@ -47,7 +48,7 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
     <div class="grid" id="metricGrid" style="margin-top:14px"></div>
     <div class="panel" style="margin-top:16px">
       <b>使用说明</b>
-      <p class="muted">管理 Token 仅保存在当前浏览器会话 sessionStorage。Provider 页面只保存凭据环境变量名，不保存真实厂商 API Key。</p>
+      <p class="muted">管理 Token 默认保存在当前浏览器 localStorage，本机浏览器重开后无需重复输入。生产环境后续应切换为正式登录会话。Provider 页面只保存凭据环境变量名，不保存真实厂商 API Key。</p>
     </div>
   </section>
 
@@ -82,12 +83,13 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
 <script>
 const state={providers:[],models:[],tenants:[],keys:[]};
 const tokenInput=document.getElementById('adminToken');
-tokenInput.value=sessionStorage.getItem('campus_admin_token')||'';
+tokenInput.value=localStorage.getItem('campus_admin_token')||sessionStorage.getItem('campus_admin_token')||'';
+if(tokenInput.value){localStorage.setItem('campus_admin_token',tokenInput.value);sessionStorage.removeItem('campus_admin_token');}
 
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
 function notify(msg){const e=document.getElementById('flash');e.textContent=msg;e.style.display='block';setTimeout(()=>e.style.display='none',2600)}
 async function api(path,opt={}){
-  const token=sessionStorage.getItem('campus_admin_token')||'';
+  const token=localStorage.getItem('campus_admin_token')||'';
   const headers=Object.assign({'Authorization':'Bearer '+token},opt.headers||{});
   if(opt.body)headers['Content-Type']='application/json';
   const r=await fetch(path,Object.assign({},opt,{headers}));
@@ -96,8 +98,14 @@ async function api(path,opt={}){
   return data;
 }
 document.getElementById('saveToken').onclick=async()=>{
-  sessionStorage.setItem('campus_admin_token',tokenInput.value.trim());
+  localStorage.setItem('campus_admin_token',tokenInput.value.trim());
   try{await loadDashboard();notify('管理接口连接成功')}catch(e){notify(e.message)}
+};
+document.getElementById('clearToken').onclick=()=>{
+  localStorage.removeItem('campus_admin_token');
+  sessionStorage.removeItem('campus_admin_token');
+  tokenInput.value='';
+  notify('已清除本机保存的管理 Token');
 };
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
