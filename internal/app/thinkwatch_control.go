@@ -65,7 +65,17 @@ func (s *Server) handleThinkWatchSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rendered, providerCount, aliasCount, err := renderThinkWatchManagedConfig(string(existing), providers, models)
+	routesByModel := make(map[string][]model.ModelRoute, len(models))
+	for _, m := range models {
+		routes, err := s.pg.ListModelRoutes(r.Context(), m.ID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load model routes", reqID)
+			return
+		}
+		routesByModel[m.ID] = routes
+	}
+
+	rendered, providerCount, aliasCount, err := renderThinkWatchManagedConfig(string(existing), providers, models, routesByModel)
 	if err != nil {
 		httpx.Error(w, http.StatusBadRequest, "thinkwatch_config_invalid", err.Error(), reqID)
 		return
@@ -203,7 +213,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func renderThinkWatchManagedConfig(existing string, providers []model.Provider, models []model.ModelConfig) (string, int, int, error) {
+func renderThinkWatchManagedConfig(existing string, providers []model.Provider, models []model.ModelConfig, routesByModel map[string][]model.ModelRoute) (string, int, int, error) {
 	activeProviders := make(map[string]model.Provider)
 	for _, p := range providers {
 		if p.Status != 1 {
@@ -215,69 +225,151 @@ func renderThinkWatchManagedConfig(existing string, providers []model.Provider, 
 		activeProviders[p.ID] = p
 	}
 
-	modelsByProvider := make(map[string][]model.ModelConfig)
-	var activeModels []model.ModelConfig
+	type managedModel struct {
+		config model.ModelConfig
+		routes []model.ModelRoute
+	}
+	var managed []managedModel
+	providerModels := make(map[string]map[string]bool)
+
 	for _, m := range models {
 		if m.Status != 1 {
 			continue
 		}
-		if _, ok := activeProviders[m.ProviderID]; !ok {
+		var enabled []model.ModelRoute
+		for _, route := range routesByModel[m.ID] {
+			if route.Status != 1 {
+				continue
+			}
+			p, ok := activeProviders[route.ProviderID]
+			if !ok {
+				continue
+			}
+			route.ProviderName = p.Name
+			enabled = append(enabled, route)
+		}
+		// Transitional compatibility for a database upgraded before Route CRUD
+		// was used. New and edited models always have gateway_model_route rows.
+		if len(enabled) == 0 {
+			if p, ok := activeProviders[m.ProviderID]; ok && strings.TrimSpace(m.UpstreamModel) != "" {
+				enabled = append(enabled, model.ModelRoute{
+					ModelID:       m.ID,
+					ModelAlias:    m.Alias,
+					ProviderID:    m.ProviderID,
+					ProviderName:  p.Name,
+					UpstreamModel: m.UpstreamModel,
+					Priority:      1,
+					Weight:        100,
+					TimeoutMS:     60000,
+					Status:        1,
+				})
+			}
+		}
+		if len(enabled) == 0 {
 			continue
 		}
-		modelsByProvider[m.ProviderID] = append(modelsByProvider[m.ProviderID], m)
-		activeModels = append(activeModels, m)
+		sort.SliceStable(enabled, func(i, j int) bool {
+			if enabled[i].Priority != enabled[j].Priority {
+				return enabled[i].Priority < enabled[j].Priority
+			}
+			if enabled[i].Weight != enabled[j].Weight {
+				return enabled[i].Weight > enabled[j].Weight
+			}
+			if enabled[i].ProviderName != enabled[j].ProviderName {
+				return enabled[i].ProviderName < enabled[j].ProviderName
+			}
+			return enabled[i].UpstreamModel < enabled[j].UpstreamModel
+		})
+		for _, route := range enabled {
+			if providerModels[route.ProviderID] == nil {
+				providerModels[route.ProviderID] = map[string]bool{}
+			}
+			providerModels[route.ProviderID][route.UpstreamModel] = true
+		}
+		managed = append(managed, managedModel{config: m, routes: enabled})
 	}
 
-	if len(activeModels) == 0 {
-		return "", 0, 0, errors.New("no enabled models are attached to enabled providers; refusing to overwrite ThinkWatch provider configuration")
+	if len(managed) == 0 {
+		return "", 0, 0, errors.New("no enabled models have an enabled route to an enabled provider; refusing to overwrite ThinkWatch routing configuration")
 	}
 
 	var activeProviderList []model.Provider
 	for id, p := range activeProviders {
-		if len(modelsByProvider[id]) > 0 {
+		if len(providerModels[id]) > 0 {
 			activeProviderList = append(activeProviderList, p)
 		}
 	}
 	sort.Slice(activeProviderList, func(i, j int) bool { return activeProviderList[i].Name < activeProviderList[j].Name })
-	sort.Slice(activeModels, func(i, j int) bool { return activeModels[i].Alias < activeModels[j].Alias })
+	sort.Slice(managed, func(i, j int) bool { return managed[i].config.Alias < managed[j].config.Alias })
 
 	var providerBlock strings.Builder
 	providerBlock.WriteString("providers:\n")
 	for _, p := range activeProviderList {
-		ms := modelsByProvider[p.ID]
-		sort.Slice(ms, func(i, j int) bool { return ms[i].UpstreamModel < ms[j].UpstreamModel })
 		providerBlock.WriteString("  - name: " + strconv.Quote(p.Name) + "\n")
 		providerBlock.WriteString("    base_url: " + strconv.Quote(p.BaseURL) + "\n")
 		providerBlock.WriteString("    protocol: " + strconv.Quote(p.Protocol) + "\n")
 		providerBlock.WriteString("    key: " + strconv.Quote("${"+p.CredentialEnv+"}") + "\n")
+		models := make([]string, 0, len(providerModels[p.ID]))
+		for name := range providerModels[p.ID] {
+			models = append(models, name)
+		}
+		sort.Strings(models)
 		providerBlock.WriteString("    models:\n")
-		seen := map[string]bool{}
-		for _, m := range ms {
-			if seen[m.UpstreamModel] {
-				continue
-			}
-			seen[m.UpstreamModel] = true
-			providerBlock.WriteString("      - " + strconv.Quote(m.UpstreamModel) + "\n")
+		for _, name := range models {
+			providerBlock.WriteString("      - " + strconv.Quote(name) + "\n")
 		}
 		providerBlock.WriteString("    models_only:\n")
-		for _, m := range ms {
-			if !seen[m.UpstreamModel] {
-				continue
-			}
-			providerBlock.WriteString("      - " + strconv.Quote(m.UpstreamModel) + "\n")
-			delete(seen, m.UpstreamModel)
+		for _, name := range models {
+			providerBlock.WriteString("      - " + strconv.Quote(name) + "\n")
 		}
 	}
 
 	var aliasBlock strings.Builder
 	aliasBlock.WriteString("aliases:\n")
-	for _, m := range activeModels {
-		aliasBlock.WriteString("  " + strconv.Quote(m.Alias) + ": " + strconv.Quote(m.UpstreamModel) + "\n")
+	for _, item := range managed {
+		seen := map[string]bool{}
+		var names []string
+		for _, route := range item.routes {
+			if !seen[route.UpstreamModel] {
+				seen[route.UpstreamModel] = true
+				names = append(names, route.UpstreamModel)
+			}
+		}
+		if len(names) == 1 {
+			aliasBlock.WriteString("  " + strconv.Quote(item.config.Alias) + ": " + strconv.Quote(names[0]) + "\n")
+			continue
+		}
+		aliasBlock.WriteString("  " + strconv.Quote(item.config.Alias) + ":\n")
+		for _, name := range names {
+			aliasBlock.WriteString("    - " + strconv.Quote(name) + "\n")
+		}
 	}
+
+	// ThinkWatch owns runtime routing/failover. We render each virtual model into
+	// an ordered pinned target list, so different providers may use different
+	// upstream model names while the client keeps one campus alias.
+	var routeBlock strings.Builder
+	routeBlock.WriteString("routes:\n")
+	routeBlock.WriteString("  - name: " + strconv.Quote("campus-managed") + "\n")
+	routeBlock.WriteString("    rules:\n")
+	for _, item := range managed {
+		routeBlock.WriteString("      - name: " + strconv.Quote("campus-"+item.config.Alias) + "\n")
+		routeBlock.WriteString("        when:\n")
+		routeBlock.WriteString("          model: " + strconv.Quote(item.config.Alias) + "\n")
+		routeBlock.WriteString("        to:\n")
+		for _, route := range item.routes {
+			routeBlock.WriteString("          - provider: " + strconv.Quote(route.ProviderName) + "\n")
+			routeBlock.WriteString("            model: " + strconv.Quote(route.UpstreamModel) + "\n")
+		}
+	}
+	routeBlock.WriteString("      - name: " + strconv.Quote("campus-deny-unmanaged") + "\n")
+	routeBlock.WriteString("        deny: " + strconv.Quote("model is not managed by Campus AI Gateway") + "\n")
 
 	out := replaceTopLevelYAMLBlock(existing, "providers", strings.TrimRight(providerBlock.String(), "\n"))
 	out = replaceTopLevelYAMLBlock(out, "aliases", strings.TrimRight(aliasBlock.String(), "\n"))
-	return out, len(activeProviderList), len(activeModels), nil
+	out = replaceTopLevelYAMLBlock(out, "routes", strings.TrimRight(routeBlock.String(), "\n"))
+	out = replaceTopLevelYAMLBlock(out, "default_route", "default_route: "+strconv.Quote("campus-managed"))
+	return out, len(activeProviderList), len(managed), nil
 }
 
 func replaceTopLevelYAMLBlock(content, key, block string) string {
