@@ -59,6 +59,22 @@ func (l *Limiter) ReserveTPM(ctx context.Context, keyID string, amount, limit in
 	return &TPMReservation{rdb: l.rdb, key: key, amount: amount}, true, nil
 }
 
+func (r *TPMReservation) Reconcile(ctx context.Context, actual int64) error {
+	if r == nil || r.amount <= 0 || actual < 0 {
+		return nil
+	}
+	delta := actual - r.amount
+	if delta == 0 {
+		return nil
+	}
+	if delta > 0 {
+		_, err := r.rdb.IncrBy(ctx, r.key, delta).Result()
+		return err
+	}
+	_, err := r.rdb.DecrBy(ctx, r.key, -delta).Result()
+	return err
+}
+
 func (r *TPMReservation) Refund(ctx context.Context) error {
 	if r == nil || r.amount <= 0 {
 		return nil
