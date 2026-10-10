@@ -128,6 +128,25 @@ ORDER BY name
 	return out, rows.Err()
 }
 
+func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
+	err := p.Pool.QueryRow(ctx, `
+INSERT INTO gateway_tenant(code, name, status)
+VALUES ($1, $2, $3)
+RETURNING id::text, code, name, status
+`, v.Code, v.Name, v.Status).Scan(&v.ID, &v.Code, &v.Name, &v.Status)
+	return v, err
+}
+
+func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
+	err := p.Pool.QueryRow(ctx, `
+UPDATE gateway_tenant
+SET code=$2, name=$3, status=$4, updated_at=NOW()
+WHERE id=$1::uuid
+RETURNING id::text, code, name, status
+`, id, v.Code, v.Name, v.Status).Scan(&v.ID, &v.Code, &v.Name, &v.Status)
+	return v, err
+}
+
 func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT
