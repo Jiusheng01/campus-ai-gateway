@@ -32,6 +32,8 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
     <button data-page="tenants">租户管理</button>
     <button data-page="keys">API Key 管理</button>
     <button data-page="logs">请求日志</button>
+    <button data-page="adminAudit">管理审计</button>
+    <button data-page="security">安全事件</button>
   </nav>
 </aside>
 <main>
@@ -83,14 +85,26 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
   </section>
 
   <section id="logs" class="page hidden">
-    <div class="toolbar"><h2>请求日志</h2><button class="secondary" onclick="loadLogs()">刷新</button></div>
+    <div class="toolbar"><h2>请求日志</h2><div class="actions" style="margin-top:0"><button class="secondary" onclick="exportLogs()">导出 CSV</button><button class="secondary" onclick="loadLogs()">刷新</button></div></div>
+    <div class="panel"><div class="formgrid"><label>模型<input id="logModel"></label><label>Provider<input id="logProvider"></label><label>HTTP 状态<input id="logStatus" type="number"></label><label>Request ID<input id="logRequestID"></label><label>Failover<select id="logFailover"><option value="">全部</option><option value="true">是</option><option value="false">否</option></select></label></div><div class="actions"><button class="primary" onclick="loadLogs(true)">筛选</button><button class="secondary" onclick="clearLogFilters()">清空</button></div></div>
     <div id="logTable"></div>
+    <div class="actions"><button class="secondary" onclick="prevLogs()">上一页</button><button class="secondary" onclick="nextLogs()">下一页</button><span class="muted" id="logPage"></span></div>
+  </section>
+
+  <section id="adminAudit" class="page hidden">
+    <div class="toolbar"><h2>管理审计</h2><button class="secondary" onclick="loadAdminAudit()">刷新</button></div>
+    <div id="adminAuditTable"></div>
+  </section>
+
+  <section id="security" class="page hidden">
+    <div class="toolbar"><h2>安全事件</h2><button class="secondary" onclick="loadSecurityEvents()">刷新</button></div>
+    <div id="securityTable"></div>
   </section>
 </main>
 </div>
 <div id="flash" class="flash"></div>
 <script>
-const state={providers:[],models:[],tenants:[],keys:[],routes:[],routeModel:null};
+const state={providers:[],models:[],tenants:[],keys:[],routes:[],routeModel:null,logOffset:0,logLimit:50};
 const tokenInput=document.getElementById('adminToken');
 tokenInput.value=localStorage.getItem('campus_admin_token')||sessionStorage.getItem('campus_admin_token')||'';
 if(tokenInput.value){localStorage.setItem('campus_admin_token',tokenInput.value);sessionStorage.removeItem('campus_admin_token');}
@@ -120,7 +134,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
   document.querySelectorAll('.page').forEach(x=>x.classList.add('hidden'));document.getElementById(b.dataset.page).classList.remove('hidden');
   document.getElementById('title').textContent=b.textContent;
-  ({dashboard:loadDashboard,providers:loadProviders,models:loadModels,tenants:loadTenants,keys:loadKeys,logs:loadLogs}[b.dataset.page])().catch(e=>notify(e.message));
+  ({dashboard:loadDashboard,providers:loadProviders,models:loadModels,tenants:loadTenants,keys:loadKeys,logs:loadLogs,adminAudit:loadAdminAudit,security:loadSecurityEvents}[b.dataset.page])().catch(e=>notify(e.message));
 });
 
 async function loadDashboard(){
@@ -128,8 +142,9 @@ async function loadDashboard(){
   const statuses=[['Gateway',d.gateway],['PostgreSQL',d.postgres],['Redis',d.redis],['ThinkWatch',d.thinkwatch]];
   document.getElementById('statusGrid').innerHTML=statuses.map(([n,ok])=>'<div class="card"><div class="status"><span class="dot '+(ok?'ok':'')+'"></span><b>'+esc(n)+'</b></div><div class="muted" style="margin-top:8px">'+(ok?'运行正常':'不可用')+'</div></div>').join('');
   const s=d.stats||{};
-  const metrics=[['今日请求',s.today_requests||0],['今日 Tokens',s.today_tokens||0],['今日错误',s.today_errors||0],['平均延迟',Math.round(s.avg_latency_ms||0)+' ms']];
-  document.getElementById('metricGrid').innerHTML=metrics.map(([n,v])=>'<div class="card"><span class="muted">'+n+'</span><div class="metric">'+esc(v)+'</div></div>').join('');
+  const metrics=[['今日请求',s.today_requests||0],['今日 Tokens',s.today_tokens||0],['今日错误',s.today_errors||0],['平均延迟',Math.round(s.avg_latency_ms||0)+' ms'],['P95 延迟',Math.round(s.p95_latency_ms||0)+' ms'],['Failover',s.failover_count||0]];
+  const providers=(d.provider_stats||[]).map(v=>['Provider '+v.provider,Number(v.success_rate||0).toFixed(1)+'% 成功 / '+Math.round(v.avg_latency_ms||0)+' ms']);
+  document.getElementById('metricGrid').innerHTML=metrics.concat(providers).map(([n,v])=>'<div class="card"><span class="muted">'+n+'</span><div class="metric">'+esc(v)+'</div></div>').join('');
 }
 async function loadProviders(){
   const d=await api('/admin/providers');state.providers=d.data||[];
@@ -235,14 +250,14 @@ async function openModelTest(){
 async function loadTenants(){
   const d=await api('/admin/tenants');state.tenants=d.data||[];
   document.getElementById('tenantTable').innerHTML='<table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th></th></tr></thead><tbody>'+
-  state.tenants.map(v=>'<tr><td><code>'+esc(v.code)+'</code></td><td><b>'+esc(v.name)+'</b></td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openTenant('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+  state.tenants.map((v,i)=>'<tr><td><code>'+esc(v.code)+'</code></td><td><b>'+esc(v.name)+'</b></td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><div class="actions" style="margin:0"><button class="secondary" onclick="showTenantUsage('+i+')">用量</button><button class="secondary" onclick=\'openTenant('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></div></td></tr>').join('')+'</tbody></table>';
 }
 function openTenant(v={}){
   const f=document.getElementById('tenantForm');f.classList.remove('hidden');
-  f.innerHTML='<div class="formgrid"><label>租户编码<input id="tCode" value="'+esc(v.code||'')+'" placeholder="itc"></label><label>租户名称<input id="tName" value="'+esc(v.name||'')+'" placeholder="信息网络中心"></label><label>状态<select id="tStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="tSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
+  f.innerHTML='<div class="formgrid"><label>租户编码<input id="tCode" value="'+esc(v.code||'')+'" placeholder="itc"></label><label>租户名称<input id="tName" value="'+esc(v.name||'')+'" placeholder="信息网络中心"></label><label>每日 Token 上限（0=不限）<input id="tDailyTokens" type="number" min="0" value="'+(v.daily_token_limit||0)+'"></label><label>每月 Token 上限（0=不限）<input id="tMonthlyTokens" type="number" min="0" value="'+(v.monthly_token_limit||0)+'"></label><label>每月请求上限（0=不限）<input id="tMonthlyRequests" type="number" min="0" value="'+(v.monthly_request_limit||0)+'"></label><label>月预算 micros（0=不限）<input id="tBudget" type="number" min="0" value="'+(v.monthly_budget_micros||0)+'"></label><label>状态<select id="tStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="tSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
   document.getElementById('tStatus').value=v.status||1;
   document.getElementById('tSave').onclick=async()=>{
-    const body={code:document.getElementById('tCode').value,name:document.getElementById('tName').value,status:+document.getElementById('tStatus').value};
+    const body={code:document.getElementById('tCode').value,name:document.getElementById('tName').value,status:+document.getElementById('tStatus').value,daily_token_limit:+document.getElementById('tDailyTokens').value,monthly_token_limit:+document.getElementById('tMonthlyTokens').value,monthly_request_limit:+document.getElementById('tMonthlyRequests').value,monthly_budget_micros:+document.getElementById('tBudget').value};
     await api(v.id?'/admin/tenants/'+v.id:'/admin/tenants',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});
     notify('租户已保存');f.classList.add('hidden');await loadTenants();
   };
@@ -262,10 +277,35 @@ async function openKey(v={}){
   if(v.tenant_id)kTenant.value=v.tenant_id;kStatus.value=v.status||1;
   kSave.onclick=async()=>{const body={name:kName.value,tenant_id:kTenant.value,status:+kStatus.value,allowed_models:kModels.value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips:kIPs.value.split(',').map(x=>x.trim()).filter(Boolean),rpm_limit:+kRPM.value,tpm_limit:+kTPM.value,max_concurrency:+kConcurrency.value,route_group:v.route_group||''};const out=await api(v.id?'/admin/api-keys/'+v.id:'/admin/api-keys',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});f.classList.add('hidden');if(out.api_key){document.getElementById('keyResult').innerHTML='<div class="secret"><b>新 Key 只显示这一次，请立即保存：</b><br><code>'+esc(out.api_key)+'</code></div>'}notify('API Key 已保存');loadKeys()};
 }
-async function loadLogs(){
-  const d=await api('/admin/request-logs?limit=100');const rows=d.data||[];
-  document.getElementById('logTable').innerHTML='<table><thead><tr><th>时间</th><th>Request ID</th><th>模型</th><th>Token</th><th>延迟</th><th>状态</th></tr></thead><tbody>'+
-  rows.map(v=>'<tr><td>'+esc(new Date(v.created_at).toLocaleString())+'</td><td><code>'+esc(v.request_id)+'</code></td><td>'+esc(v.requested_model)+' → '+esc(v.actual_model)+'</td><td>'+v.total_tokens+'</td><td>'+v.latency_ms+' ms</td><td>'+(v.status_code<400?'<span class="tag oktag">'+v.status_code+'</span>':'<span class="tag badtag">'+v.status_code+' '+esc(v.error_code)+'</span>')+'</td></tr>').join('')+'</tbody></table>';
+function logQuery(){
+  const q=new URLSearchParams({limit:String(state.logLimit),offset:String(state.logOffset)});
+  const vals={model:logModel.value,provider:logProvider.value,status:logStatus.value,request_id:logRequestID.value,failover:logFailover.value};
+  Object.entries(vals).forEach(([k,v])=>{if(v)q.set(k,v)});
+  return q;
+}
+async function loadLogs(reset=false){
+  if(reset)state.logOffset=0;
+  const d=await api('/admin/request-logs?'+logQuery().toString());const rows=d.data||[];
+  document.getElementById('logTable').innerHTML='<table><thead><tr><th>时间</th><th>Request ID</th><th>路由</th><th>Token</th><th>延迟</th><th>状态</th></tr></thead><tbody>'+
+  rows.map(v=>'<tr><td>'+esc(new Date(v.created_at).toLocaleString())+'</td><td><code>'+esc(v.request_id)+'</code></td><td>'+esc(v.requested_model)+' → '+esc(v.provider||'?')+' / '+esc(v.upstream_model||v.actual_model||'?')+(v.failover?' <span class="tag">Failover '+v.attempts+'x</span>':'')+'</td><td>'+v.total_tokens+'</td><td>'+v.latency_ms+' ms</td><td>'+(v.status_code<400?'<span class="tag oktag">'+v.status_code+'</span>':'<span class="tag badtag">'+v.status_code+' '+esc(v.error_code)+'</span>')+'</td></tr>').join('')+'</tbody></table>';
+  document.getElementById('logPage').textContent='offset '+state.logOffset+' · 本页 '+rows.length;
+}
+function nextLogs(){state.logOffset+=state.logLimit;loadLogs()}
+function prevLogs(){state.logOffset=Math.max(0,state.logOffset-state.logLimit);loadLogs()}
+function clearLogFilters(){logModel.value='';logProvider.value='';logStatus.value='';logRequestID.value='';logFailover.value='';loadLogs(true)}
+function exportLogs(){window.open('/admin/request-logs/export?'+logQuery().toString(),'_blank')}
+async function showTenantUsage(index){
+  const t=state.tenants[index];if(!t)return;
+  const u=await api('/admin/tenants/'+t.id+'/usage');
+  notify(t.name+'：今日 '+u.daily_requests+' 请求 / '+u.daily_tokens+' tokens；本月 '+u.monthly_requests+' 请求 / '+u.monthly_tokens+' tokens');
+}
+async function loadAdminAudit(){
+  const d=await api('/admin/admin-audit?limit=200');const rows=d.data||[];
+  document.getElementById('adminAuditTable').innerHTML='<table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>资源</th><th>状态</th></tr></thead><tbody>'+rows.map(v=>'<tr><td>'+esc(new Date(v.created_at).toLocaleString())+'</td><td>'+esc(v.actor)+'</td><td>'+esc(v.action)+'</td><td><code>'+esc(v.resource)+'</code></td><td>'+v.status_code+'</td></tr>').join('')+'</tbody></table>';
+}
+async function loadSecurityEvents(){
+  const d=await api('/admin/security-events?limit=200');const rows=d.data||[];
+  document.getElementById('securityTable').innerHTML='<table><thead><tr><th>时间</th><th>事件</th><th>Tenant/Key</th><th>模型</th><th>来源</th><th>详情</th></tr></thead><tbody>'+rows.map(v=>'<tr><td>'+esc(new Date(v.created_at).toLocaleString())+'</td><td><span class="tag badtag">'+esc(v.event_type)+'</span></td><td><code>'+esc(v.tenant_id||'')+' '+esc(v.api_key_id||'')+'</code></td><td>'+esc(v.requested_model||'')+'</td><td>'+esc(v.client_ip||'')+'</td><td>'+esc(v.detail||'')+'</td></tr>').join('')+'</tbody></table>';
 }
 if(tokenInput.value){loadDashboard().catch(()=>{})}
 </script>
