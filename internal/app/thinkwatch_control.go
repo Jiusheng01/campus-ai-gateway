@@ -308,7 +308,7 @@ func renderThinkWatchManagedConfig(existing string, providers []model.Provider, 
 		providerBlock.WriteString("  - name: " + strconv.Quote(p.Name) + "\n")
 		providerBlock.WriteString("    base_url: " + strconv.Quote(p.BaseURL) + "\n")
 		providerBlock.WriteString("    protocol: " + strconv.Quote(p.Protocol) + "\n")
-		providerBlock.WriteString("    key: " + strconv.Quote("+p.CredentialEnv+") + "\n")
+		providerBlock.WriteString("    key: " + strconv.Quote("${"+p.CredentialEnv+"}") + "\n")
 		models := make([]string, 0, len(providerModels[p.ID]))
 		for name := range providerModels[p.ID] {
 			models = append(models, name)
