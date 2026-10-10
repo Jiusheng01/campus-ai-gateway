@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>校园模型网关</title>
+<style>
+:root{font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;color:#18212f;background:#f5f7fb}
+*{box-sizing:border-box}body{margin:0}.app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+aside{background:#111827;color:#e5e7eb;padding:24px 16px}.brand{font-size:18px;font-weight:700;margin-bottom:24px}.brand small{display:block;font-size:11px;color:#94a3b8;font-weight:400;margin-top:6px}
+nav button{width:100%;border:0;background:transparent;color:#cbd5e1;text-align:left;padding:11px 12px;border-radius:8px;margin:3px 0;cursor:pointer;font-size:14px}
+nav button.active,nav button:hover{background:#1f2937;color:white}
+main{padding:26px;overflow:auto}.topbar{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:22px}.topbar h1{margin:0;font-size:24px}.tokenbox{display:flex;gap:8px;align-items:center}.tokenbox input,input,select{border:1px solid #d7dce5;border-radius:8px;padding:9px 10px;background:white}
+button.primary,button.secondary,button.danger{border:0;border-radius:8px;padding:9px 13px;cursor:pointer}.primary{background:#2563eb;color:#fff}.secondary{background:#e5e7eb;color:#111827}.danger{background:#fee2e2;color:#991b1b}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:14px}.card{background:white;border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}.metric{font-size:26px;font-weight:700;margin-top:8px}
+.status{display:flex;align-items:center;gap:8px}.dot{width:9px;height:9px;border-radius:50%;background:#ef4444}.dot.ok{background:#22c55e}
+.toolbar{display:flex;justify-content:space-between;align-items:center;margin:18px 0 12px}.toolbar h2{margin:0;font-size:18px}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb}th,td{padding:11px 12px;border-bottom:1px solid #edf0f5;text-align:left;font-size:13px;vertical-align:top}th{background:#f8fafc;color:#475569}.muted{color:#64748b}.tag{display:inline-block;padding:3px 7px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:11px}.oktag{background:#dcfce7;color:#166534}.badtag{background:#fee2e2;color:#991b1b}
+.hidden{display:none}.panel{background:white;border:1px solid #e5e7eb;border-radius:12px;padding:18px;margin-bottom:16px}.formgrid{display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:12px}.formgrid label{display:flex;flex-direction:column;gap:6px;font-size:13px}.full{grid-column:1/-1}.actions{display:flex;gap:8px;margin-top:14px}.flash{position:fixed;right:20px;bottom:20px;padding:12px 16px;border-radius:9px;background:#111827;color:white;display:none;max-width:420px}
+.secret{background:#fff7ed;border:1px solid #fed7aa;padding:12px;border-radius:8px;margin-top:12px;word-break:break-all}
+@media(max-width:900px){.app{grid-template-columns:1fr}aside{display:none}.grid{grid-template-columns:repeat(2,1fr)}.formgrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <div class="brand">校园模型网关<small>Campus AI Gateway</small></div>
+  <nav id="nav">
+    <button data-page="dashboard" class="active">总览</button>
+    <button data-page="providers">Provider 管理</button>
+    <button data-page="models">模型管理</button>
+    <button data-page="keys">API Key 管理</button>
+    <button data-page="logs">请求日志</button>
+  </nav>
+</aside>
+<main>
+  <div class="topbar">
+    <h1 id="title">总览</h1>
+    <div class="tokenbox">
+      <input id="adminToken" type="password" placeholder="ADMIN_TOKEN">
+      <button class="primary" id="saveToken">连接</button>
+    </div>
+  </div>
+
+  <section id="dashboard" class="page">
+    <div class="grid" id="statusGrid"></div>
+    <div class="grid" id="metricGrid" style="margin-top:14px"></div>
+    <div class="panel" style="margin-top:16px">
+      <b>使用说明</b>
+      <p class="muted">管理 Token 仅保存在当前浏览器会话 sessionStorage。Provider 页面只保存凭据环境变量名，不保存真实厂商 API Key。</p>
+    </div>
+  </section>
+
+  <section id="providers" class="page hidden">
+    <div class="toolbar"><h2>Provider</h2><button class="primary" onclick="openProvider()">新增 Provider</button></div>
+    <div id="providerForm" class="panel hidden"></div>
+    <div id="providerTable"></div>
+  </section>
+
+  <section id="models" class="page hidden">
+    <div class="toolbar"><h2>模型</h2><button class="primary" onclick="openModel()">新增模型</button></div>
+    <div id="modelForm" class="panel hidden"></div>
+    <div id="modelTable"></div>
+  </section>
+
+  <section id="keys" class="page hidden">
+    <div class="toolbar"><h2>Virtual API Key</h2><button class="primary" onclick="openKey()">创建 Key</button></div>
+    <div id="keyForm" class="panel hidden"></div>
+    <div id="keyResult"></div>
+    <div id="keyTable"></div>
+  </section>
+
+  <section id="logs" class="page hidden">
+    <div class="toolbar"><h2>请求日志</h2><button class="secondary" onclick="loadLogs()">刷新</button></div>
+    <div id="logTable"></div>
+  </section>
+</main>
+</div>
+<div id="flash" class="flash"></div>
+<script>
+const state={providers:[],models:[],tenants:[],keys:[]};
+const tokenInput=document.getElementById('adminToken');
+tokenInput.value=sessionStorage.getItem('campus_admin_token')||'';
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function notify(msg){const e=document.getElementById('flash');e.textContent=msg;e.style.display='block';setTimeout(()=>e.style.display='none',2600)}
+async function api(path,opt={}){
+  const token=sessionStorage.getItem('campus_admin_token')||'';
+  const headers=Object.assign({'Authorization':'Bearer '+token},opt.headers||{});
+  if(opt.body)headers['Content-Type']='application/json';
+  const r=await fetch(path,Object.assign({},opt,{headers}));
+  const txt=await r.text(); let data={}; try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+  if(!r.ok){throw new Error(data?.error?.message||('HTTP '+r.status))}
+  return data;
+}
+document.getElementById('saveToken').onclick=async()=>{
+  sessionStorage.setItem('campus_admin_token',tokenInput.value.trim());
+  try{await loadDashboard();notify('管理接口连接成功')}catch(e){notify(e.message)}
+};
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  document.querySelectorAll('.page').forEach(x=>x.classList.add('hidden'));document.getElementById(b.dataset.page).classList.remove('hidden');
+  document.getElementById('title').textContent=b.textContent;
+  ({dashboard:loadDashboard,providers:loadProviders,models:loadModels,keys:loadKeys,logs:loadLogs}[b.dataset.page])().catch(e=>notify(e.message));
+});
+
+async function loadDashboard(){
+  const d=await api('/admin/status');
+  const statuses=[['Gateway',d.gateway],['PostgreSQL',d.postgres],['Redis',d.redis],['ThinkWatch',d.thinkwatch]];
+  document.getElementById('statusGrid').innerHTML=statuses.map(([n,ok])=>'<div class="card"><div class="status"><span class="dot '+(ok?'ok':'')+'"></span><b>'+esc(n)+'</b></div><div class="muted" style="margin-top:8px">'+(ok?'运行正常':'不可用')+'</div></div>').join('');
+  const s=d.stats||{};
+  const metrics=[['今日请求',s.today_requests||0],['今日 Tokens',s.today_tokens||0],['今日错误',s.today_errors||0],['平均延迟',Math.round(s.avg_latency_ms||0)+' ms']];
+  document.getElementById('metricGrid').innerHTML=metrics.map(([n,v])=>'<div class="card"><span class="muted">'+n+'</span><div class="metric">'+esc(v)+'</div></div>').join('');
+}
+async function loadProviders(){
+  const d=await api('/admin/providers');state.providers=d.data||[];
+  document.getElementById('providerTable').innerHTML='<table><thead><tr><th>名称</th><th>Base URL</th><th>协议</th><th>凭据环境变量</th><th>状态</th><th></th></tr></thead><tbody>'+
+  state.providers.map(v=>'<tr><td><b>'+esc(v.name)+'</b></td><td>'+esc(v.base_url)+'</td><td>'+esc(v.protocol)+'</td><td><code>'+esc(v.credential_env)+'</code></td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openProvider('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+}
+function openProvider(v={}){
+  const f=document.getElementById('providerForm');f.classList.remove('hidden');
+  f.innerHTML='<div class="formgrid"><label>名称<input id="pName" value="'+esc(v.name||'')+'"></label><label>协议<select id="pProtocol"><option>openai-chat</option><option>openai-responses</option><option>anthropic</option><option>gemini</option></select></label><label class="full">Base URL<input id="pURL" value="'+esc(v.base_url||'')+'"></label><label>凭据环境变量<input id="pEnv" value="'+esc(v.credential_env||'')+'" placeholder="DASHSCOPE_API_KEY"></label><label>状态<select id="pStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="pSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
+  document.getElementById('pProtocol').value=v.protocol||'openai-chat';document.getElementById('pStatus').value=v.status||1;
+  document.getElementById('pSave').onclick=async()=>{const body={name:pName.value,base_url:pURL.value,protocol:pProtocol.value,credential_env:pEnv.value,status:+pStatus.value};await api(v.id?'/admin/providers/'+v.id:'/admin/providers',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});notify('Provider 已保存');f.classList.add('hidden');loadProviders()};
+}
+async function loadModels(){
+  const [m,p]=await Promise.all([api('/admin/models'),api('/admin/providers')]);state.models=m.data||[];state.providers=p.data||[];
+  document.getElementById('modelTable').innerHTML='<table><thead><tr><th>虚拟模型</th><th>Provider</th><th>上游模型</th><th>状态</th><th></th></tr></thead><tbody>'+
+  state.models.map(v=>'<tr><td><b>'+esc(v.alias)+'</b></td><td>'+esc(v.provider_name)+'</td><td>'+esc(v.upstream_model)+'</td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openModel('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+}
+async function openModel(v={}){
+  if(!state.providers.length){const p=await api('/admin/providers');state.providers=p.data||[]}
+  const f=document.getElementById('modelForm');f.classList.remove('hidden');
+  f.innerHTML='<div class="formgrid"><label>虚拟模型 Alias<input id="mAlias" value="'+esc(v.alias||'')+'" placeholder="campus-smart"></label><label>Provider<select id="mProvider">'+state.providers.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('')+'</select></label><label class="full">上游模型<input id="mUpstream" value="'+esc(v.upstream_model||'')+'"></label><label>状态<select id="mStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="mSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
+  if(v.provider_id)mProvider.value=v.provider_id;mStatus.value=v.status||1;
+  mSave.onclick=async()=>{const body={alias:mAlias.value,provider_id:mProvider.value,upstream_model:mUpstream.value,status:+mStatus.value};await api(v.id?'/admin/models/'+v.id:'/admin/models',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});notify('模型已保存');f.classList.add('hidden');loadModels()};
+}
+async function loadKeys(){
+  const [k,t,m]=await Promise.all([api('/admin/api-keys'),api('/admin/tenants'),api('/admin/models')]);state.keys=k.data||[];state.tenants=t.data||[];state.models=m.data||[];
+  document.getElementById('keyTable').innerHTML='<table><thead><tr><th>名称</th><th>租户</th><th>Key 前缀</th><th>模型</th><th>RPM/TPM/并发</th><th>状态</th><th></th></tr></thead><tbody>'+
+  state.keys.map(v=>'<tr><td><b>'+esc(v.name)+'</b></td><td>'+esc(v.tenant_name)+'</td><td><code>'+esc(v.key_prefix)+'</code></td><td>'+esc((v.allowed_models||[]).join(', '))+'</td><td>'+v.rpm_limit+' / '+v.tpm_limit+' / '+v.max_concurrency+'</td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openKey('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+}
+async function openKey(v={}){
+  if(!state.tenants.length)state.tenants=(await api('/admin/tenants')).data||[];
+  if(!state.models.length)state.models=(await api('/admin/models')).data||[];
+  const f=document.getElementById('keyForm');f.classList.remove('hidden');
+  const selected=v.allowed_models||[];
+  f.innerHTML='<div class="formgrid"><label>名称<input id="kName" value="'+esc(v.name||'')+'"></label><label>租户<select id="kTenant">'+state.tenants.map(t=>'<option value="'+esc(t.id)+'">'+esc(t.name)+' ('+esc(t.code)+')</option>').join('')+'</select></label><label>RPM<input id="kRPM" type="number" value="'+(v.rpm_limit||60)+'"></label><label>TPM<input id="kTPM" type="number" value="'+(v.tpm_limit||100000)+'"></label><label>最大并发<input id="kConcurrency" type="number" value="'+(v.max_concurrency||10)+'"></label><label>状态<select id="kStatus"><option value="1">启用</option><option value="2">停用</option></select></label><label class="full">允许模型（逗号分隔）<input id="kModels" value="'+esc(selected.join(','))+'" placeholder="campus-smart"></label><label class="full">允许 IP（逗号分隔，空=不限）<input id="kIPs" value="'+esc((v.allowed_ips||[]).join(','))+'"></label></div><div class="actions"><button class="primary" id="kSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
+  if(v.tenant_id)kTenant.value=v.tenant_id;kStatus.value=v.status||1;
+  kSave.onclick=async()=>{const body={name:kName.value,tenant_id:kTenant.value,status:+kStatus.value,allowed_models:kModels.value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips:kIPs.value.split(',').map(x=>x.trim()).filter(Boolean),rpm_limit:+kRPM.value,tpm_limit:+kTPM.value,max_concurrency:+kConcurrency.value,route_group:v.route_group||''};const out=await api(v.id?'/admin/api-keys/'+v.id:'/admin/api-keys',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});f.classList.add('hidden');if(out.api_key){document.getElementById('keyResult').innerHTML='<div class="secret"><b>新 Key 只显示这一次，请立即保存：</b><br><code>'+esc(out.api_key)+'</code></div>'}notify('API Key 已保存');loadKeys()};
+}
+async function loadLogs(){
+  const d=await api('/admin/request-logs?limit=100');const rows=d.data||[];
+  document.getElementById('logTable').innerHTML='<table><thead><tr><th>时间</th><th>Request ID</th><th>模型</th><th>Token</th><th>延迟</th><th>状态</th></tr></thead><tbody>'+
+  rows.map(v=>'<tr><td>'+esc(new Date(v.created_at).toLocaleString())+'</td><td><code>'+esc(v.request_id)+'</code></td><td>'+esc(v.requested_model)+' → '+esc(v.actual_model)+'</td><td>'+v.total_tokens+'</td><td>'+v.latency_ms+' ms</td><td>'+(v.status_code<400?'<span class="tag oktag">'+v.status_code+'</span>':'<span class="tag badtag">'+v.status_code+' '+esc(v.error_code)+'</span>')+'</td></tr>').join('')+'</tbody></table>';
+}
+if(tokenInput.value){loadDashboard().catch(()=>{})}
+</script>
+</body>
+</html>
