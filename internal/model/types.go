@@ -16,6 +16,9 @@ type APIKey struct {
 	TPMLimit       int64
 	MaxConcurrency int64
 	RouteGroup     string
+	DailyTokenLimit     int64
+	MonthlyTokenLimit   int64
+	MonthlyRequestLimit int64
 }
 
 type Identity struct {
@@ -27,6 +30,9 @@ type Identity struct {
 	TPMLimit       int64
 	MaxConcurrency int64
 	RouteGroup     string
+	DailyTokenLimit     int64
+	MonthlyTokenLimit   int64
+	MonthlyRequestLimit int64
 }
 
 type RequestLog struct {
