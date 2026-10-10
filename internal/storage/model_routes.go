@@ -249,8 +249,8 @@ func syncLegacyModelRoute(ctx context.Context, tx pgx.Tx, modelID string) error 
 	err := tx.QueryRow(ctx, `
 SELECT provider_id::text, upstream_model
 FROM gateway_model_route
-WHERE model_id=$1::uuid AND status=1
-ORDER BY priority ASC, weight DESC, created_at ASC
+WHERE model_id=$1::uuid
+ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
 LIMIT 1
 `, modelID).Scan(&providerID, &upstreamModel)
 	if err != nil {
