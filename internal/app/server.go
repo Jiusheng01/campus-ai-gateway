@@ -139,6 +139,8 @@ func (s *Server) routes() {
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
 	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
 	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
+	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
+	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
 }
 
