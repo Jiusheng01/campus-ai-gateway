@@ -233,11 +233,22 @@ if (-not $thinkWatchRunning) {
             }
         }
         Write-Step "Starting ThinkWatch Core..."
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $twExe
+        $psi.WorkingDirectory = Split-Path $twExe -Parent
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
         if ($env:THINKWATCH_CONFIG_PATH) {
-            Start-Process -FilePath $twExe -ArgumentList @("--config", $env:THINKWATCH_CONFIG_PATH, "serve") -WorkingDirectory (Split-Path $twExe -Parent) | Out-Null
+            $psi.ArgumentList.Add("--config")
+            $psi.ArgumentList.Add($env:THINKWATCH_CONFIG_PATH)
         }
-        else {
-            Start-Process -FilePath $twExe -ArgumentList "serve" -WorkingDirectory (Split-Path $twExe -Parent) | Out-Null
+        $psi.ArgumentList.Add("serve")
+        try {
+            $twProcess = [System.Diagnostics.Process]::Start($psi)
+            Write-Host ("       ThinkWatch PID=" + $twProcess.Id)
+        }
+        catch {
+            Fail ("Unable to start ThinkWatch Core: " + $_.Exception.Message)
         }
         $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 15
     }
