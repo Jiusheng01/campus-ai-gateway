@@ -1,29 +1,29 @@
-# SSO and RBAC
+# SSO 与 RBAC
 
-Production admin authentication is designed to sit behind a mature OIDC/OAuth reverse-auth component such as **oauth2-proxy** instead of reimplementing OIDC/JWT validation inside Campus AI Gateway.
+生产环境的管理员认证不在 Campus AI Gateway 内重新实现完整 OIDC/JWT 登录体系，而是放在成熟的 OIDC/OAuth 反向认证组件之后，例如 **oauth2-proxy**。
 
-## Modes
+## 1. 模式
 
-### Development
+### 开发模式
 
 ```text
 ADMIN_AUTH_MODE=token
 ADMIN_TOKEN=...
 ```
 
-The token is mapped to `super_admin`.
+该 Token 会映射为 `super_admin`。
 
-### Production / campus SSO
+### 生产 / 校园 SSO
 
 ```text
 Campus IdP
-  -> oauth2-proxy (OIDC session)
-  -> reverse proxy
+  -> oauth2-proxy（OIDC Session）
+  -> Reverse Proxy
   -> Campus AI Gateway trusted-header auth
   -> RBAC
 ```
 
-Gateway settings:
+Gateway 配置：
 
 ```text
 ADMIN_AUTH_MODE=trusted-header
@@ -32,7 +32,7 @@ ADMIN_USER_HEADER=X-Forwarded-User
 ADMIN_ROLES_HEADER=X-Forwarded-Groups
 ```
 
-The reverse-auth layer must add:
+可信认证代理必须添加：
 
 ```text
 X-Campus-Auth-Secret: <same ADMIN_PROXY_SECRET>
@@ -40,24 +40,36 @@ X-Forwarded-User: <stable campus account>
 X-Forwarded-Groups: gateway_admin,auditor
 ```
 
-Do not expose the Gateway admin port directly when trusted-header mode is enabled. Only the trusted reverse proxy should reach it.
+启用 `trusted-header` 后，不要把 Gateway 管理端口直接暴露给用户网络。只有可信反向代理应该能访问该端口。
 
-## Roles
+## 2. 角色
 
-- `super_admin`: all admin operations
-- `gateway_admin`: Provider / Model / Route / ThinkWatch sync / model test
-- `tenant_admin`: Tenant / API Key administration
-- `auditor`: status, request logs, admin audit, security events
-- `operator`: runtime status and model test
+- `super_admin`：全部管理权限
+- `gateway_admin`：Provider / Model / Route / ThinkWatch 同步 / 模型测试
+- `tenant_admin`：Tenant / API Key 管理
+- `auditor`：状态、请求日志、管理审计、安全事件
+- `operator`：运行状态和模型测试
 
-Authenticated users can inspect their resolved identity through:
+已认证用户可通过：
 
 ```text
 GET /admin/whoami
 ```
 
-## Campus IdP final integration
+查看解析后的身份和角色。
 
-The gateway side is IdP-agnostic. Final deployment must configure oauth2-proxy with the university issuer URL, client ID, client secret, callback URL and group/claim mapping. Those values are environment-specific and are intentionally not stored in this repository.
+## 3. 学校 IdP 最终接入
 
-A real campus SSO login is therefore a final-environment acceptance item, not something CI can truthfully validate.
+Gateway 本身不绑定具体学校 IdP。
+
+最终部署时，需要在 oauth2-proxy 中配置：
+
+- 学校 Issuer URL
+- Client ID
+- Client Secret
+- Callback URL
+- Group / Claim 映射
+
+这些值属于真实部署环境，因此不会写入仓库。
+
+所以真实校园 SSO 登录属于**最终环境验收项**，不能仅靠 CI 宣称已经完成生产验证。
