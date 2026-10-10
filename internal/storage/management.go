@@ -173,7 +173,7 @@ WHERE m.id=$1::uuid
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
-SELECT id::text, code, name, status
+SELECT id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
 FROM gateway_tenant
 ORDER BY name
 `)
@@ -185,7 +185,7 @@ ORDER BY name
 	var out []model.Tenant
 	for rows.Next() {
 		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status); err != nil {
+		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -195,20 +195,35 @@ ORDER BY name
 
 func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
 	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status)
-VALUES ($1, $2, $3)
-RETURNING id::text, code, name, status
-`, v.Code, v.Name, v.Status).Scan(&v.ID, &v.Code, &v.Name, &v.Status)
+INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
 	return v, err
 }
 
 func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
 	err := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, updated_at=NOW()
+SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, updated_at=NOW()
 WHERE id=$1::uuid
-RETURNING id::text, code, name, status
-`, id, v.Code, v.Name, v.Status).Scan(&v.ID, &v.Code, &v.Name, &v.Status)
+RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
+	return v, err
+}
+
+func (p *Postgres) TenantUsageStats(ctx context.Context, tenantID string) (model.TenantUsageStats, error) {
+	var v model.TenantUsageStats
+	v.TenantID = tenantID
+	err := p.Pool.QueryRow(ctx, `
+SELECT
+	COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW()))::bigint,
+	COUNT(*) FILTER (WHERE created_at >= date_trunc('month', NOW()))::bigint,
+	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= date_trunc('day', NOW())),0)::bigint,
+	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())),0)::bigint
+FROM gateway_request_log
+WHERE tenant_id=$1::uuid
+`, tenantID).Scan(&v.DailyRequests, &v.MonthlyRequests, &v.DailyTokens, &v.MonthlyTokens)
 	return v, err
 }
 
