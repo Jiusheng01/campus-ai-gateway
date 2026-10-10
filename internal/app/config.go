@@ -23,7 +23,7 @@ func LoadConfig() (Config, error) {
 		RedisAddr: getenv("REDIS_ADDR", "redis:6379"),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
 		KeyHMACSecret: os.Getenv("API_KEY_HMAC_SECRET"),
-		ThinkWatchURL: getenv("THINKWATCH_URL", "http://twcore:18443"),
+		ThinkWatchURL: getenv("THINKWATCH_URL", "http://127.0.0.1:8788"),
 		ThinkWatchKey: os.Getenv("THINKWATCH_GATEWAY_KEY"),
 	}
 	if cfg.DatabaseURL == "" { return Config{}, errors.New("DATABASE_URL is required") }
