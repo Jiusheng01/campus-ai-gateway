@@ -293,7 +293,12 @@ async function loadLogs(reset=false){
 function nextLogs(){state.logOffset+=state.logLimit;loadLogs()}
 function prevLogs(){state.logOffset=Math.max(0,state.logOffset-state.logLimit);loadLogs()}
 function clearLogFilters(){logModel.value='';logProvider.value='';logStatus.value='';logRequestID.value='';logFailover.value='';loadLogs(true)}
-function exportLogs(){window.open('/admin/request-logs/export?'+logQuery().toString(),'_blank')}
+async function exportLogs(){
+  const token=localStorage.getItem('campus_admin_token')||'';
+  const r=await fetch('/admin/request-logs/export?'+logQuery().toString(),{headers:{'Authorization':'Bearer '+token}});
+  if(!r.ok){let msg='HTTP '+r.status;try{const d=await r.json();msg=d?.error?.message||msg}catch{}throw new Error(msg)}
+  const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='campus-gateway-request-logs.csv';a.click();URL.revokeObjectURL(url);
+}
 async function showTenantUsage(index){
   const t=state.tenants[index];if(!t)return;
   const u=await api('/admin/tenants/'+t.id+'/usage');
