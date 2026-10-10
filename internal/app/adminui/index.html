@@ -54,7 +54,7 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
   </section>
 
   <section id="providers" class="page hidden">
-    <div class="toolbar"><h2>Provider</h2><button class="primary" onclick="openProvider()">新增 Provider</button></div>
+    <div class="toolbar"><h2>Provider</h2><div class="actions" style="margin-top:0"><button class="secondary" onclick="openProviderPreset('deepseek')">添加 DeepSeek</button><button class="primary" onclick="openProvider()">新增 Provider</button></div></div>
     <div id="providerForm" class="panel hidden"></div>
     <div id="providerTable"></div>
   </section>
@@ -135,6 +135,13 @@ async function loadProviders(){
   const d=await api('/admin/providers');state.providers=d.data||[];
   document.getElementById('providerTable').innerHTML='<table><thead><tr><th>名称</th><th>Base URL</th><th>协议</th><th>凭据环境变量</th><th>状态</th><th></th></tr></thead><tbody>'+
   state.providers.map(v=>'<tr><td><b>'+esc(v.name)+'</b></td><td>'+esc(v.base_url)+'</td><td>'+esc(v.protocol)+'</td><td><code>'+esc(v.credential_env)+'</code></td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openProvider('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+}
+function openProviderPreset(name){
+  const presets={
+    deepseek:{name:'deepseek',base_url:'https://api.deepseek.com/v1',protocol:'openai-chat',credential_env:'DEEPSEEK_API_KEY',status:1},
+    qwen:{name:'qwen',base_url:'https://dashscope.aliyuncs.com/compatible-mode/v1',protocol:'openai-chat',credential_env:'DASHSCOPE_API_KEY',status:1}
+  };
+  openProvider(presets[name]||{});
 }
 function openProvider(v={}){
   const f=document.getElementById('providerForm');f.classList.remove('hidden');
