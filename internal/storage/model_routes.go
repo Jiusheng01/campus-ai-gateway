@@ -77,6 +77,10 @@ func (p *Postgres) CreateModelRoute(ctx context.Context, modelID string, v model
 	}
 	defer tx.Rollback(ctx)
 
+	if err := lockModelRouteParent(ctx, tx, modelID); err != nil {
+		return v, err
+	}
+
 	err = tx.QueryRow(ctx, `
 INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
@@ -110,13 +114,24 @@ func (p *Postgres) UpdateModelRoute(ctx context.Context, routeID string, v model
 	defer tx.Rollback(ctx)
 
 	var modelID string
+	if err := tx.QueryRow(ctx, `
+SELECT model_id::text
+FROM gateway_model_route
+WHERE id=$1::uuid
+`, routeID).Scan(&modelID); err != nil {
+		return v, err
+	}
+	if err := lockModelRouteParent(ctx, tx, modelID); err != nil {
+		return v, err
+	}
+
 	var oldStatus int
 	if err := tx.QueryRow(ctx, `
-SELECT model_id::text, status
+SELECT status
 FROM gateway_model_route
 WHERE id=$1::uuid
 FOR UPDATE
-`, routeID).Scan(&modelID, &oldStatus); err != nil {
+`, routeID).Scan(&oldStatus); err != nil {
 		return v, err
 	}
 
@@ -174,13 +189,24 @@ func (p *Postgres) DeleteModelRoute(ctx context.Context, routeID string) error {
 	defer tx.Rollback(ctx)
 
 	var modelID string
+	if err := tx.QueryRow(ctx, `
+SELECT model_id::text
+FROM gateway_model_route
+WHERE id=$1::uuid
+`, routeID).Scan(&modelID); err != nil {
+		return err
+	}
+	if err := lockModelRouteParent(ctx, tx, modelID); err != nil {
+		return err
+	}
+
 	var status int
 	if err := tx.QueryRow(ctx, `
-SELECT model_id::text, status
+SELECT status
 FROM gateway_model_route
 WHERE id=$1::uuid
 FOR UPDATE
-`, routeID).Scan(&modelID, &status); err != nil {
+`, routeID).Scan(&status); err != nil {
 		return err
 	}
 
@@ -206,6 +232,16 @@ WHERE model_id=$1::uuid
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func lockModelRouteParent(ctx context.Context, tx pgx.Tx, modelID string) error {
+	var id string
+	return tx.QueryRow(ctx, `
+SELECT id::text
+FROM gateway_model
+WHERE id=$1::uuid
+FOR UPDATE
+`, modelID).Scan(&id)
 }
 
 func syncLegacyModelRoute(ctx context.Context, tx pgx.Tx, modelID string) error {
