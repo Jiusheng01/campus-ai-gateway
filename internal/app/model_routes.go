@@ -132,8 +132,11 @@ func modelIDFromRoutesPath(path string) (string, bool) {
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return "", false
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
-	id = strings.TrimSuffix(id, "/")
+	rest := strings.TrimPrefix(path, prefix)
+	if !strings.Contains(rest, suffix) {
+		return "", false
+	}
+	id := strings.TrimSuffix(rest, suffix)
 	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
