@@ -23,6 +23,7 @@ services:
       API_KEY_HMAC_SECRET: "change-me-in-production"
       THINKWATCH_URL: "http://host.docker.internal:8788"
       THINKWATCH_GATEWAY_KEY: ""
+      ADMIN_TOKEN: "change-me-in-production"
     depends_on: [postgres, redis]
     extra_hosts:
       - "host.docker.internal:host-gateway"
