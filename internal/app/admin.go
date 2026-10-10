@@ -2,9 +2,9 @@ package app
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,20 +36,23 @@ func (w *adminAuditResponseWriter) Write(p []byte) (int, error) {
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-Id")
-		if s.cfg.AdminToken == "" {
-			httpx.Error(w, http.StatusServiceUnavailable, "admin_api_disabled", "Admin API is disabled", reqID)
+		principal, err := s.authenticateAdmin(r)
+		if err != nil {
+			status := http.StatusUnauthorized
+			code := "invalid_admin_auth"
+			if strings.Contains(err.Error(), "disabled") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unsupported") {
+				status = http.StatusServiceUnavailable
+				code = "admin_api_disabled"
+			}
+			httpx.Error(w, status, code, err.Error(), reqID)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			httpx.Error(w, http.StatusUnauthorized, "invalid_admin_token", "Missing admin bearer token", reqID)
+		if !principal.can(r) {
+			httpx.Error(w, http.StatusForbidden, "admin_forbidden", "Role is not allowed to perform this admin operation", reqID)
 			return
 		}
-		got := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) != 1 {
-			httpx.Error(w, http.StatusUnauthorized, "invalid_admin_token", "Invalid admin token", reqID)
-			return
-		}
+		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
+
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
 			aw := &adminAuditResponseWriter{ResponseWriter: w}
 			next.ServeHTTP(aw, r)
@@ -61,7 +64,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			defer cancel()
 			_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
 				RequestID: reqID,
-				Actor: "admin_token",
+				Actor: principal.User,
 				Action: r.Method,
 				Resource: r.URL.Path,
 				StatusCode: status,
@@ -77,6 +80,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/admin/status":
 		s.handleAdminStatus(w, r)
+	case r.URL.Path == "/admin/whoami":
+		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/"):
@@ -106,6 +111,25 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	p, ok := adminPrincipalFrom(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "invalid_admin_auth", "Admin identity is unavailable", reqID)
+		return
+	}
+	roles := make([]string, 0, len(p.Roles))
+	for role := range p.Roles {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	writeJSON(w, http.StatusOK, map[string]any{"user": p.User, "roles": roles, "auth_mode": s.cfg.AdminAuthMode})
 }
 
 func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
