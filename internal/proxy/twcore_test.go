@@ -7,9 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestThinkWatchProxyStreamsAndReplacesAuthorization(t *testing.T) {
+	releaseSecond := make(chan struct{})
+	firstFlushed := make(chan struct{})
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer tw-test" {
 			t.Fatalf("unexpected authorization: %q", got)
@@ -21,6 +25,9 @@ func TestThinkWatchProxyStreamsAndReplacesAuthorization(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: one\n\n")
 		flusher.Flush()
+		close(firstFlushed)
+
+		<-releaseSecond
 		fmt.Fprint(w, "data: two\n\n")
 		flusher.Flush()
 	}))
@@ -31,28 +38,70 @@ func TestThinkWatchProxyStreamsAndReplacesAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "http://gateway/v1/chat/completions", strings.NewReader(`{"model":"demo","stream":true}`))
-	req.Header.Set("Authorization", "Bearer sk-campus-client")
-	rec := httptest.NewRecorder()
+	gateway := httptest.NewServer(p)
+	defer gateway.Close()
 
-	p.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d", rec.Code)
+	req, err := http.NewRequest(
+		http.MethodPost,
+		gateway.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"demo","stream":true}`),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+	req.Header.Set("Authorization", "Bearer sk-campus-client")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("unexpected buffering header: %q", got)
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
-	var data []string
+	select {
+	case <-firstFlushed:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not flush the first SSE event")
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	firstLine := make(chan string, 1)
+	go func() {
+		for scanner.Scan() {
+			if strings.HasPrefix(scanner.Text(), "data: ") {
+				firstLine <- scanner.Text()
+				return
+			}
+		}
+		firstLine <- ""
+	}()
+
+	select {
+	case line := <-firstLine:
+		if line != "data: one" {
+			t.Fatalf("unexpected first SSE line: %q", line)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first SSE event was buffered instead of being forwarded immediately")
+	}
+
+	close(releaseSecond)
+
+	foundSecond := false
 	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			data = append(data, line)
+		if scanner.Text() == "data: two" {
+			foundSecond = true
+			break
 		}
 	}
-	if len(data) != 2 || data[0] != "data: one" || data[1] != "data: two" {
-		t.Fatalf("unexpected stream body: %q", rec.Body.String())
+	if !foundSecond {
+		t.Fatal("second SSE event was not forwarded")
 	}
 }
