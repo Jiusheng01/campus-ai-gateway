@@ -152,6 +152,11 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load dashboard stats", reqID)
 		return
 	}
+	providerStats, err := s.pg.ProviderStats(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load provider stats", reqID)
+		return
+	}
 
 	thinkwatchOK := false
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -172,6 +177,7 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"redis":      redisOK,
 		"thinkwatch": thinkwatchOK,
 		"stats":      stats,
+		"provider_stats": providerStats,
 	})
 }
 
