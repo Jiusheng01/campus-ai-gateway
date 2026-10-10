@@ -125,6 +125,11 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
 }
 Write-Ok (& go version)
 
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Fail "npm not found. Admin UI v2 requires Node.js 22+ at build time. Install Node.js LTS; Node is not required at Gateway runtime."
+}
+Write-Ok ("npm " + (& npm --version))
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Fail "Docker command not found. Install Docker Desktop first."
 }
@@ -265,6 +270,20 @@ else {
 if (-not $env:THINKWATCH_GATEWAY_KEY) {
     Write-Warn "THINKWATCH_GATEWAY_KEY is not set. The admin UI can still open, but real model proxy requests may fail."
 }
+
+Write-Step "Building Admin UI v2..."
+$adminNodeModules = Join-Path $RepoRoot "web\admin\node_modules"
+if (-not (Test-Path $adminNodeModules)) {
+    & npm --prefix ".\web\admin" install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Unable to install Admin UI dependencies."
+    }
+}
+& npm --prefix ".\web\admin" run build
+if ($LASTEXITCODE -ne 0) {
+    Fail "Admin UI build failed."
+}
+Write-Ok "Admin UI v2 built"
 
 if (-not $SkipTests) {
     Write-Step "Running Go tests..."
