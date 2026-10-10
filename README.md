@@ -33,7 +33,7 @@
 | Model 管理 | ✅ | 虚拟模型 → Provider → 上游模型 |
 | ThinkWatch 配置同步 | ✅ | 生成前校验、备份、原子替换 |
 | 网页模型测试 | ✅ | 后台直接测试模型、Token、延迟 |
-| 内置 Web 管理后台 | ✅ | 无需单独 Node/Vue 进程 |
+| Admin UI v2 | ✅ | React + TypeScript + Vite；构建后嵌入 Go，运行时无需 Node 进程 |
 | Windows 一键初始化 | ✅ | scripts/setup.ps1 |
 | Windows 一键开发启动 | ✅ | scripts/dev.ps1 |
 | 多 Provider Failover 控制面 | ✅ | Route CRUD/UI + ThinkWatch renderer；真实双 Provider 验收待最终测试 |
@@ -165,11 +165,44 @@ http://127.0.0.1:8080/admin-ui
 - 管理端：ADMIN_TOKEN
 - 业务端：sk-campus-*
 
-本地开发后台会把 ADMIN_TOKEN 保存到浏览器 localStorage，方便开发调试。
+当前后台已升级为 React + TypeScript + Vite 前端工程，构建后静态资源继续嵌入 Go Gateway，因此生产运行时不需要额外 Node 服务。
 
-> 该方式仅适用于本地开发。生产环境必须改为正式登录会话、统一身份认证与 RBAC。
+主要界面：
+
+- 可收缩侧栏
+- 浅色 / 深色主题
+- 系统健康状态横幅
+- Gateway / PostgreSQL / Redis / ThinkWatch 状态
+- 今日请求、Token、错误、平均延迟、P95、Failover 指标
+- Provider 管理
+- 虚拟模型 + Route Failover 链可视化
+- Tenant 配额和实际用量
+- API Key 管理
+- 请求日志筛选 / 分页 / CSV / 详情 Drawer
+- 管理审计
+- 安全事件
+- 当前身份与认证模式
+
+本地开发 `ADMIN_AUTH_MODE=token` 时，可把 ADMIN_TOKEN 保存到浏览器 localStorage。
+
+> localStorage Token 仅用于本地开发。生产 `trusted-header` 模式由校园 OIDC / oauth2-proxy 等可信反向认证层注入身份，Admin UI 不要求浏览器保存管理员长期 Token。
+
+详见 `docs/ADMIN_UI.md`。
 
 ---
+
+
+### Admin UI v2 构建
+
+本地开发需要 Node.js 22+（仅构建阶段）：
+
+~~~powershell
+npm --prefix .\web\admin install
+npm --prefix .\web\admin run check
+npm --prefix .\web\admin run build
+~~~
+
+日常使用 `scripts/dev.ps1` 时会自动完成前端构建，然后再启动 Go Gateway。
 
 ## 5. Windows 本地开发
 
@@ -404,7 +437,7 @@ cmd/
 
 internal/
 ├── app/                 Server / middleware / Admin API / embedded UI
-│   └── adminui/         内置 Web 管理后台
+│   └── adminui/dist/    Admin UI v2 Vite 构建产物
 ├── httpx/               HTTP 公共能力
 ├── model/               数据结构
 ├── proxy/               ThinkWatch 透明代理
@@ -424,6 +457,9 @@ deploy/
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
 └── nginx/
+
+web/
+└── admin/               React + TypeScript + Vite 管理后台源码
 
 scripts/
 ├── setup.ps1
