@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -68,6 +69,13 @@ func (s *Server) handleThinkWatchSync(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, http.StatusBadRequest, "thinkwatch_config_invalid", err.Error(), reqID)
 		return
+	}
+
+	if strings.TrimSpace(s.cfg.ThinkWatchExe) != "" {
+		if err := validateThinkWatchConfig(s.cfg.ThinkWatchExe, s.cfg.ThinkWatchConfigPath, []byte(rendered)); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "thinkwatch_config_check_failed", err.Error(), reqID)
+			return
+		}
 	}
 
 	backupPath, err := replaceConfigWithBackup(s.cfg.ThinkWatchConfigPath, []byte(rendered))
@@ -332,6 +340,39 @@ func isAnyTopLevelYAMLKey(line string) bool {
 		}
 	}
 	return true
+}
+
+func validateThinkWatchConfig(exePath, configPath string, content []byte) error {
+	if _, err := os.Stat(exePath); err != nil {
+		return fmt.Errorf("twcore executable is unavailable: %w", err)
+	}
+
+	dir := filepath.Dir(configPath)
+	tmp, err := os.CreateTemp(dir, "config.campus-check-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create validation config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write validation config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close validation config: %w", err)
+	}
+
+	cmd := exec.Command(exePath, "--config", tmpPath, "check")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("ThinkWatch rejected generated config: %s", msg)
+	}
+	return nil
 }
 
 func replaceConfigWithBackup(path string, content []byte) (string, error) {
