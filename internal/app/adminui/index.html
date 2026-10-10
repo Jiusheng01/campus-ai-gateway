@@ -58,8 +58,10 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
   </section>
 
   <section id="models" class="page hidden">
-    <div class="toolbar"><h2>模型</h2><button class="primary" onclick="openModel()">新增模型</button></div>
+    <div class="toolbar"><h2>模型</h2><div class="actions" style="margin-top:0"><button class="secondary" onclick="syncThinkWatch()">同步到 ThinkWatch</button><button class="secondary" onclick="openModelTest()">测试模型</button><button class="primary" onclick="openModel()">新增模型</button></div></div>
     <div id="modelForm" class="panel hidden"></div>
+    <div id="modelTest" class="panel hidden"></div>
+    <div id="syncResult"></div>
     <div id="modelTable"></div>
   </section>
 
@@ -134,6 +136,33 @@ async function openModel(v={}){
   f.innerHTML='<div class="formgrid"><label>虚拟模型 Alias<input id="mAlias" value="'+esc(v.alias||'')+'" placeholder="campus-smart"></label><label>Provider<select id="mProvider">'+state.providers.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('')+'</select></label><label class="full">上游模型<input id="mUpstream" value="'+esc(v.upstream_model||'')+'"></label><label>状态<select id="mStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="mSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
   if(v.provider_id)mProvider.value=v.provider_id;mStatus.value=v.status||1;
   mSave.onclick=async()=>{const body={alias:mAlias.value,provider_id:mProvider.value,upstream_model:mUpstream.value,status:+mStatus.value};await api(v.id?'/admin/models/'+v.id:'/admin/models',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});notify('模型已保存');f.classList.add('hidden');loadModels()};
+}
+
+async function syncThinkWatch(){
+  if(!confirm('将数据库中启用的 Provider / Model 同步到 ThinkWatch config.yaml，并自动创建备份。继续吗？'))return;
+  try{
+    const out=await api('/admin/thinkwatch/sync',{method:'POST'});
+    document.getElementById('syncResult').innerHTML='<div class="secret"><b>同步成功</b><br>Provider: '+esc(out.providers)+'，Alias: '+esc(out.aliases)+'<br><span class="muted">配置：'+esc(out.config_path)+'<br>备份：'+esc(out.backup_path)+'</span></div>';
+    notify('ThinkWatch 配置已同步');
+    setTimeout(()=>loadDashboard().catch(()=>{}),1500);
+  }catch(e){notify(e.message)}
+}
+async function openModelTest(){
+  if(!state.models.length){const m=await api('/admin/models');state.models=m.data||[]}
+  const active=state.models.filter(v=>v.status===1);
+  const f=document.getElementById('modelTest');f.classList.remove('hidden');
+  f.innerHTML='<b>模型连通性测试</b><div class="formgrid" style="margin-top:12px"><label>模型<select id="testModel">'+active.map(m=>'<option value="'+esc(m.alias)+'">'+esc(m.alias)+' → '+esc(m.upstream_model)+'</option>').join('')+'</select></label><label class="full">提示词<textarea id="testPrompt" rows="4" style="border:1px solid #d7dce5;border-radius:8px;padding:10px;font:inherit;resize:vertical">请只回复 OK</textarea></label></div><div class="actions"><button class="primary" id="runModelTest">发送测试</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">关闭</button></div><div id="modelTestResult"></div>';
+  document.getElementById('runModelTest').onclick=async()=>{
+    const btn=document.getElementById('runModelTest');btn.disabled=true;btn.textContent='测试中...';
+    try{
+      const out=await api('/admin/model-test',{method:'POST',body:JSON.stringify({model:document.getElementById('testModel').value,prompt:document.getElementById('testPrompt').value})});
+      document.getElementById('modelTestResult').innerHTML='<div class="secret"><b>测试成功</b><br><b>响应：</b> '+esc(out.content||'(空)')+'<br><span class="muted">model='+esc(out.model)+' · tokens='+esc(out.total_tokens)+' · latency='+esc(out.latency_ms)+' ms</span></div>';
+      notify('模型测试成功');
+    }catch(e){
+      document.getElementById('modelTestResult').innerHTML='<div class="secret"><b>测试失败</b><br>'+esc(e.message)+'</div>';
+      notify(e.message);
+    }finally{btn.disabled=false;btn.textContent='发送测试'}
+  };
 }
 async function loadKeys(){
   const [k,t,m]=await Promise.all([api('/admin/api-keys'),api('/admin/tenants'),api('/admin/models')]);state.keys=k.data||[];state.tenants=t.data||[];state.models=m.data||[];
