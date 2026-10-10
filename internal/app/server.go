@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -218,6 +219,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		if status == 0 {
 			status = http.StatusOK
 		}
+		telemetry := parseRouteTelemetry(aw.Header())
+		if telemetry.UpstreamModel == "" && actualModel != "" && actualModel != envelope.Model {
+			telemetry.UpstreamModel = actualModel
+		}
 		log := model.RequestLog{
 			RequestID:      reqID,
 			TenantID:       id.TenantID,
@@ -225,6 +230,11 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			ClientIP:       clientIP(r),
 			RequestedModel: envelope.Model,
 			ActualModel:    actualModel,
+			Provider:       telemetry.Provider,
+			UpstreamModel:  telemetry.UpstreamModel,
+			RoutePriority:  telemetry.RoutePriority,
+			Attempts:       telemetry.Attempts,
+			Failover:       telemetry.Attempts > 1,
 			Stream:         envelope.Stream,
 			InputTokens:    inputTokens,
 			OutputTokens:   outputTokens,
@@ -373,6 +383,27 @@ func parseUsage(body []byte, stream bool) (modelName string, input, output, tota
 		apply(payload)
 	}
 	return
+}
+
+type routeTelemetry struct {
+	Provider      string
+	UpstreamModel string
+	RoutePriority int
+	Attempts      int
+}
+
+func parseRouteTelemetry(h http.Header) routeTelemetry {
+	v := routeTelemetry{
+		Provider:      strings.TrimSpace(h.Get("X-ThinkWatch-Provider")),
+		UpstreamModel: strings.TrimSpace(h.Get("X-ThinkWatch-Upstream-Model")),
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-ThinkWatch-Route-Priority"))); err == nil && n > 0 {
+		v.RoutePriority = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-ThinkWatch-Attempts"))); err == nil && n > 0 {
+		v.Attempts = n
+	}
+	return v
 }
 
 func parseErrorCode(body []byte) string {
