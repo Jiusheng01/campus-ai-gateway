@@ -275,3 +275,40 @@ $env:THINKWATCH_CONFIG_PATH="C:\Users\<user>\AppData\Roaming\ThinkWatch\config.y
 一键开发脚本会自动尝试设置这个路径。Provider 仍然只保存类似 `DASHSCOPE_API_KEY` 的环境变量名，真实厂商 API Key 不写入数据库或管理页面。
 
 同步成功后 ThinkWatch 通常会在约 1 秒内检测配置变更；如果状态仍未恢复，先确认 `twcore.exe serve` 正在运行，并检查对应 Provider 凭据环境变量是否存在于 ThinkWatch 进程环境中。
+
+
+## Windows 一次性开发环境初始化
+
+第一次开发只需要运行一次：
+
+```powershell
+.\scripts\setup.ps1
+```
+
+脚本会自动完成这些事情：
+
+- 检查 Go / Docker
+- 自动查找 `twcore.exe`
+- 保存 `TWCORE_EXE`
+- 设置并校验 ThinkWatch `config.yaml`
+- 自动从本地 ThinkWatch 配置读取 `tw-*` 网关客户端 Key 到当前进程
+- 检查 `DASHSCOPE_API_KEY`，缺少时可用隐藏输入方式保存到 Windows User 环境变量
+- 完成后自动调用 `dev.ps1 -ForceRestart`
+
+如果 ThinkWatch Core 不在常见位置：
+
+```powershell
+.\scripts\setup.ps1 -TwCorePath "D:\AI\ThinkWatch-Core\twcore.exe"
+```
+
+如果只想配置、不立即启动：
+
+```powershell
+.\scripts\setup.ps1 -NoStart
+```
+
+以后日常开发只需要：
+
+```powershell
+.\scripts\dev.ps1
+```
