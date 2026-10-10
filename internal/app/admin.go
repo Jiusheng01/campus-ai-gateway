@@ -96,6 +96,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleModelByID(w, r)
 	case r.URL.Path == "/admin/tenants":
 		s.handleTenants(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/usage"):
+		s.handleTenantUsage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/tenants/"):
 		s.handleTenantByID(w, r)
 	case r.URL.Path == "/admin/api-keys":
@@ -323,6 +325,25 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/tenants/"), "/usage")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	stats, err := s.pg.TenantUsageStats(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant usage could not be loaded", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPut {
@@ -527,6 +548,9 @@ func validateTenant(v *model.Tenant) string {
 	}
 	if v.Status != 1 && v.Status != 2 {
 		return "status must be 1 (enabled) or 2 (disabled)"
+	}
+	if v.DailyTokenLimit < 0 || v.MonthlyTokenLimit < 0 || v.MonthlyRequestLimit < 0 || v.MonthlyBudgetMicros < 0 {
+		return "tenant quota values cannot be negative"
 	}
 	return ""
 }
