@@ -66,6 +66,26 @@ Tenant
 
 The baseline should not be broken by later feature work.
 
+## 2.1 Implementation Status - 2026-10-10
+
+The planned repository-side work has progressed through M4 foundations.
+
+| Area | Repository implementation | Final environment acceptance |
+| --- | --- | --- |
+| M1.5 Route schema / CRUD / Admin UI | Complete | Qwen baseline already verified |
+| M1.5 DeepSeek / multi-provider renderer | Complete | Real DeepSeek credential required |
+| M1.5 Qwen -> DeepSeek failover | Verification script complete | Real dual-provider run pending |
+| M1.6 Route audit | Schema/capture contract complete | Final provider/attempt telemetry bridge pending |
+| M2.0 Security/Admin audit | Complete | Final combined regression pending |
+| M2.1 SSO/RBAC | Gateway trusted-header/RBAC complete | University IdP integration pending |
+| M2.2 TPM/Tenant quota | Reserve/reconcile + Redis tenant enforcement complete | Final quota scenarios pending |
+| M2.3 Admin UI productization | Complete for planned current scope | Browser regression pending |
+| M3.0 Performance/prod tooling | k6/health/readiness/HTTPS guidance complete | 30,000 RPM benchmark pending |
+| M3.1 HA/monitoring | Metrics/Prometheus/HA guidance complete | Infrastructure failover pending |
+| M4.0 Model-service foundation | Embedding + multipart ASR gateway foundation complete | Real provider calls pending |
+
+“Complete” in the middle column means code/tooling is present in the repository and CI-covered where applicable. It does **not** convert external/provider/infrastructure acceptance into a claimed pass.
+
 ## 3. Milestones
 
 | Milestone | Goal | Priority |
@@ -542,11 +562,21 @@ M3       30,000 RPM benchmark + production hardening
 
 ## 18. Next Task
 
-The next development task is fixed as:
+The next task is no longer another foundation feature. It is the consolidated final-environment acceptance:
 
 ```text
-M1.5-01
-migrations/0003_model_routes.sql
+docs/FINAL_ACCEPTANCE.md
 ```
 
-Do not start DeepSeek or UI route work before the route data model and migration are agreed and merged.
+Priority acceptance items:
+
+1. DeepSeek real request.
+2. Qwen -> DeepSeek real failover.
+3. ThinkWatch actual route telemetry bridge/verification.
+4. University SSO + RBAC.
+5. Tenant quota regression.
+6. Embedding / ASR real provider validation where required.
+7. Multi-instance / PostgreSQL / Redis HA exercise.
+8. 30,000 RPM ~= 500 RPS repeatable benchmark report.
+
+Do not mark environment-dependent requirements complete until those tests produce evidence.
