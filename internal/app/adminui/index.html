@@ -62,6 +62,8 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
   <section id="models" class="page hidden">
     <div class="toolbar"><h2>模型</h2><div class="actions" style="margin-top:0"><button class="secondary" onclick="syncThinkWatch()">同步到 ThinkWatch</button><button class="secondary" onclick="openModelTest()">测试模型</button><button class="primary" onclick="openModel()">新增模型</button></div></div>
     <div id="modelForm" class="panel hidden"></div>
+    <div id="routePanel" class="panel hidden"></div>
+    <div id="routeForm" class="panel hidden"></div>
     <div id="modelTest" class="panel hidden"></div>
     <div id="syncResult"></div>
     <div id="modelTable"></div>
@@ -88,7 +90,7 @@ table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;ove
 </div>
 <div id="flash" class="flash"></div>
 <script>
-const state={providers:[],models:[],tenants:[],keys:[]};
+const state={providers:[],models:[],tenants:[],keys:[],routes:[],routeModel:null};
 const tokenInput=document.getElementById('adminToken');
 tokenInput.value=localStorage.getItem('campus_admin_token')||sessionStorage.getItem('campus_admin_token')||'';
 if(tokenInput.value){localStorage.setItem('campus_admin_token',tokenInput.value);sessionStorage.removeItem('campus_admin_token');}
@@ -142,8 +144,8 @@ function openProvider(v={}){
 }
 async function loadModels(){
   const [m,p]=await Promise.all([api('/admin/models'),api('/admin/providers')]);state.models=m.data||[];state.providers=p.data||[];
-  document.getElementById('modelTable').innerHTML='<table><thead><tr><th>虚拟模型</th><th>Provider</th><th>上游模型</th><th>状态</th><th></th></tr></thead><tbody>'+
-  state.models.map(v=>'<tr><td><b>'+esc(v.alias)+'</b></td><td>'+esc(v.provider_name)+'</td><td>'+esc(v.upstream_model)+'</td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick=\'openModel('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
+  document.getElementById('modelTable').innerHTML='<table><thead><tr><th>虚拟模型</th><th>主 Provider</th><th>主上游模型</th><th>状态</th><th>线路</th><th></th></tr></thead><tbody>'+
+  state.models.map((v,i)=>'<tr><td><b>'+esc(v.alias)+'</b></td><td>'+esc(v.provider_name)+'</td><td>'+esc(v.upstream_model)+'</td><td>'+(v.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><button class="secondary" onclick="openRoutes('+i+')">管理线路</button></td><td><button class="secondary" onclick=\'openModel('+JSON.stringify(v).replace(/'/g,"&#39;")+')\'>编辑</button></td></tr>').join('')+'</tbody></table>';
 }
 async function openModel(v={}){
   if(!state.providers.length){const p=await api('/admin/providers');state.providers=p.data||[]}
@@ -151,6 +153,50 @@ async function openModel(v={}){
   f.innerHTML='<div class="formgrid"><label>虚拟模型 Alias<input id="mAlias" value="'+esc(v.alias||'')+'" placeholder="campus-smart"></label><label>Provider<select id="mProvider">'+state.providers.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('')+'</select></label><label class="full">上游模型<input id="mUpstream" value="'+esc(v.upstream_model||'')+'"></label><label>状态<select id="mStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="mSave">保存</button><button class="secondary" onclick="this.closest(\'.panel\').classList.add(\'hidden\')">取消</button></div>';
   if(v.provider_id)mProvider.value=v.provider_id;mStatus.value=v.status||1;
   mSave.onclick=async()=>{const body={alias:mAlias.value,provider_id:mProvider.value,upstream_model:mUpstream.value,status:+mStatus.value};await api(v.id?'/admin/models/'+v.id:'/admin/models',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});notify('模型已保存');f.classList.add('hidden');loadModels()};
+}
+
+async function openRoutes(modelIndex){
+  const v=state.models[modelIndex];
+  if(!v)return;
+  state.routeModel=v;
+  const d=await api('/admin/models/'+v.id+'/routes');
+  state.routes=d.data||[];
+  const p=document.getElementById('routePanel');p.classList.remove('hidden');
+  document.getElementById('routeForm').classList.add('hidden');
+  p.innerHTML='<div class="toolbar" style="margin:0 0 12px"><h2>'+esc(v.alias)+' · Provider 线路</h2><div class="actions" style="margin-top:0"><button class="primary" onclick="openRouteEditor()">新增线路</button><button class="secondary" onclick="closeRoutes()">关闭</button></div></div>'+
+  '<p class="muted">优先级数字越小越优先；相同优先级按权重用于后续路由策略。当前主线路会自动同步到旧 Model 字段保持兼容。</p>'+
+  '<table><thead><tr><th>Provider</th><th>上游模型</th><th>优先级</th><th>权重</th><th>超时</th><th>状态</th><th></th></tr></thead><tbody>'+
+  state.routes.map((r,i)=>'<tr><td><b>'+esc(r.provider_name)+'</b></td><td>'+esc(r.upstream_model)+'</td><td>'+r.priority+'</td><td>'+r.weight+'</td><td>'+r.timeout_ms+' ms</td><td>'+(r.status===1?'<span class="tag oktag">启用</span>':'<span class="tag badtag">停用</span>')+'</td><td><div class="actions" style="margin:0"><button class="secondary" onclick="openRouteEditor('+i+')">编辑</button><button class="danger" onclick="deleteRoute('+i+')">删除</button></div></td></tr>').join('')+
+  '</tbody></table>';
+}
+function closeRoutes(){
+  document.getElementById('routePanel').classList.add('hidden');
+  document.getElementById('routeForm').classList.add('hidden');
+  state.routes=[];state.routeModel=null;
+}
+async function openRouteEditor(routeIndex){
+  if(!state.routeModel)return;
+  if(!state.providers.length)state.providers=(await api('/admin/providers')).data||[];
+  const v=Number.isInteger(routeIndex)?state.routes[routeIndex]:{};
+  const f=document.getElementById('routeForm');f.classList.remove('hidden');
+  f.innerHTML='<b>'+(v.id?'编辑线路':'新增线路')+'</b><div class="formgrid" style="margin-top:12px"><label>Provider<select id="rProvider">'+state.providers.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('')+'</select></label><label>上游模型<input id="rUpstream" value="'+esc(v.upstream_model||'')+'" placeholder="deepseek-chat"></label><label>优先级<input id="rPriority" type="number" min="1" value="'+(v.priority||1)+'"></label><label>权重<input id="rWeight" type="number" min="0" value="'+(v.weight??100)+'"></label><label>超时(ms)<input id="rTimeout" type="number" min="1" value="'+(v.timeout_ms||60000)+'"></label><label>状态<select id="rStatus"><option value="1">启用</option><option value="2">停用</option></select></label></div><div class="actions"><button class="primary" id="rSave">保存线路</button><button class="secondary" onclick="document.getElementById(\'routeForm\').classList.add(\'hidden\')">取消</button></div>';
+  if(v.provider_id)document.getElementById('rProvider').value=v.provider_id;
+  document.getElementById('rStatus').value=v.status||1;
+  document.getElementById('rSave').onclick=async()=>{
+    const body={provider_id:document.getElementById('rProvider').value,upstream_model:document.getElementById('rUpstream').value,priority:+document.getElementById('rPriority').value,weight:+document.getElementById('rWeight').value,timeout_ms:+document.getElementById('rTimeout').value,status:+document.getElementById('rStatus').value};
+    await api(v.id?'/admin/model-routes/'+v.id:'/admin/models/'+state.routeModel.id+'/routes',{method:v.id?'PUT':'POST',body:JSON.stringify(body)});
+    notify('模型线路已保存');f.classList.add('hidden');
+    await openRoutes(state.models.findIndex(x=>x.id===state.routeModel.id));
+    await loadModels();
+  };
+}
+async function deleteRoute(routeIndex){
+  const v=state.routes[routeIndex];
+  if(!v||!confirm('确认删除 '+v.provider_name+' → '+v.upstream_model+' 线路吗？'))return;
+  await api('/admin/model-routes/'+v.id,{method:'DELETE'});
+  notify('模型线路已删除');
+  await openRoutes(state.models.findIndex(x=>x.id===state.routeModel.id));
+  await loadModels();
 }
 
 async function syncThinkWatch(){
