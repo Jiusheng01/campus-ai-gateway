@@ -4,7 +4,7 @@
 
 本项目定位在校园 AI 平台的 **模型网关 / 模型路由 / 访问控制 / 审计** 层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入 Qwen 等模型服务，并在 Go Gateway 中承担租户、Virtual API Key、配额、模型权限与请求审计。
 
-> 当前状态：**M0 已完成端到端真实链路验收，M1 控制面与管理后台已可用。**
+> 当前状态：**M0/M1 基线已真实验收；M1.5～M4 的网关侧实现、管理面、审计、SSO/RBAC 接入边界、配额、监控与压测工具已进入代码基线。真实 DeepSeek/Failover、学校 IdP、HA 与 30,000 RPM 仍需最终环境统一验收。**
 >
 > 已真实验证：Virtual Key → Go Gateway → ThinkWatch Core → 阿里百炼 Qwen → Token Usage → PostgreSQL 审计日志。
 
@@ -412,7 +412,11 @@ internal/
 
 migrations/
 ├── 0001_init.sql
-└── 0002_management.sql
+├── 0002_management.sql
+├── 0003_model_routes.sql
+├── 0004_route_audit.sql
+├── 0005_security_events.sql
+└── 0006_quota.sql
 
 deploy/
 ├── docker-compose.yml
@@ -526,3 +530,68 @@ Provider API Key 推荐通过环境变量、Secret Manager、KMS / Vault 管理�
 当前最重要的下一步：
 
 > **多 Provider 绑定 → 优先级 → Failover → 实际路由审计 → 30,000 RPM 目标压测。**
+
+---
+
+## 15. 2026-10-10 Roadmap 实现更新
+
+当前代码已经继续完成了原 Development Plan 的主要网关侧工作：
+
+- **M1.5 多 Provider 控制面**：`gateway_model_route`、Route CRUD、Admin Route UI、DeepSeek Provider preset、ThinkWatch 多 Provider route renderer、可恢复的 Qwen -> DeepSeek Failover 验证脚本。
+- **M1.6 路由审计**：新增 `upstream_model / route_priority / attempts / failover`。Gateway 支持 ThinkWatch route telemetry Header 采集契约；当前 ThinkWatch Core 版本未提供普通 HTTP Header 形式的最终路由事实时，字段保持 unknown，不会猜测实际 Provider。
+- **M2.0 安全与管理审计**：`gateway_admin_audit_log`、`gateway_security_event`，业务请求日志与管理员操作分离。
+- **M2.1 SSO/RBAC**：保留本地 `ADMIN_TOKEN` 开发模式；生产支持 trusted-header，推荐由成熟 `oauth2-proxy`/等价 OIDC 组件负责学校登录与 Session，Gateway 负责角色授权。角色包括 `super_admin / gateway_admin / tenant_admin / auditor / operator`。
+- **M2.2 配额**：API Key TPM 已从纯预占升级为 `estimate -> reserve -> actual usage -> reconcile`；Tenant 支持月请求、日/月 Token Redis 共享配额与实际 usage 对账；金额预算字段仅用于配置/报表，不在缺少权威价格与实际 Route telemetry 时猜测扣费。
+- **M2.3 Admin UI**：Dashboard P95/Failover/Provider 指标、Route 管理、Tenant quota/用量、请求日志筛选/分页/CSV、管理审计、安全事件。
+- **M3.0/M3.1**：`/healthz`、`/readyz`、`/metrics`，Prometheus 配置、HTTPS 双 Gateway Nginx 示例、k6 500 RPS 压测脚本和生产/HA 指南。**这不等于 30,000 RPM 已通过，必须在目标环境实测。**
+- **M4.0 基础**：`/v1/embeddings` 继续走虚拟模型权限与透明代理；`/v1/audio/transcriptions` 增加 multipart model 解析/授权/透明代理基础。真实 Embedding/ASR Provider 仍需最终环境验收。
+
+### 多 Provider Route API
+
+- `GET /admin/models/{model_id}/routes`
+- `POST /admin/models/{model_id}/routes`
+- `PUT /admin/model-routes/{route_id}`
+- `DELETE /admin/model-routes/{route_id}`
+
+Route 修改会事务化同步 legacy 主绑定，且禁止删除最后一条 Route、禁止停用/删除最后一条启用 Route。真正的 Failover/Circuit Breaker 继续由 ThinkWatch Core 执行，不在 Go Gateway 再造一套路由引擎。
+
+### DeepSeek
+
+Admin UI 已提供 DeepSeek preset：`https://api.deepseek.com/v1` + `openai-chat` + `DEEPSEEK_API_KEY`。代码不保存真实厂商密钥。真实 DeepSeek Key 与真实请求属于最终统一验收。
+
+### SSO / RBAC
+
+生产建议：`Campus IdP -> oauth2-proxy -> Campus AI Gateway trusted-header -> RBAC`。详情见 `docs/SSO_RBAC.md`。本地开发仍可使用 `ADMIN_AUTH_MODE=token`。
+
+### 配额
+
+Tenant 支持 `daily_token_limit / monthly_token_limit / monthly_request_limit / monthly_budget_micros`。Token 通过 Redis 预占并使用最终 usage 对账；没有可信 usage 时保留估算。详情见 `docs/QUOTAS.md`。
+
+### 运维与压测
+
+- `GET /healthz`：进程存活
+- `GET /readyz`：PostgreSQL + Redis readiness
+- `GET /metrics`：Prometheus text metrics
+- `loadtest/k6-models.js`
+- `loadtest/k6-chat.js`
+- `docs/PERFORMANCE_TEST.md`
+- `docs/PRODUCTION.md`
+
+30,000 RPM ~= 500 RPS 只有在代表性生产拓扑记录实际 RPS、P50/P95/P99、错误率、CPU、内存、Redis、PostgreSQL、ThinkWatch 数据后才能标记通过。
+
+### 最终统一验收入口
+
+开发阶段不再要求逐项人工测试。最终一次性验收请按：`docs/FINAL_ACCEPTANCE.md`。
+
+仍然必须在真实环境完成的项目：
+
+1. DeepSeek 真实凭据和调用；
+2. Qwen -> DeepSeek 真实 Failover；
+3. ThinkWatch 最终 Provider/attempt telemetry bridge；
+4. 学校真实 IdP 登录和各角色 RBAC；
+5. Tenant quota 组合场景；
+6. Multi-Gateway / PostgreSQL / Redis HA 故障切换；
+7. Embedding / ASR 真实 Provider；
+8. 30,000 RPM 性能验收。
+
+相关新增文档：`docs/OPEN_SOURCE_REUSE.md`、`docs/FAILOVER_TEST.md`、`docs/SSO_RBAC.md`、`docs/QUOTAS.md`、`docs/PERFORMANCE_TEST.md`、`docs/PRODUCTION.md`、`docs/MODEL_SERVICES.md`、`docs/FINAL_ACCEPTANCE.md`。
