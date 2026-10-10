@@ -137,6 +137,8 @@ func (s *Server) routes() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
+	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
+	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
 }
 
@@ -178,4 +180,3 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		allowed := make(map[string]struct{}, len(k.AllowedModels))
 		for _, m := range k.AllowedModels {
-			allowed[m] = struct{}{}
