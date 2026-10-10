@@ -162,6 +162,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		reqID := r.Header.Get("X-Request-Id")
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: clientIP(r), Detail: "missing bearer token"})
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Missing bearer token", reqID)
 			return
 		}
@@ -169,14 +170,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		plain := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		k, err := s.pg.FindAPIKeyByDigest(r.Context(), security.Digest(s.cfg.KeyHMACSecret, plain))
 		if err != nil || k.Status != 1 {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: clientIP(r), Detail: "unknown or disabled key"})
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key", reqID)
 			return
 		}
 		if k.ExpireAt != nil && time.Now().After(*k.ExpireAt) {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "api_key_expired", ClientIP: clientIP(r)})
 			httpx.Error(w, http.StatusUnauthorized, "api_key_expired", "API key expired", reqID)
 			return
 		}
 		if len(k.AllowedIPs) > 0 && !ipAllowed(clientIP(r), k.AllowedIPs) {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "ip_forbidden", ClientIP: clientIP(r)})
 			httpx.Error(w, http.StatusForbidden, "ip_not_allowed", "Client IP is not allowed", reqID)
 			return
 		}
@@ -250,6 +254,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 
 	allowed, err := s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
 	if err != nil || !allowed {
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: clientIP(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
 		return
 	}
@@ -291,6 +296,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	reserveAmount := estimateTPM(body, envelope)
 	reservation, allowed, err := s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
 		return
 	}
@@ -298,6 +304,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	release, allowed, err := s.limit.AcquireConcurrency(r.Context(), id.APIKeyID, id.MaxConcurrency)
 	if err != nil || !allowed {
 		_ = reservation.Refund(r.Context())
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
 		return
 	}
@@ -439,6 +446,12 @@ func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func (s *Server) recordSecurityEvent(r *http.Request, event model.SecurityEvent) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.pg.InsertSecurityEvent(ctx, event)
 }
 
 func clientIP(r *http.Request) string {
