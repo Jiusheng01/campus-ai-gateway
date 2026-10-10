@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -12,6 +13,25 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 )
+
+type adminAuditResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *adminAuditResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *adminAuditResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +48,25 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		got := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) != 1 {
 			httpx.Error(w, http.StatusUnauthorized, "invalid_admin_token", "Invalid admin token", reqID)
+			return
+		}
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			aw := &adminAuditResponseWriter{ResponseWriter: w}
+			next.ServeHTTP(aw, r)
+			status := aw.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
+				RequestID: reqID,
+				Actor: "admin_token",
+				Action: r.Method,
+				Resource: r.URL.Path,
+				StatusCode: status,
+				ClientIP: clientIP(r),
+			})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -60,6 +99,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeyByID(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
+	case r.URL.Path == "/admin/admin-audit":
+		s.handleAdminAuditLogs(w, r)
+	case r.URL.Path == "/admin/security-events":
+		s.handleSecurityEvents(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -349,6 +392,44 @@ func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	items, err := s.pg.ListAdminAudit(r.Context(), parseAdminLimit(r))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list admin audit logs", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func (s *Server) handleSecurityEvents(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	items, err := s.pg.ListSecurityEvents(r.Context(), parseAdminLimit(r))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list security events", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func parseAdminLimit(r *http.Request) int {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	return limit
 }
 
 func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
