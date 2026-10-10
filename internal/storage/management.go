@@ -367,9 +367,11 @@ SELECT
 	COUNT(*)::bigint,
 	COALESCE(SUM(total_tokens),0)::bigint,
 	COUNT(*) FILTER (WHERE status_code >= 400)::bigint,
-	COALESCE(AVG(latency_ms),0)::float8
+	COALESCE(AVG(latency_ms),0)::float8,
+	COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::float8,
+	COUNT(*) FILTER (WHERE COALESCE(failover,false))::bigint
 FROM gateway_request_log
 WHERE created_at >= date_trunc('day', NOW())
-`).Scan(&v.TodayRequests, &v.TodayTokens, &v.TodayErrors, &v.AvgLatencyMS)
+`).Scan(&v.TodayRequests, &v.TodayTokens, &v.TodayErrors, &v.AvgLatencyMS, &v.P95LatencyMS, &v.FailoverCount)
 	return v, err
 }
