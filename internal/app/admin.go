@@ -44,6 +44,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleProviderByID(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):
+		s.handleModelRoutes(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/model-routes/"):
+		s.handleModelRouteByID(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/"):
 		s.handleModelByID(w, r)
 	case r.URL.Path == "/admin/tenants":
