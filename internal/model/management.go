@@ -40,10 +40,22 @@ type ModelRoute struct {
 }
 
 type Tenant struct {
-	ID     string `json:"id"`
-	Code   string `json:"code"`
-	Name   string `json:"name"`
-	Status int    `json:"status"`
+	ID                  string `json:"id"`
+	Code                string `json:"code"`
+	Name                string `json:"name"`
+	Status              int    `json:"status"`
+	DailyTokenLimit     int64  `json:"daily_token_limit"`
+	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
+	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
+	MonthlyBudgetMicros int64  `json:"monthly_budget_micros"`
+}
+
+type TenantUsageStats struct {
+	TenantID       string `json:"tenant_id"`
+	DailyRequests  int64  `json:"daily_requests"`
+	MonthlyRequests int64 `json:"monthly_requests"`
+	DailyTokens    int64  `json:"daily_tokens"`
+	MonthlyTokens  int64  `json:"monthly_tokens"`
 }
 
 type APIKeyAdmin struct {
