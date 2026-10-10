@@ -230,6 +230,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			TPMLimit:       k.TPMLimit,
 			MaxConcurrency: k.MaxConcurrency,
 			RouteGroup:     k.RouteGroup,
+			DailyTokenLimit: k.DailyTokenLimit,
+			MonthlyTokenLimit: k.MonthlyTokenLimit,
+			MonthlyRequestLimit: k.MonthlyRequestLimit,
 		}
 
 		s.pg.TouchAPIKey(r.Context(), k.ID)
@@ -250,6 +253,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	aw := &auditResponseWriter{ResponseWriter: w}
 	var envelope requestEnvelope
 	var reservation *ratelimit.TPMReservation
+	var tenantReservation *ratelimit.TenantQuotaReservation
 	defer func() {
 		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
 		status := aw.status
@@ -282,13 +286,25 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if reservation != nil && totalTokens > 0 {
-			_ = reservation.Reconcile(ctx, totalTokens)
+		if totalTokens > 0 {
+			if reservation != nil {
+				_ = reservation.Reconcile(ctx, totalTokens)
+			}
+			if tenantReservation != nil {
+				_ = tenantReservation.Reconcile(ctx, totalTokens)
+			}
 		}
 		_ = s.pg.InsertRequestLog(ctx, log)
 	}()
 
-	allowed, err := s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
+	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
+	if err != nil || !allowed {
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: clientIP(r)})
+		httpx.Error(aw, http.StatusTooManyRequests, "tenant_request_quota_exceeded", "Tenant monthly request quota exceeded", reqID)
+		return
+	}
+
+	allowed, err = s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
 	if err != nil || !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: clientIP(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
@@ -330,14 +346,22 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 	if envelope.Model != "" && len(id.AllowedModels) > 0 {
 		if _, ok := id.AllowedModels[envelope.Model]; !ok {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
 			return
 		}
 	}
 
 	reserveAmount := estimateTPM(body, envelope)
+	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
+	if err != nil || !allowed {
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
+		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
+		return
+	}
 	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
+		_ = tenantReservation.Refund(r.Context())
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
 		return
@@ -346,6 +370,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	release, allowed, err := s.limit.AcquireConcurrency(r.Context(), id.APIKeyID, id.MaxConcurrency)
 	if err != nil || !allowed {
 		_ = reservation.Refund(r.Context())
+		_ = tenantReservation.Refund(r.Context())
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
 		return
