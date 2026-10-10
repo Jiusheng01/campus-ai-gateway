@@ -24,6 +24,21 @@ type ModelConfig struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+type ModelRoute struct {
+	ID            string    `json:"id"`
+	ModelID       string    `json:"model_id"`
+	ModelAlias    string    `json:"model_alias"`
+	ProviderID    string    `json:"provider_id"`
+	ProviderName  string    `json:"provider_name"`
+	UpstreamModel string    `json:"upstream_model"`
+	Priority      int       `json:"priority"`
+	Weight        int       `json:"weight"`
+	TimeoutMS     int       `json:"timeout_ms"`
+	Status        int       `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type Tenant struct {
 	ID     string `json:"id"`
 	Code   string `json:"code"`
