@@ -1,74 +1,116 @@
-# Production Deployment and HA
+# 生产部署与高可用
 
-## Edge
+## 1. 边缘入口
 
-Terminate HTTPS at a managed load balancer or Nginx. Keep SSE buffering disabled and use long upstream read timeouts. Do not expose PostgreSQL, Redis, ThinkWatch control ports or Gateway admin ports directly to the public Internet.
+HTTPS 应在托管负载均衡器或 Nginx 上终止。
 
-## Gateway
+要求：
 
-Run at least two stateless Gateway instances behind the load balancer. Shared state belongs in PostgreSQL and Redis.
+- SSE 禁止代理缓冲
+- 上游读取超时应足够长
+- PostgreSQL、Redis、ThinkWatch 控制端口和 Gateway 管理端口不要直接暴露到公网
 
-Endpoints:
+## 2. Gateway
 
-- `/healthz` - process liveness
-- `/readyz` - PostgreSQL + Redis readiness
-- `/metrics` - Prometheus text exposition for Gateway business metrics
+生产建议至少运行两个无状态 Gateway 实例，并置于负载均衡器之后。
 
-Graceful SIGINT/SIGTERM shutdown is enabled with a 10-second drain window. Streaming workloads may require a larger orchestration termination grace period than the process shutdown timeout.
+共享状态放在：
 
-## Secrets
+- PostgreSQL
+- Redis
 
-Production values must come from the deployment secret mechanism, not committed files:
+健康检查：
+
+- `/healthz`：进程存活
+- `/readyz`：PostgreSQL + Redis 就绪
+- `/metrics`：Prometheus 文本格式业务指标
+
+程序已支持 SIGINT/SIGTERM 优雅退出，并提供 10 秒 Shutdown 窗口。
+
+对于长时间 SSE 连接，容器编排平台的 termination grace period 可能需要设置得更长。
+
+## 3. Secret
+
+生产环境的敏感配置必须来自 Secret 管理机制，而不是提交到仓库：
 
 - `API_KEY_HMAC_SECRET`
 - `ADMIN_PROXY_SECRET`
-- PostgreSQL / Redis credentials
+- PostgreSQL / Redis 凭据
 - `THINKWATCH_GATEWAY_KEY`
 - `DASHSCOPE_API_KEY`
 - `DEEPSEEK_API_KEY`
-- campus OIDC client secret (owned by the reverse-auth component)
+- 校园 OIDC Client Secret
 
-Kubernetes Secret, Vault or the organization's KMS/secret manager are preferred.
+推荐：
 
-## PostgreSQL
+- Kubernetes Secret
+- Vault
+- KMS / Secret Manager
 
-Recommended production baseline:
+## 4. PostgreSQL
 
-- managed PostgreSQL or primary + standby
-- automated backups + point-in-time recovery
-- connection pooling
-- TLS in transit
-- tested restore procedure
-- monitor connection saturation and slow queries
+推荐生产基线：
 
-## Redis
+- 托管 PostgreSQL，或 Primary + Standby
+- 自动备份
+- Point-in-time Recovery
+- 连接池
+- TLS
+- 已验证的恢复流程
+- 监控连接数、连接耗尽和慢查询
 
-Recommended production baseline:
+## 5. Redis
 
-- managed HA Redis / Sentinel / cluster according to organizational standard
-- authentication and TLS
-- no public exposure
-- persistence policy chosen for rate/quota semantics
-- monitor memory, evictions, latency and reconnects
+推荐生产基线：
 
-## ThinkWatch
+- 托管 HA Redis / Sentinel / Cluster
+- 认证与 TLS
+- 不对公网开放
+- 根据限流/配额语义选择持久化策略
+- 监控内存、Eviction、延迟和重连
 
-ThinkWatch Core remains the runtime routing/failover/circuit-breaker engine. Keep its control interface on a management network. Campus Gateway sync writes must continue to pass `twcore check` before replacement.
+## 6. ThinkWatch
 
-## Monitoring
+ThinkWatch Core 继续作为运行时：
 
-Prometheus can scrape `/metrics`. A starter configuration is in `deploy/monitoring/prometheus.yml`.
+- Routing
+- Failover
+- Circuit Breaker
 
-Alert at minimum on:
+控制接口应放在管理网络。
 
-- readiness failure
-- elevated HTTP error rate
-- P95/P99 latency
-- failover spikes
-- Redis/PostgreSQL unavailability
-- provider health/circuit-open signals from ThinkWatch
-- disk/backup failures
+Campus Gateway 每次写入 ThinkWatch 配置前仍必须通过 `twcore check`，校验成功后再替换正式配置。
 
-## HA status
+## 7. 监控
 
-The repository contains the stateless Gateway design, health/readiness endpoints and deployment guidance. Actual PostgreSQL/Redis/load-balancer failover remains an infrastructure acceptance test and must not be claimed as verified until tested in the target environment.
+Prometheus 可抓取 `/metrics`。
+
+示例配置：
+
+```text
+deploy/monitoring/prometheus.yml
+```
+
+至少应对以下情况告警：
+
+- Readiness 失败
+- HTTP 错误率升高
+- P95 / P99 延迟升高
+- Failover 次数异常增加
+- Redis / PostgreSQL 不可用
+- ThinkWatch Provider Health / Circuit Open
+- 磁盘或备份失败
+
+## 8. HA 当前状态
+
+仓库已经提供：
+
+- 无状态 Gateway 设计
+- Liveness / Readiness
+- Prometheus 指标
+- 双 Gateway HTTPS Nginx 示例
+- PostgreSQL / Redis / LB 高可用建议
+
+但真正的 PostgreSQL / Redis / Load Balancer 故障切换仍属于基础设施验收项。
+
+在目标环境实际测试之前，不应宣称 HA 已通过生产验证。

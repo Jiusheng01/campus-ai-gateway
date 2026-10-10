@@ -1,8 +1,8 @@
-# Final Acceptance Checklist
+# 最终统一验收清单
 
-This checklist is intentionally the point where the project owner performs the consolidated manual/environment validation. Development-time CI and static checks happen before this stage.
+本文档用于项目负责人在开发阶段完成后，进行一次性的人工/环境验收。开发过程中的 CI、单元测试、Build 和静态检查应在此之前完成。
 
-## 1. Update and start
+## 1. 更新并启动
 
 ```powershell
 cd D:\AI\campus-ai-gateway
@@ -11,41 +11,41 @@ git pull
 .\scripts\dev.ps1 -ForceRestart
 ```
 
-Expected:
+预期：
 
-- PostgreSQL ready
-- Redis ready
-- Campus Gateway ready
-- ThinkWatch Core ready
-- Admin UI opens
-- migrations 0001 through 0006 replay without error
+- PostgreSQL 正常
+- Redis 正常
+- Campus Gateway 正常
+- ThinkWatch Core 正常
+- Admin UI 可以打开
+- migration 0001～0006 可以重复执行且无错误
 
-## 2. Baseline Qwen regression
+## 2. Qwen 基线回归
 
-Using an existing `sk-campus-*` key authorized for `campus-smart`:
+使用一个已经授权 `campus-smart` 的 `sk-campus-*` Key 验证：
 
-- GET `/v1/models` returns the virtual alias only
-- non-streaming chat returns HTTP 200 and usage
-- SSE chat streams without buffering
-- request log contains request ID, tokens, latency and status
-- RPM / TPM / concurrency / model / IP denials still behave as expected
+- GET `/v1/models` 只返回允许的虚拟模型
+- 非流式 Chat 返回 HTTP 200 和 usage
+- SSE Chat 可以持续流式返回，不被 Gateway 缓冲
+- Request Log 包含 Request ID、Token、延迟和状态
+- RPM / TPM / 最大并发 / 模型权限 / IP 权限拒绝行为仍符合预期
 
-## 3. Multi-provider route setup
+## 3. 多 Provider Route 配置
 
-In Admin UI:
+在 Admin UI 中：
 
-1. Add/confirm Qwen Provider.
-2. Use “添加 DeepSeek” and ensure `DEEPSEEK_API_KEY` is present in the ThinkWatch process environment.
-3. Open `campus-smart -> 管理线路`.
-4. Configure:
-   - Qwen priority 1
-   - DeepSeek `deepseek-chat` priority 2
-5. Synchronize to ThinkWatch.
-6. Run model test.
+1. 添加或确认 Qwen Provider。
+2. 使用“添加 DeepSeek”，并确认 ThinkWatch 运行进程环境中存在 `DEEPSEEK_API_KEY`。
+3. 打开 `campus-smart -> 管理线路`。
+4. 配置：
+   - Qwen：priority = 1
+   - DeepSeek：`deepseek-chat`，priority = 2
+5. 点击同步到 ThinkWatch。
+6. 执行模型测试。
 
-## 4. Real failover
+## 4. 真实 Failover
 
-Set a valid business key for the test:
+设置可用的业务 Key：
 
 ```powershell
 $env:ADMIN_TOKEN = "<admin-token>"
@@ -53,138 +53,186 @@ $env:CAMPUS_API_KEY = "sk-campus-..."
 .\scripts\verify-failover.ps1 -Execute
 ```
 
-Expected:
+期望输出：
 
 ```text
 [PASS] Primary was unreachable and the virtual-model request still succeeded.
 [OK] Primary provider restored.
 ```
 
-If this passes, M1.5 real Qwen -> DeepSeek failover can be marked environment-verified.
+如果通过，可把 M1.5 的 Qwen → DeepSeek 真实故障转移标记为“环境已验证”。
 
-## 5. Route audit
+## 5. Route Audit
 
-Confirm request logs expose:
+确认请求日志能够展示：
 
-- requested_model
-- actual_model
-- provider
-- upstream_model
-- route_priority
-- attempts
-- failover
-- tokens / latency / status
+- `requested_model`
+- `actual_model`
+- `provider`
+- `upstream_model`
+- `route_priority`
+- `attempts`
+- `failover`
+- Token / latency / status
 
-Important: the current ThinkWatch Core version inspected does not expose final route facts as normal HTTP response headers. Provider/attempt fields are populated only when a compatible telemetry bridge/header contract is present. Empty provider/attempt fields are not a Gateway failure and must not be replaced by guessed values.
+注意：当前检查到的 ThinkWatch Core 版本没有通过普通 HTTP Response Header 暴露最终 Route 事实。
 
-## 6. Security and admin audit
+因此：
 
-Trigger:
+- 只有在兼容的 Telemetry Bridge / Header 契约存在时，Provider / Attempts 等字段才会有实际值。
+- 如果为空，不代表 Gateway 本身失败。
+- 不允许用“计划路由”猜测或伪造“实际路由”。
 
-- invalid API key
-- expired/disabled key if available
-- model forbidden
-- IP forbidden
-- RPM / TPM / concurrency denial
-- tenant request/token quota denial
+## 6. Security Event 与 Admin Audit
 
-Check “安全事件”.
+主动触发：
 
-Perform Provider/Model/Route/Tenant/API Key changes and ThinkWatch sync. Check “管理审计”.
+- 无效 API Key
+- 过期/禁用 Key
+- 模型越权
+- IP 越权
+- RPM 超限
+- TPM 超限
+- 最大并发超限
+- Tenant 月请求配额超限
+- Tenant 日/月 Token 配额超限
+
+检查 Admin UI 的“安全事件”。
+
+然后执行以下管理操作：
+
+- 修改 Provider
+- 修改 Model
+- 修改 Route
+- 修改 Tenant
+- 修改 API Key
+- 同步 ThinkWatch
+
+检查“管理审计”。
 
 ## 7. SSO / RBAC
 
-Development mode:
+开发模式：
 
 ```text
 ADMIN_AUTH_MODE=token
 ```
 
-Production acceptance should run behind the university OIDC reverse-auth layer:
+生产验收应置于学校 OIDC 认证层之后：
 
 ```text
-Campus IdP -> oauth2-proxy -> Gateway trusted-header RBAC
+Campus IdP
+  -> oauth2-proxy
+  -> Gateway trusted-header
+  -> RBAC
 ```
 
-Verify each role:
+分别验证：
 
-- super_admin
-- gateway_admin
-- tenant_admin
-- auditor
-- operator
+- `super_admin`
+- `gateway_admin`
+- `tenant_admin`
+- `auditor`
+- `operator`
 
-Also verify direct access that bypasses the trusted proxy cannot forge admin identity.
+还要验证：
 
-## 8. Quota accounting
+> 绕过可信反向代理直接访问 Gateway 时，不能伪造管理员身份 Header。
 
-Configure a Tenant with small limits and verify:
+## 8. 配额核算
 
-- monthly request quota returns 429 at the limit
-- daily/monthly token reservation returns 429 when exhausted
-- successful responses with usage reconcile estimates to actual token count
-- Admin UI “用量” shows daily/monthly aggregate usage
+给 Tenant 配置较小额度并验证：
 
-Monetary budget is reporting configuration only until authoritative provider pricing and actual route telemetry are available.
+- 月请求额度达到上限后返回 429
+- 日/月 Token 配额耗尽后返回 429
+- 正常成功请求如果返回 usage，估算值会按实际 Token 对账
+- Admin UI “用量”能看到日/月请求量和 Token
 
-## 9. Admin productization
+金额预算当前只作为配置/报表基础。
 
-Verify:
+在没有权威 Provider 价格和真实 Route Telemetry 之前，不进行猜测性的金额扣费。
 
-- route CRUD UI
-- dashboard P95 / failover / provider metrics
-- request-log filtering
-- pagination
-- CSV export
-- tenant usage
-- admin audit
-- security events
+## 9. Admin UI 产品化功能
 
-## 10. Embedding / ASR foundation
+验证：
 
-If the selected ThinkWatch/provider adapters support the target service:
+- Route CRUD
+- Dashboard P95
+- Failover 指标
+- Provider 指标
+- Request Log 筛选
+- 分页
+- CSV 导出
+- Tenant 用量
+- 管理审计
+- 安全事件
 
-- POST `/v1/embeddings` using a virtual model
-- POST `/v1/audio/transcriptions` multipart with a virtual model
+## 10. Embedding / ASR 基础
 
-The Gateway supports authentication/model authorization and transparent forwarding. Provider-specific real calls are separate final acceptance items.
+如果当前 ThinkWatch / Provider Adapter 支持目标服务，验证：
 
-## 11. Production health and monitoring
+- 使用虚拟模型调用 `POST /v1/embeddings`
+- 使用 multipart + 虚拟模型调用 `POST /v1/audio/transcriptions`
 
-Check:
+Gateway 已负责：
+
+- 鉴权
+- 模型权限
+- 限流
+- 透明转发
+
+Provider 真实调用仍属于最终环境验收项。
+
+## 11. 生产健康检查与监控
+
+检查：
 
 - `/healthz`
 - `/readyz`
 - `/metrics`
-- Prometheus scrape
-- HTTPS edge config
-- secrets supplied externally
-- backup/restore runbook
-- multi-Gateway readiness behavior
+- Prometheus Scrape
+- HTTPS Edge 配置
+- Secret 从外部注入
+- Backup / Restore Runbook
+- 多 Gateway readiness 行为
 
 ## 12. 30,000 RPM / 500 RPS
 
-Follow `docs/PERFORMANCE_TEST.md`.
+按照 `docs/PERFORMANCE_TEST.md` 执行。
 
-At minimum run:
+至少运行：
 
 ```powershell
 k6 run .\loadtest\k6-models.js
 k6 run .\loadtest\k6-chat.js
 ```
 
-with `TARGET_RPS=500` in a representative environment.
+在代表性环境设置：
 
-Do not mark 30,000 RPM as passed until the benchmark report records achieved RPS, P50/P95/P99, error rate, CPU, memory, Redis, PostgreSQL, Gateway and ThinkWatch resource data.
+```text
+TARGET_RPS=500
+```
 
-## Acceptance summary
+在 Benchmark 报告中记录以下数据之前，不允许把 30,000 RPM 标记为已通过：
 
-Items that require real environment acceptance and cannot be truthfully completed by repository CI alone:
+- 实际达到的 RPS
+- P50 / P95 / P99
+- 错误率
+- CPU
+- 内存
+- Redis
+- PostgreSQL
+- Gateway
+- ThinkWatch
 
-- DeepSeek credential / real call
-- Qwen -> DeepSeek real failover
-- ThinkWatch actual-route telemetry integration
-- university IdP SSO
-- production HA/failover
-- real embedding / ASR provider calls
-- 30,000 RPM benchmark
+## 最终验收总结
+
+以下项目依赖真实环境，不能仅靠仓库 CI 宣称完成生产验收：
+
+- DeepSeek 真实凭据 / 真实请求
+- Qwen → DeepSeek 真实 Failover
+- ThinkWatch 实际 Route Telemetry
+- 学校 IdP SSO
+- 生产 HA / Failover
+- 真实 Embedding / ASR Provider
+- 30,000 RPM Benchmark
