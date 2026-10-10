@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const auditCaptureLimit = 1 << 20
+
 type Server struct {
 	cfg   Config
 	pg    *storage.Postgres
@@ -35,6 +38,58 @@ type requestEnvelope struct {
 	MaxTokens           int64  `json:"max_tokens"`
 	MaxCompletionTokens int64  `json:"max_completion_tokens"`
 	MaxOutputTokens     int64  `json:"max_output_tokens"`
+}
+
+type auditResponseWriter struct {
+	http.ResponseWriter
+	status  int
+	capture bytes.Buffer
+}
+
+func (w *auditResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *auditResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if w.capture.Len() < auditCaptureLimit {
+		remaining := auditCaptureLimit - w.capture.Len()
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = w.capture.Write(p[:remaining])
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *auditResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *auditResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+func (w *auditResponseWriter) Push(target string, opts *http.PushOptions) error {
+	p, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -142,6 +197,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	reqID := r.Header.Get("X-Request-Id")
 	id, ok := httpx.IdentityFrom(r.Context())
 	if !ok {
@@ -149,43 +205,70 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	aw := &auditResponseWriter{ResponseWriter: w}
+	var envelope requestEnvelope
+	defer func() {
+		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
+		status := aw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log := model.RequestLog{
+			RequestID:      reqID,
+			TenantID:       id.TenantID,
+			APIKeyID:       id.APIKeyID,
+			ClientIP:       clientIP(r),
+			RequestedModel: envelope.Model,
+			ActualModel:    actualModel,
+			Stream:         envelope.Stream,
+			InputTokens:    inputTokens,
+			OutputTokens:   outputTokens,
+			TotalTokens:    totalTokens,
+			LatencyMS:      time.Since(started).Milliseconds(),
+			StatusCode:     status,
+			ErrorCode:      parseErrorCode(aw.capture.Bytes()),
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.pg.InsertRequestLog(ctx, log)
+	}()
+
 	allowed, err := s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
 	if err != nil || !allowed {
-		httpx.Error(w, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
+		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
 		return
 	}
 
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
 		if len(id.AllowedModels) > 0 {
-			writeAllowedModels(w, id.AllowedModels)
+			writeAllowedModels(aw, id.AllowedModels)
 			return
 		}
-		s.proxy.ServeHTTP(w, r)
+		s.proxy.ServeHTTP(aw, r)
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Unable to read request body", reqID)
+		httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Unable to read request body", reqID)
 		return
 	}
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	var envelope requestEnvelope
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &envelope); err != nil {
-			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+			httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
 	}
 	if requiresModel(r.URL.Path) && envelope.Model == "" {
-		httpx.Error(w, http.StatusBadRequest, "model_required", "Model is required", reqID)
+		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
 		return
 	}
 	if envelope.Model != "" && len(id.AllowedModels) > 0 {
 		if _, ok := id.AllowedModels[envelope.Model]; !ok {
-			httpx.Error(w, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
+			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
 			return
 		}
 	}
@@ -193,19 +276,19 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	reserveAmount := estimateTPM(body, envelope)
 	reservation, allowed, err := s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
-		httpx.Error(w, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
+		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
 		return
 	}
 
 	release, allowed, err := s.limit.AcquireConcurrency(r.Context(), id.APIKeyID, id.MaxConcurrency)
 	if err != nil || !allowed {
 		_ = reservation.Refund(r.Context())
-		httpx.Error(w, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
+		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
 		return
 	}
 	defer release()
 
-	s.proxy.ServeHTTP(w, r)
+	s.proxy.ServeHTTP(aw, r)
 }
 
 func requiresModel(path string) bool {
@@ -230,6 +313,73 @@ func estimateTPM(body []byte, envelope requestEnvelope) int64 {
 	}
 	estimatedInput := int64(len(body)/4 + 1)
 	return estimatedInput + outputBudget
+}
+
+func parseUsage(body []byte, stream bool) (modelName string, input, output, total int64) {
+	type usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		InputTokens      int64 `json:"input_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		OutputTokens     int64 `json:"output_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	}
+	type response struct {
+		Model string `json:"model"`
+		Usage *usage `json:"usage"`
+	}
+
+	apply := func(raw []byte) {
+		var v response
+		if json.Unmarshal(raw, &v) != nil {
+			return
+		}
+		if v.Model != "" {
+			modelName = v.Model
+		}
+		if v.Usage != nil {
+			input = v.Usage.PromptTokens
+			if v.Usage.InputTokens > input {
+				input = v.Usage.InputTokens
+			}
+			output = v.Usage.CompletionTokens
+			if v.Usage.OutputTokens > output {
+				output = v.Usage.OutputTokens
+			}
+			total = v.Usage.TotalTokens
+			if total == 0 {
+				total = input + output
+			}
+		}
+	}
+
+	if !stream {
+		apply(body)
+		return
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		apply(payload)
+	}
+	return
+}
+
+func parseErrorCode(body []byte) string {
+	var v struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &v) == nil {
+		return v.Error.Code
+	}
+	return ""
 }
 
 func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
