@@ -14,6 +14,7 @@ type Config struct {
 	KeyHMACSecret string
 	ThinkWatchURL string
 	ThinkWatchKey string
+	AdminToken string
 }
 
 func LoadConfig() (Config, error) {
@@ -25,6 +26,7 @@ func LoadConfig() (Config, error) {
 		KeyHMACSecret: os.Getenv("API_KEY_HMAC_SECRET"),
 		ThinkWatchURL: getenv("THINKWATCH_URL", "http://127.0.0.1:8788"),
 		ThinkWatchKey: os.Getenv("THINKWATCH_GATEWAY_KEY"),
+		AdminToken: os.Getenv("ADMIN_TOKEN"),
 	}
 	if cfg.DatabaseURL == "" { return Config{}, errors.New("DATABASE_URL is required") }
 	if cfg.KeyHMACSecret == "" { return Config{}, errors.New("API_KEY_HMAC_SECRET is required") }
