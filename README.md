@@ -179,3 +179,42 @@ M1 后续继续补齐：
 - Vue 管理后台
 
 正式部署前还需要把本地开发密码、HMAC secret 和 Provider credentials 全部改成外部安全配置。
+
+## M1 Provider / Model 管理 API
+
+管理接口使用独立的 `ADMIN_TOKEN`，不会复用业务侧 `sk-campus-*` Virtual Key。未设置 `ADMIN_TOKEN` 时，`/admin/*` 返回 503。
+
+已有数据库需要手动应用新增迁移：
+
+```bash
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U campus -d campus_gateway < migrations/0002_management.sql
+```
+
+PowerShell 可使用：
+
+```powershell
+Get-Content migrations/0002_management.sql | docker compose -f deploy/docker-compose.yml exec -T postgres psql -U campus -d campus_gateway
+```
+
+启动 Gateway 前设置：
+
+```powershell
+$env:ADMIN_TOKEN="replace-with-a-long-random-admin-token"
+```
+
+当前接口：
+
+```text
+GET  /admin/providers
+POST /admin/providers
+PUT  /admin/providers/{id}
+
+GET  /admin/models
+POST /admin/models
+PUT  /admin/models/{id}
+```
+
+Provider 只保存凭据环境变量名，例如 `DASHSCOPE_API_KEY`，不把真实 Provider API Key 写入数据库。
+
+当前这一版是 Control Plane 的数据库管理层；它还不会自动修改 ThinkWatch `config.yaml`。下一步会增加配置渲染与原子更新，把启用的 Provider / Model 自动同步给 ThinkWatch。
