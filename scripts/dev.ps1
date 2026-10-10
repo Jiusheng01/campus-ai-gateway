@@ -36,6 +36,48 @@ function Refresh-Path {
     }
 }
 
+function Import-UserEnv([string]$Name) {
+    if (-not [Environment]::GetEnvironmentVariable($Name, "Process")) {
+        $value = [Environment]::GetEnvironmentVariable($Name, "User")
+        if (-not $value) {
+            $value = [Environment]::GetEnvironmentVariable($Name, "Machine")
+        }
+        if ($value) {
+            [Environment]::SetEnvironmentVariable($Name, $value, "Process")
+        }
+    }
+}
+
+function Find-TwCore {
+    if ($env:TWCORE_EXE -and (Test-Path $env:TWCORE_EXE)) {
+        return $env:TWCORE_EXE
+    }
+
+    $cmd = Get-Command twcore -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        return $cmd.Source
+    }
+
+    $candidates = @()
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\ThinkWatch Lite\twcore\twcore.exe")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\ThinkWatch Lite\resources\twcore\twcore.exe")
+        $candidates += (Join-Path $env:LOCALAPPDATA "ThinkWatch\twcore.exe")
+    }
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles "ThinkWatch Lite\twcore\twcore.exe")
+        $candidates += (Join-Path $env:ProgramFiles "ThinkWatch\twcore.exe")
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 function Wait-TcpPort([string]$HostName, [int]$Port, [int]$Seconds = 30) {
     for ($i = 0; $i -lt $Seconds; $i++) {
         try {
@@ -74,6 +116,9 @@ Write-Host "============================================" -ForegroundColor DarkC
 Write-Host ""
 
 Refresh-Path
+Import-UserEnv "TWCORE_EXE"
+Import-UserEnv "THINKWATCH_GATEWAY_KEY"
+Import-UserEnv "DASHSCOPE_API_KEY"
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Fail "Go not found. Install Go or add C:\Program Files\Go\bin to Windows PATH."
