@@ -25,7 +25,13 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 func (p *Postgres) Close() { p.Pool.Close() }
 
 func (p *Postgres) FindAPIKeyByDigest(ctx context.Context, digest string) (model.APIKey, error) {
-	q := "SELECT id::text, tenant_id::text, name, key_prefix, key_digest, status, expire_at, allowed_models, allowed_ips, rpm_limit, tpm_limit, max_concurrency, COALESCE(route_group,'') FROM gateway_api_key WHERE key_digest=$1 LIMIT 1"
+	q := `SELECT k.id::text, k.tenant_id::text, k.name, k.key_prefix, k.key_digest, k.status, k.expire_at,
+k.allowed_models, k.allowed_ips, k.rpm_limit, k.tpm_limit, k.max_concurrency, COALESCE(k.route_group,''),
+t.daily_token_limit, t.monthly_token_limit, t.monthly_request_limit
+FROM gateway_api_key k
+JOIN gateway_tenant t ON t.id=k.tenant_id
+WHERE k.key_digest=$1
+LIMIT 1`
 	var k model.APIKey
 	var m, i []byte
 	err := p.Pool.QueryRow(ctx, q, digest).Scan(
@@ -42,6 +48,9 @@ func (p *Postgres) FindAPIKeyByDigest(ctx context.Context, digest string) (model
 		&k.TPMLimit,
 		&k.MaxConcurrency,
 		&k.RouteGroup,
+		&k.DailyTokenLimit,
+		&k.MonthlyTokenLimit,
+		&k.MonthlyRequestLimit,
 	)
 	if err != nil {
 		return model.APIKey{}, err
