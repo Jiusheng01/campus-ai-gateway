@@ -210,6 +210,14 @@ if ($env:THINKWATCH_CONFIG_PATH) {
     Write-Host ("       ThinkWatch config: " + $env:THINKWATCH_CONFIG_PATH)
 }
 
+if (-not $env:TWCORE_EXE) {
+    $detectedTwCore = Find-TwCore
+    if ($detectedTwCore) {
+        $env:TWCORE_EXE = $detectedTwCore
+        Write-Ok ("Detected ThinkWatch Core: " + $env:TWCORE_EXE)
+    }
+}
+
 $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 1
 if (-not $thinkWatchRunning) {
     $twExe = $env:TWCORE_EXE
@@ -217,8 +225,20 @@ if (-not $thinkWatchRunning) {
         if (-not $env:DASHSCOPE_API_KEY) {
             Write-Warn "DASHSCOPE_API_KEY is not set. ThinkWatch may start, but Qwen calls can fail."
         }
-        Write-Step "Starting ThinkWatch Core from TWCORE_EXE..."
-        Start-Process -FilePath $twExe -ArgumentList "serve" -WorkingDirectory (Split-Path $twExe -Parent) | Out-Null
+        if ($env:THINKWATCH_CONFIG_PATH -and (Test-Path $env:THINKWATCH_CONFIG_PATH)) {
+            Write-Step "Validating ThinkWatch config..."
+            & $twExe --config $env:THINKWATCH_CONFIG_PATH check
+            if ($LASTEXITCODE -ne 0) {
+                Fail "ThinkWatch config validation failed. Core was not started."
+            }
+        }
+        Write-Step "Starting ThinkWatch Core..."
+        if ($env:THINKWATCH_CONFIG_PATH) {
+            Start-Process -FilePath $twExe -ArgumentList @("--config", $env:THINKWATCH_CONFIG_PATH, "serve") -WorkingDirectory (Split-Path $twExe -Parent) | Out-Null
+        }
+        else {
+            Start-Process -FilePath $twExe -ArgumentList "serve" -WorkingDirectory (Split-Path $twExe -Parent) | Out-Null
+        }
         $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 15
     }
 }
@@ -227,7 +247,8 @@ if ($thinkWatchRunning) {
     Write-Ok "ThinkWatch is listening on :8788"
 }
 else {
-    Write-Warn "ThinkWatch is not running on :8788. Set TWCORE_EXE or start twcore.exe serve manually."
+    Write-Warn "ThinkWatch is not running on :8788 and twcore.exe could not be started automatically."
+    Write-Warn "Set TWCORE_EXE once if automatic detection cannot find your installation."
 }
 
 if (-not $env:THINKWATCH_GATEWAY_KEY) {
