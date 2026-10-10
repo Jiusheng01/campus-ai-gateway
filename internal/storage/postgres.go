@@ -65,6 +65,10 @@ INSERT INTO gateway_request_log(
 	requested_model,
 	actual_model,
 	provider,
+	upstream_model,
+	route_priority,
+	attempts,
+	failover,
 	stream,
 	input_tokens,
 	output_tokens,
@@ -80,13 +84,17 @@ INSERT INTO gateway_request_log(
 	NULLIF($5, ''),
 	NULLIF($6, ''),
 	NULLIF($7, ''),
-	$8,
-	$9,
-	$10,
+	NULLIF($8, ''),
+	NULLIF($9, 0),
+	NULLIF($10, 0),
 	$11,
 	$12,
 	$13,
-	NULLIF($14, '')
+	$14,
+	$15,
+	$16,
+	$17,
+	NULLIF($18, '')
 )
 ON CONFLICT (request_id) DO NOTHING
 `
@@ -100,6 +108,10 @@ ON CONFLICT (request_id) DO NOTHING
 		log.RequestedModel,
 		log.ActualModel,
 		log.Provider,
+		log.UpstreamModel,
+		log.RoutePriority,
+		log.Attempts,
+		log.Failover,
 		log.Stream,
 		log.InputTokens,
 		log.OutputTokens,

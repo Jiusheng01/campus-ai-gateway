@@ -78,6 +78,10 @@ type RequestLogAdmin struct {
 	RequestedModel string    `json:"requested_model"`
 	ActualModel    string    `json:"actual_model"`
 	Provider       string    `json:"provider"`
+	UpstreamModel  string    `json:"upstream_model"`
+	RoutePriority  int       `json:"route_priority"`
+	Attempts       int       `json:"attempts"`
+	Failover       bool      `json:"failover"`
 	Stream         bool      `json:"stream"`
 	InputTokens    int64     `json:"input_tokens"`
 	OutputTokens   int64     `json:"output_tokens"`

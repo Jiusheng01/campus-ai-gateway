@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestParseUsageStreamingOpenAI(t *testing.T) {
 	body := []byte("data: {\"model\":\"campus-smart\",\"usage\":null}\n\n" +
@@ -32,5 +35,26 @@ func TestParseErrorCode(t *testing.T) {
 	body := []byte(`{"error":{"code":"model_not_allowed","message":"no"}}`)
 	if got := parseErrorCode(body); got != "model_not_allowed" {
 		t.Fatalf("code = %q, want model_not_allowed", got)
+	}
+}
+
+
+func TestParseRouteTelemetry(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-ThinkWatch-Provider", "deepseek")
+	h.Set("X-ThinkWatch-Upstream-Model", "deepseek-chat")
+	h.Set("X-ThinkWatch-Route-Priority", "2")
+	h.Set("X-ThinkWatch-Attempts", "2")
+
+	got := parseRouteTelemetry(h)
+	if got.Provider != "deepseek" || got.UpstreamModel != "deepseek-chat" || got.RoutePriority != 2 || got.Attempts != 2 {
+		t.Fatalf("unexpected telemetry: %+v", got)
+	}
+}
+
+func TestParseRouteTelemetryUnknownIsZeroValue(t *testing.T) {
+	got := parseRouteTelemetry(http.Header{})
+	if got.Provider != "" || got.UpstreamModel != "" || got.RoutePriority != 0 || got.Attempts != 0 {
+		t.Fatalf("unexpected telemetry: %+v", got)
 	}
 }
