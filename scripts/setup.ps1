@@ -197,13 +197,14 @@ Write-Ok "ThinkWatch config is valid"
 
 $gatewayKey = Get-ThinkWatchClientKey $ThinkWatchConfigPath
 if ($gatewayKey) {
-    [Environment]::SetEnvironmentVariable("THINKWATCH_GATEWAY_KEY", $gatewayKey, "Process")
-    Write-Ok "ThinkWatch gateway client key detected from config"
+    Set-UserEnv "THINKWATCH_GATEWAY_KEY" $gatewayKey
+    Write-Ok "ThinkWatch gateway client key detected and saved to Windows User environment"
 }
 else {
     Write-Warn "No tw-* client key was found in ThinkWatch config. Real model proxy requests may fail."
 }
 
+$providerKeyChanged = $false
 $providerKey = Get-EnvValue "DASHSCOPE_API_KEY"
 if ($providerKey) {
     [Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", $providerKey, "Process")
@@ -217,6 +218,7 @@ elseif (-not $SkipProviderKey) {
         if ($secret) {
             Set-UserEnv "DASHSCOPE_API_KEY" $secret
             $secret = $null
+            $providerKeyChanged = $true
             Write-Ok "DASHSCOPE_API_KEY saved to Windows User environment"
         }
         else {
@@ -239,6 +241,18 @@ Write-Host "   .\scripts\dev.ps1"
 Write-Host ""
 
 if (-not $NoStart) {
+    if ($providerKeyChanged) {
+        $listeners = Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue
+        if ($listeners) {
+            Write-Step "Restarting ThinkWatch so the new provider credential is loaded..."
+            $pids = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+            foreach ($processId in $pids) {
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
     Write-Step "Starting the development stack..."
     & (Join-Path $PSScriptRoot "dev.ps1") -ForceRestart
 }
