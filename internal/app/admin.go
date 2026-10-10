@@ -48,6 +48,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleModelByID(w, r)
 	case r.URL.Path == "/admin/tenants":
 		s.handleTenants(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/tenants/"):
+		s.handleTenantByID(w, r)
 	case r.URL.Path == "/admin/api-keys":
 		s.handleAPIKeys(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
@@ -220,16 +222,63 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.pg.ListTenants(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list tenants", reqID)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	case http.MethodPost:
+		var in model.Tenant
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+			return
+		}
+		if err := validateTenant(&in); err != "" {
+			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
+			return
+		}
+		out, err := s.pg.CreateTenant(r.Context(), in)
+		if err != nil {
+			httpx.Error(w, http.StatusConflict, "tenant_create_failed", "Tenant could not be created", reqID)
+			return
+		}
+		writeJSON(w, http.StatusCreated, out)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	}
+}
+
+func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", "PUT")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	items, err := s.pg.ListTenants(r.Context())
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list tenants", reqID)
+	id := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
+	if id == "" {
+		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	var in model.Tenant
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+		return
+	}
+	if err := validateTenant(&in); err != "" {
+		httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
+		return
+	}
+	out, err := s.pg.UpdateTenant(r.Context(), id, in)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -348,6 +397,21 @@ func validateModel(v *model.ModelConfig) string {
 	v.UpstreamModel = strings.TrimSpace(v.UpstreamModel)
 	if v.Alias == "" || v.ProviderID == "" || v.UpstreamModel == "" {
 		return "alias, provider_id and upstream_model are required"
+	}
+	if v.Status == 0 {
+		v.Status = 1
+	}
+	if v.Status != 1 && v.Status != 2 {
+		return "status must be 1 (enabled) or 2 (disabled)"
+	}
+	return ""
+}
+
+func validateTenant(v *model.Tenant) string {
+	v.Code = strings.TrimSpace(v.Code)
+	v.Name = strings.TrimSpace(v.Name)
+	if v.Code == "" || v.Name == "" {
+		return "code and name are required"
 	}
 	if v.Status == 0 {
 		v.Status = 1
