@@ -84,6 +84,9 @@ func (p adminPrincipal) can(r *http.Request) bool {
 	}
 	path := r.URL.Path
 	method := r.Method
+	if path == "/admin/whoami" && method == http.MethodGet {
+		return true
+	}
 
 	if p.Roles["auditor"] && method == http.MethodGet {
 		switch {
