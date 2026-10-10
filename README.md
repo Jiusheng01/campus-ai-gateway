@@ -36,10 +36,10 @@
 | 内置 Web 管理后台 | ✅ | 无需单独 Node/Vue 进程 |
 | Windows 一键初始化 | ✅ | scripts/setup.ps1 |
 | Windows 一键开发启动 | ✅ | scripts/dev.ps1 |
-| 多 Provider Failover 控制面 | 🚧 | 下一阶段 |
-| 实际 Provider / 上游模型回填 | 🚧 | 下一阶段 |
-| SSO / RBAC | 🚧 | 下一阶段 |
-| 30,000 RPM 压测验收 | 🚧 | 尚未完成目标压测 |
+| 多 Provider Failover 控制面 | ✅ | Route CRUD/UI + ThinkWatch renderer；真实双 Provider 验收待最终测试 |
+| 实际 Provider / 上游模型回填 | 🧪 | 审计字段 + telemetry 采集契约完成；ThinkWatch 最终 telemetry 待验收 |
+| SSO / RBAC | ✅* | trusted-header + RBAC 完成；学校真实 IdP 待最终验收 |
+| 30,000 RPM 压测验收 | ⏳ | k6 500 RPS 工具完成；真实目标环境尚未压测 |
 
 ---
 
@@ -259,9 +259,11 @@ status:         enabled
 ~~~text
 virtual model alias
     ↓
-provider
+gateway_model_route (1..N)
     ↓
-upstream model
+provider + upstream model
+    ↓
+priority / weight / timeout / status
 ~~~
 
 已验证示例：
@@ -463,33 +465,33 @@ scripts/
 - [x] Virtual Key 管理
 - [x] ThinkWatch 配置同步
 - [x] 网页模型测试
-- [ ] 一个虚拟模型绑定多个 Provider
-- [ ] Provider 优先级
-- [ ] Failover 路由
+- [x] 一个虚拟模型绑定多个 Provider
+- [x] Provider 优先级
+- [x] Failover 路由控制面（真实双 Provider 最终验收待执行）
 - [ ] Circuit Breaker 状态展示
-- [ ] 实际 Provider / 上游模型审计回填
+- [x] 审计 Schema/采集契约（ThinkWatch 最终 telemetry 待验收）
 
 ### M2：安全与运营
 
-- [ ] 学校统一身份认证
-- [ ] RBAC
-- [ ] 管理员操作日志
-- [ ] 安全事件
+- [x] 学校统一身份认证接入边界（trusted-header / external OIDC；真实 IdP 待验收）
+- [x] RBAC
+- [x] 管理员操作日志
+- [x] 安全事件
 - [ ] Guard / 敏感策略事件展示
-- [ ] 审计筛选 / 分页 / 导出
-- [ ] 租户维度统计
+- [x] 审计筛选 / 分页 / 导出
+- [x] 租户维度统计
 
 ### M3：性能与生产化
 
-- [ ] TPM 精确结算
+- [x] TPM usage reconcile（无 usage 时保留估算）
 - [ ] 分布式部署验证
 - [ ] 30,000 RPM 目标压测
 - [ ] 突发流量压测
 - [ ] SSE 高并发压测
-- [ ] HTTPS
+- [x] HTTPS 生产示例配置（证书/域名最终环境提供）
 - [ ] Secret Manager / KMS
 - [ ] PostgreSQL / Redis 高可用
-- [ ] 监控、告警与容量规划
+- [x] Prometheus 指标/配置 + 容量验收文档（真实告警平台最终环境配置）
 
 ---
 
@@ -529,7 +531,7 @@ Provider API Key 推荐通过环境变量、Secret Manager、KMS / Vault 管理�
 
 当前最重要的下一步：
 
-> **多 Provider 绑定 → 优先级 → Failover → 实际路由审计 → 30,000 RPM 目标压测。**
+> **当前开发阶段已转入最终统一验收：真实 DeepSeek/Failover、ThinkWatch route telemetry、学校 SSO、HA 与 30,000 RPM。**
 
 ---
 
