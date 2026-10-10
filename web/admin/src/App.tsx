@@ -58,7 +58,7 @@ function App(){
 
   const notify=(text:string,bad=false)=>setToast({text,bad})
   const run=async(fn:()=>Promise<void>)=>{setBusy(true);try{await fn()}catch(e:any){notify(e.message||String(e),true)}finally{setBusy(false)}}
-  const list=async<T>(path:string)=>((await api<{data:T[]}>(path)).data||[])
+  const list=async<T,>(path:string)=>((await api<{data:T[]}>(path)).data||[])
 
   async function loadPage(p:Page){
     await run(async()=>{
