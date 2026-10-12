@@ -43,6 +43,48 @@ func (s *Server) authenticateAdmin(r *http.Request) (adminPrincipal, error) {
 			Roles: map[string]bool{"super_admin": true},
 		}, nil
 
+	case "session":
+		// Local username/password accounts. A static ADMIN_TOKEN, when
+		// configured, keeps working as a break-glass credential so a damaged
+		// account table can never lock an operator out of the control plane.
+		raw := bearerValue(r)
+		if raw == "" {
+			return adminPrincipal{}, errors.New("missing admin session")
+		}
+		if s.cfg.AdminToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(s.cfg.AdminToken)) == 1 {
+			return adminPrincipal{
+				User:  "admin_token",
+				Roles: map[string]bool{"super_admin": true},
+			}, nil
+		}
+		sess, ok := s.lookupAdminSession(r.Context(), raw)
+		if !ok {
+			return adminPrincipal{}, errors.New("invalid admin session")
+		}
+		// Roles and status come from the database rather than from the session
+		// payload, so disabling or demoting an account takes effect on the very
+		// next request instead of at session expiry.
+		user, err := s.pg.FindAdminUserByID(r.Context(), sess.UserID)
+		if err != nil {
+			s.revokeAdminSession(r.Context(), raw)
+			return adminPrincipal{}, errors.New("invalid admin session")
+		}
+		if user.Status != 1 {
+			s.revokeAdminSession(r.Context(), raw)
+			return adminPrincipal{}, errors.New("administrator account is disabled")
+		}
+		// A password change rewrites the stored hash, so any session issued
+		// with the previous password stops matching and is dropped here.
+		if sess.PasswordTag != passwordTag(user.PasswordHash) {
+			s.revokeAdminSession(r.Context(), raw)
+			return adminPrincipal{}, errors.New("administrator password changed")
+		}
+		roles := filterAdminRoles(user.Roles)
+		if len(roles) == 0 {
+			roles["auditor"] = true
+		}
+		return adminPrincipal{User: user.Username, Roles: roles}, nil
+
 	case "trusted-header":
 		if s.cfg.AdminProxySecret == "" {
 			return adminPrincipal{}, errors.New("ADMIN_PROXY_SECRET is required in trusted-header mode")
@@ -66,9 +108,16 @@ func (s *Server) authenticateAdmin(r *http.Request) (adminPrincipal, error) {
 }
 
 func parseAdminRoles(raw string) map[string]bool {
-	out := map[string]bool{}
 	raw = strings.NewReplacer(";", ",", " ", ",").Replace(raw)
-	for _, item := range strings.Split(raw, ",") {
+	return filterAdminRoles(strings.Split(raw, ","))
+}
+
+// filterAdminRoles drops anything outside the known role vocabulary, so a typo
+// in the account table degrades to "no permissions" rather than to an unknown
+// role that silently fails every authorisation check.
+func filterAdminRoles(items []string) map[string]bool {
+	out := map[string]bool{}
+	for _, item := range items {
 		role := strings.TrimSpace(item)
 		switch role {
 		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -123,6 +125,13 @@ func NewServer(cfg Config) (*Server, error) {
 		mux:   http.NewServeMux(),
 	}
 	s.routes()
+	// Seed the first password account when ADMIN_BOOTSTRAP_PASSWORD is set.
+	// A failure here is not fatal: the operator can still create the first
+	// account through POST /admin/setup, so refusing to boot would only turn a
+	// misconfiguration into an outage.
+	if err := s.bootstrapAdminUser(ctx); err != nil {
+		log.Printf("admin bootstrap skipped: %v", err)
+	}
 	return s, nil
 }
 
@@ -154,6 +163,15 @@ func (s *Server) routes() {
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
 	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
 	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
+	// Unauthenticated on purpose: the login page needs the auth mode and
+	// whether the deployment still has no administrator account. Login, logout
+	// and first-run setup cannot sit behind the middleware they exist to
+	// satisfy. Go's ServeMux prefers these exact patterns over "/admin/".
+	s.mux.HandleFunc("/admin/auth-config", s.handleAdminAuthConfig)
+	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
+	s.mux.HandleFunc("/admin/logout", s.handleAdminLogout)
+	s.mux.HandleFunc("/admin/setup", s.handleAdminSetup)
+	s.mux.Handle("/admin/password", s.adminMiddleware(http.HandlerFunc(s.handleAdminPasswordChange)))
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
@@ -340,6 +358,13 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		}
 		envelope = parsed
 	}
+	if envelope.Stream && s.cfg.StreamIncludeUsage {
+		if rewritten, changed := ensureStreamUsage(body, r.Header.Get("Content-Type")); changed {
+			body = rewritten
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+		}
+	}
 	if requiresModel(r.URL.Path) && envelope.Model == "" {
 		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
 		return
@@ -352,7 +377,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	reserveAmount := estimateTPM(body, envelope)
+	reserveAmount := estimateTPM(body, envelope, s.cfg.DefaultMaxOutputTokens)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
 	if err != nil || !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
@@ -425,7 +450,11 @@ func requiresModel(path string) bool {
 	}
 }
 
-func estimateTPM(body []byte, envelope requestEnvelope) int64 {
+// estimateTPM is the amount reserved against a caller's token allowance before
+// the upstream request is made. It deliberately over-reserves rather than
+// under-reserves: a request that is allowed through can only be reconciled
+// downwards afterwards, so an under-estimate is a quota bypass.
+func estimateTPM(body []byte, envelope requestEnvelope, defaultMaxOutput int64) int64 {
 	if len(body) == 0 {
 		return 0
 	}
@@ -436,8 +465,57 @@ func estimateTPM(body []byte, envelope requestEnvelope) int64 {
 	if envelope.MaxOutputTokens > outputBudget {
 		outputBudget = envelope.MaxOutputTokens
 	}
-	estimatedInput := int64(len(body)/4 + 1)
-	return estimatedInput + outputBudget
+	if outputBudget <= 0 {
+		outputBudget = defaultMaxOutput
+	}
+	return estimateInputTokens(body) + outputBudget
+}
+
+// estimateInputTokens approximates how many tokens an upstream tokenizer will
+// see. CJK text is three bytes per rune and roughly one token per rune, while
+// ASCII text averages about four bytes per token. A plain len(body)/4 heuristic
+// undercounts Chinese traffic by roughly 25%, which is the dominant case for
+// this gateway.
+func estimateInputTokens(body []byte) int64 {
+	if len(body) == 0 {
+		return 0
+	}
+	var nonASCII int64
+	for _, b := range body {
+		if b >= utf8.RuneSelf {
+			nonASCII++
+		}
+	}
+	ascii := int64(len(body)) - nonASCII
+	return nonASCII/3 + ascii/4 + 1
+}
+
+// ensureStreamUsage adds stream_options.include_usage to JSON streaming
+// requests. OpenAI-compatible upstreams only report token usage for streaming
+// responses when the caller explicitly asks for it, so without this the gateway
+// records zero tokens and tenant quota reconciliation silently stops working.
+// Multipart requests (audio transcription) and callers that already set
+// stream_options are left untouched.
+func ensureStreamUsage(body []byte, contentType string) ([]byte, bool) {
+	if len(body) == 0 {
+		return body, false
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && strings.HasPrefix(mediaType, "multipart/") {
+		return body, false
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body, false
+	}
+	if _, ok := payload["stream_options"]; ok {
+		return body, false
+	}
+	payload["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return body, false
+	}
+	return rewritten, true
 }
 
 func parseUsage(body []byte, stream bool) (modelName string, input, output, total int64) {
