@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,22 +37,25 @@ func (w *adminAuditResponseWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
+// adminMiddleware authenticates the caller, enforces RBAC and records an audit
+// row for state-changing requests.
+//
+// The error classification is driven by sentinel errors via adminErrorStatus.
+// Nothing here inspects error text, so an authentication failure can no longer
+// be misreported as "service unavailable".
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-Id")
 		principal, err := s.authenticateAdmin(r)
 		if err != nil {
-			status := http.StatusUnauthorized
-			code := "invalid_admin_auth"
-			if strings.Contains(err.Error(), "disabled") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unsupported") {
-				status = http.StatusServiceUnavailable
-				code = "admin_api_disabled"
+			if errors.Is(err, ErrAdminInternal) {
+				log.Printf("admin auth: internal failure on %s: %v", r.URL.Path, err)
 			}
-			httpx.Error(w, status, code, err.Error(), reqID)
+			writeAdminError(w, reqID, err)
 			return
 		}
 		if !principal.can(r) {
-			httpx.Error(w, http.StatusForbidden, "admin_forbidden", "Role is not allowed to perform this admin operation", reqID)
+			writeAdminError(w, reqID, ErrAdminForbidden)
 			return
 		}
 		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
@@ -62,15 +67,18 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			if s.pg == nil {
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
-				RequestID: reqID,
-				Actor: principal.User,
-				Action: r.Method,
-				Resource: r.URL.Path,
+				RequestID:  reqID,
+				Actor:      principal.User,
+				Action:     r.Method,
+				Resource:   r.URL.Path,
 				StatusCode: status,
-				ClientIP: clientIP(r),
+				ClientIP:   s.clientIPFrom(r),
 			})
 			return
 		}
@@ -135,7 +143,14 @@ func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
-	writeJSON(w, http.StatusOK, map[string]any{"user": p.User, "roles": roles, "auth_mode": s.cfg.AdminAuthMode})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":       p.User,
+		"username":   p.Username,
+		"user_id":    p.UserID,
+		"session_id": p.SessionID,
+		"roles":      roles,
+		"auth_mode":  p.AuthMode,
+	})
 }
 
 func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
