@@ -275,7 +275,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			UpstreamModel:  telemetry.UpstreamModel,
 			RoutePriority:  telemetry.RoutePriority,
 			Attempts:       telemetry.Attempts,
-			Failover:       telemetry.Attempts > 1,
+			Failover:       telemetry.Failover(),
 			Stream:         envelope.Stream,
 			InputTokens:    inputTokens,
 			OutputTokens:   outputTokens,
@@ -502,10 +502,22 @@ type routeTelemetry struct {
 	Attempts      int
 }
 
+// Failover reports whether ThinkWatch actually fell back to another route.
+// It is only derived from real attempt telemetry, never from planned routes.
+func (t routeTelemetry) Failover() bool {
+	return t.Attempts > 1
+}
+
 func parseRouteTelemetry(h http.Header) routeTelemetry {
 	v := routeTelemetry{
 		Provider:      strings.TrimSpace(h.Get("X-ThinkWatch-Provider")),
 		UpstreamModel: strings.TrimSpace(h.Get("X-ThinkWatch-Upstream-Model")),
+	}
+	// Compatibility fallback: current ThinkWatch Core exposes the resolved
+	// provider name as X-ThinkWatch-Upstream. It is a provider, not an upstream
+	// model, so it must not be read into UpstreamModel.
+	if v.Provider == "" {
+		v.Provider = strings.TrimSpace(h.Get("X-ThinkWatch-Upstream"))
 	}
 	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-ThinkWatch-Route-Priority"))); err == nil && n > 0 {
 		v.RoutePriority = n
