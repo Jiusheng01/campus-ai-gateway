@@ -75,7 +75,7 @@ func (s *Server) handleThinkWatchSync(w http.ResponseWriter, r *http.Request) {
 		routesByModel[m.ID] = routes
 	}
 
-	rendered, providerCount, aliasCount, err := renderThinkWatchManagedConfig(string(existing), providers, models, routesByModel)
+	rendered, providerCount, aliasCount, err := renderThinkWatchManagedConfig(string(existing), s.cfg.ThinkWatchKey, providers, models, routesByModel)
 	if err != nil {
 		httpx.Error(w, http.StatusBadRequest, "thinkwatch_config_invalid", err.Error(), reqID)
 		return
@@ -213,7 +213,28 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func renderThinkWatchManagedConfig(existing string, providers []model.Provider, models []model.ModelConfig, routesByModel map[string][]model.ModelRoute) (string, int, int, error) {
+// managedModel pairs an enabled virtual model with its enabled routes.
+type managedModel struct {
+	config model.ModelConfig
+	routes []model.ModelRoute
+}
+
+// renderThinkWatchManagedConfig renders the Gateway-managed top-level blocks of
+// the ThinkWatch config while leaving everything else untouched.
+//
+// Since the generated `routes` block pins concrete provider/upstream-model
+// pairs, ThinkWatch re-checks those pinned models against the calling gateway
+// key's allow list. The `clients` block therefore has to stay in sync too:
+// every enabled virtual alias and every upstream model used by an enabled route
+// must be allowed for the Campus Gateway client, otherwise ThinkWatch rejects
+// the request with "which gateway key ... may not use".
+//
+// gatewayKey identifies the Campus Gateway's ThinkWatch client. Only that
+// client's allow list is widened, so unrelated clients keep their existing
+// (minimal) permissions. If the key is unknown or matches no client, every
+// client in the file is treated as a gateway client, because failing to widen
+// the allow list would break the data plane.
+func renderThinkWatchManagedConfig(existing, gatewayKey string, providers []model.Provider, models []model.ModelConfig, routesByModel map[string][]model.ModelRoute) (string, int, int, error) {
 	activeProviders := make(map[string]model.Provider)
 	for _, p := range providers {
 		if p.Status != 1 {
@@ -225,10 +246,6 @@ func renderThinkWatchManagedConfig(existing string, providers []model.Provider, 
 		activeProviders[p.ID] = p
 	}
 
-	type managedModel struct {
-		config model.ModelConfig
-		routes []model.ModelRoute
-	}
 	var managed []managedModel
 	providerModels := make(map[string]map[string]bool)
 
@@ -365,32 +382,48 @@ func renderThinkWatchManagedConfig(existing string, providers []model.Provider, 
 	routeBlock.WriteString("      - name: " + strconv.Quote("campus-deny-unmanaged") + "\n")
 	routeBlock.WriteString("        deny: " + strconv.Quote("model is not managed by Campus AI Gateway") + "\n")
 
+	// ThinkWatch re-validates pinned route models against the calling gateway
+	// key's allow list, so the enabled aliases and their upstream models must be
+	// allowed for the Campus Gateway client.
+	allowedModels := managedModelAllowList(managed)
+
 	out := replaceTopLevelYAMLBlock(existing, "providers", strings.TrimRight(providerBlock.String(), "\n"))
 	out = replaceTopLevelYAMLBlock(out, "aliases", strings.TrimRight(aliasBlock.String(), "\n"))
 	out = replaceTopLevelYAMLBlock(out, "routes", strings.TrimRight(routeBlock.String(), "\n"))
 	out = replaceTopLevelYAMLBlock(out, "default_route", "default_route: "+strconv.Quote("campus-managed"))
+	out = syncThinkWatchClientAllow(out, gatewayKey, allowedModels)
 	return out, len(activeProviderList), len(managed), nil
+}
+
+// managedModelAllowList returns the deduplicated, sorted set of model names that
+// must be allowed for the Campus Gateway's ThinkWatch client: every enabled
+// virtual alias plus every upstream model used by an enabled route.
+func managedModelAllowList(managed []managedModel) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, item := range managed {
+		if alias := strings.TrimSpace(item.config.Alias); alias != "" && !seen[alias] {
+			seen[alias] = true
+			out = append(out, alias)
+		}
+		for _, route := range item.routes {
+			model := strings.TrimSpace(route.UpstreamModel)
+			if model != "" && !seen[model] {
+				seen[model] = true
+				out = append(out, model)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func replaceTopLevelYAMLBlock(content, key, block string) string {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	lines := strings.Split(content, "\n")
-	start := -1
-	end := len(lines)
+	start, end := findTopLevelYAMLBlock(lines, key)
 
-	for i, line := range lines {
-		if isTopLevelYAMLKey(line, key) {
-			start = i
-			break
-		}
-	}
 	if start >= 0 {
-		for i := start + 1; i < len(lines); i++ {
-			if isAnyTopLevelYAMLKey(lines[i]) {
-				end = i
-				break
-			}
-		}
 		replacement := strings.Split(block, "\n")
 		lines = append(append(append([]string{}, lines[:start]...), replacement...), lines[end:]...)
 		return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
@@ -401,6 +434,29 @@ func replaceTopLevelYAMLBlock(content, key, block string) string {
 		base += "\n"
 	}
 	return base + block + "\n"
+}
+
+// findTopLevelYAMLBlock returns the half-open line range of a top-level YAML
+// block, or (-1, -1) when the key is absent.
+func findTopLevelYAMLBlock(lines []string, key string) (int, int) {
+	start := -1
+	for i, line := range lines {
+		if isTopLevelYAMLKey(line, key) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return -1, -1
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if isAnyTopLevelYAMLKey(lines[i]) {
+			end = i
+			break
+		}
+	}
+	return start, end
 }
 
 func isTopLevelYAMLKey(line, key string) bool {
@@ -432,6 +488,258 @@ func isAnyTopLevelYAMLKey(line string) bool {
 		}
 	}
 	return true
+}
+
+// syncThinkWatchClientAllow widens the allow list of the Campus Gateway's
+// ThinkWatch client so the pinned route models stay reachable. It never
+// rewrites client keys, never drops existing allow entries and never touches
+// unrelated top-level blocks.
+func syncThinkWatchClientAllow(config, gatewayKey string, managed []string) string {
+	if len(managed) == 0 {
+		return config
+	}
+	config = strings.ReplaceAll(config, "\r\n", "\n")
+	lines := strings.Split(config, "\n")
+	start, end := findTopLevelYAMLBlock(lines, "clients")
+	if start < 0 {
+		return config
+	}
+
+	block := lines[start:end]
+	rewritten := rewriteClientAllowLists(block, gatewayKey, managed)
+	if rewritten == nil {
+		return config
+	}
+
+	merged := make([]string, 0, len(lines))
+	merged = append(merged, lines[:start]...)
+	merged = append(merged, rewritten...)
+	merged = append(merged, lines[end:]...)
+	return strings.TrimRight(strings.Join(merged, "\n"), "\n") + "\n"
+}
+
+// rewriteClientAllowLists rewrites only the `allow` list of each gateway client
+// inside a `clients` block. It returns nil when the block has no client entry.
+func rewriteClientAllowLists(block []string, gatewayKey string, managed []string) []string {
+	indentOf := func(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
+	isItem := func(s string) bool {
+		t := strings.TrimLeft(s, " \t")
+		return strings.HasPrefix(t, "- ") || t == "-"
+	}
+
+	clientIndent := -1
+	for _, line := range block {
+		if isItem(line) {
+			if ind := indentOf(line); clientIndent == -1 || ind < clientIndent {
+				clientIndent = ind
+			}
+		}
+	}
+	if clientIndent == -1 {
+		return nil
+	}
+
+	// Split the block into contiguous client entries.
+	type span struct{ start, end int }
+	var spans []span
+	open := -1
+	for i, line := range block {
+		if isItem(line) && indentOf(line) == clientIndent {
+			if open >= 0 {
+				spans = append(spans, span{open, i})
+			}
+			open = i
+		}
+	}
+	if open >= 0 {
+		spans = append(spans, span{open, len(block)})
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+
+	// Only the Campus Gateway client should be widened. When the key is unknown
+	// or matches nothing, fall back to every client so the data plane keeps
+	// working instead of silently rejecting pinned route models.
+	gateway := make([]bool, len(spans))
+	matched := false
+	for i, sp := range spans {
+		if gatewayKey != "" && clientKeyFromLines(block[sp.start:sp.end]) == gatewayKey {
+			gateway[i] = true
+			matched = true
+		}
+	}
+	if gatewayKey == "" || !matched {
+		for i := range gateway {
+			gateway[i] = true
+		}
+	}
+
+	out := append([]string{}, block[:spans[0].start]...)
+	for i, sp := range spans {
+		segment := block[sp.start:sp.end]
+		if gateway[i] {
+			segment = mergeClientAllow(segment, clientIndent, managed)
+		}
+		out = append(out, segment...)
+	}
+	return out
+}
+
+// clientKeyFromLines extracts the `key` value of a single client entry.
+func clientKeyFromLines(segment []string) string {
+	for _, line := range segment {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "key:") {
+			continue
+		}
+		return yamlScalarValue(strings.TrimSpace(strings.TrimPrefix(trimmed, "key:")))
+	}
+	return ""
+}
+
+// mergeClientAllow returns the client entry with its allow list widened by the
+// managed model names. Existing entries keep their original order and literal
+// spelling; new entries are appended in sorted order.
+func mergeClientAllow(segment []string, clientIndent int, managed []string) []string {
+	fieldIndent := clientIndent + 2
+	for i := 1; i < len(segment); i++ {
+		if strings.TrimSpace(segment[i]) == "" {
+			continue
+		}
+		fieldIndent = len(segment[i]) - len(strings.TrimLeft(segment[i], " \t"))
+		break
+	}
+	fieldPad := strings.Repeat(" ", fieldIndent)
+	itemPad := strings.Repeat(" ", fieldIndent+2)
+
+	allowIdx := -1
+	inline := ""
+	for i, line := range segment {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "allow:") {
+			allowIdx = i
+			inline = strings.TrimSpace(strings.TrimPrefix(trimmed, "allow:"))
+			break
+		}
+	}
+
+	var existing []allowEntry
+	allowIndent := fieldIndent
+	consumeTo := allowIdx + 1
+	if allowIdx >= 0 {
+		allowIndent = len(segment[allowIdx]) - len(strings.TrimLeft(segment[allowIdx], " \t"))
+		if strings.HasPrefix(inline, "[") {
+			body := strings.TrimSuffix(strings.TrimPrefix(inline, "["), "]")
+			for _, part := range strings.Split(body, ",") {
+				if e, ok := parseAllowEntry(strings.TrimSpace(part)); ok {
+					existing = append(existing, e)
+				}
+			}
+		} else {
+			for i := allowIdx + 1; i < len(segment); i++ {
+				line := segment[i]
+				if strings.TrimSpace(line) == "" {
+					break
+				}
+				if len(line)-len(strings.TrimLeft(line, " \t")) <= allowIndent {
+					break
+				}
+				trimmed := strings.TrimSpace(line)
+				if !strings.HasPrefix(trimmed, "- ") {
+					break
+				}
+				if e, ok := parseAllowEntry(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))); ok {
+					existing = append(existing, e)
+				}
+				consumeTo = i + 1
+			}
+		}
+	}
+
+	values, raw := mergeAllowValues(existing, managed)
+
+	rendered := make([]string, 0, len(values)+2)
+	if allowIdx < 0 {
+		// No allow list yet: append one at the end of the client entry.
+		end := len(segment)
+		for end > 0 && strings.TrimSpace(segment[end-1]) == "" {
+			end--
+		}
+		rendered = append(rendered, segment[:end]...)
+		rendered = append(rendered, fieldPad+"allow:")
+		for _, r := range raw {
+			rendered = append(rendered, itemPad+"- "+r)
+		}
+		rendered = append(rendered, segment[end:]...)
+		return rendered
+	}
+
+	rendered = append(rendered, segment[:allowIdx]...)
+	rendered = append(rendered, fieldPad+"allow:")
+	for _, r := range raw {
+		rendered = append(rendered, itemPad+"- "+r)
+	}
+	rendered = append(rendered, segment[consumeTo:]...)
+	return rendered
+}
+
+type allowEntry struct {
+	value string
+	raw   string
+}
+
+func parseAllowEntry(token string) (allowEntry, bool) {
+	if token == "" || token == "[]" {
+		return allowEntry{}, false
+	}
+	value := yamlScalarValue(token)
+	if value == "" {
+		return allowEntry{}, false
+	}
+	return allowEntry{value: value, raw: token}, true
+}
+
+// mergeAllowValues keeps existing entries (original order and spelling) and
+// appends the managed models that are still missing, sorted for stable diffs.
+func mergeAllowValues(existing []allowEntry, managed []string) ([]string, []string) {
+	seen := map[string]bool{}
+	var values, raw []string
+	for _, e := range existing {
+		if seen[e.value] {
+			continue
+		}
+		seen[e.value] = true
+		values = append(values, e.value)
+		raw = append(raw, e.raw)
+	}
+
+	var missing []string
+	for _, m := range managed {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		missing = append(missing, m)
+	}
+	sort.Strings(missing)
+	for _, m := range missing {
+		values = append(values, m)
+		raw = append(raw, strconv.Quote(m))
+	}
+	return values, raw
+}
+
+// yamlScalarValue strips the optional surrounding quotes of a YAML scalar.
+func yamlScalarValue(token string) string {
+	token = strings.TrimSpace(token)
+	if len(token) >= 2 {
+		if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
+			return token[1 : len(token)-1]
+		}
+	}
+	return token
 }
 
 func validateThinkWatchConfig(exePath, configPath string, content []byte) error {
