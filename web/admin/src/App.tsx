@@ -1,18 +1,27 @@
-import {useEffect,useMemo,useState} from 'react'
+import {useEffect,useState,type FormEvent} from 'react'
 import {
   Activity, AlertTriangle, BarChart3, Boxes, ChevronRight, CircleGauge, Database,
-  FileClock, KeyRound, LayoutDashboard, Menu, Moon, Network, RefreshCw, Route,
-  ServerCog, Settings, ShieldAlert, Sun, Users, X, Zap
+  FileClock, KeyRound, LayoutDashboard, Loader2, Lock, LogOut, Menu, Moon, Network,
+  RefreshCw, Route, ServerCog, Settings, ShieldAlert, ShieldCheck, Sun, UserRound, Users, X, Zap
 } from 'lucide-react'
 import {
-  api, download, getToken, setToken,
-  type AdminAudit,type ApiKey,type DashboardStatus,type ModelConfig,type ModelRoute,
-  type Provider,type RequestLog,type SecurityEvent,type Tenant,type TenantUsage,type WhoAmI
+  api, changePassword, clearSession, download, getAuthConfig, listSessions, login, logout,
+  refreshSession, revokeSession, setUnauthenticatedHandler, setupAdmin,
+  type AdminAudit, type AdminSessionView, type ApiKey, type AuthConfig, type DashboardStatus,
+  type ModelConfig, type ModelRoute, type Provider, type RequestLog, type SecurityEvent,
+  type Tenant, type TenantUsage, type WhoAmI
 } from './api'
 
 type Page='dashboard'|'providers'|'models'|'tenants'|'keys'|'logs'|'audit'|'security'|'settings'
 type Drawer={kind:string;data?:any}|null
 type Toast={text:string;bad?:boolean}|null
+
+// loading  — checking the auth config and trying to restore a session
+// setup    — no administrator exists yet, show the first-run form
+// login    — credentials required
+// ready    — signed in
+// unsupported — the gateway is running a legacy auth mode this UI cannot drive
+type AuthPhase='loading'|'login'|'setup'|'ready'|'unsupported'
 
 const pages:{id:Page;label:string;icon:any}[]=[
   {id:'dashboard',label:'总览',icon:LayoutDashboard},
@@ -47,6 +56,9 @@ const status=(n:number)=><span className={'badge '+(n===1?'ok':'off')}>{n===1?'�
 const unknown=(v:any)=>v===0||v===false?String(v):(v||<span className="unknown">未知</span>)
 
 function App(){
+  const [phase,setPhase]=useState<AuthPhase>('loading')
+  const [authConfig,setAuthConfig]=useState<AuthConfig|null>(null)
+  const [authNotice,setAuthNotice]=useState('')
   const [page,setPage]=useState<Page>('dashboard')
   const [collapsed,setCollapsed]=useState(()=>localStorage.getItem('campus_sidebar')==='1')
   const [dark,setDark]=useState(()=>localStorage.getItem('campus_theme')==='dark')
@@ -67,12 +79,54 @@ function App(){
   const [filters,setFilters]=useState({model:'',provider:'',status:'',request_id:'',failover:''})
 
   useEffect(()=>{document.documentElement.dataset.theme=dark?'dark':'light';localStorage.setItem('campus_theme',dark?'dark':'light')},[dark])
-  useEffect(()=>{loadPage(page)},[page])
+
+  // Boot sequence: read the public auth config, then try to restore a session
+  // from the HttpOnly refresh cookie. The access token is never restored from
+  // storage because it is never written there.
+  useEffect(()=>{
+    let cancelled=false
+    ;(async()=>{
+      try{
+        const cfg=await getAuthConfig()
+        if(cancelled)return
+        setAuthConfig(cfg)
+        if(!cfg.login_enabled){setPhase('unsupported');return}
+        if(cfg.needs_setup){setPhase('setup');return}
+        const restored=await refreshSession()
+        if(cancelled)return
+        setPhase(restored?'ready':'login')
+      }catch{
+        if(!cancelled)setPhase('login')
+      }
+    })()
+    return ()=>{cancelled=true}
+  },[])
+
+  // A 401 that survives one refresh attempt means the session is gone; drop the
+  // operator back to the login screen with an explanation.
+  useEffect(()=>{
+    setUnauthenticatedHandler(reason=>{
+      setAuthNotice(reason==='revoked'?'会话已被撤销，请重新登录。':'登录状态已过期，请重新登录。')
+      setDrawer(null);setWho(null)
+      setPhase('login')
+    })
+  },[])
+
+  useEffect(()=>{if(phase==='ready')loadPage(page)},[page,phase])
   useEffect(()=>{if(toast){const t=setTimeout(()=>setToast(null),2800);return()=>clearTimeout(t)}},[toast])
 
   const notify=(text:string,bad=false)=>setToast({text,bad})
   const run=async(fn:()=>Promise<void>)=>{setBusy(true);try{await fn()}catch(e:any){notify(e.message||String(e),true)}finally{setBusy(false)}}
   const list=async<T,>(path:string)=>((await api<{data:T[]}>(path)).data||[])
+
+  function onAuthenticated(){setAuthNotice('');setPhase('ready');setPage('dashboard')}
+
+  async function signOut(){
+    await logout()
+    setWho(null);setStatusData(null);setDrawer(null)
+    setAuthNotice('已安全退出登录。')
+    setPhase('login')
+  }
 
   async function loadPage(p:Page){
     await run(async()=>{
@@ -146,6 +200,13 @@ function App(){
     const u=await api<TenantUsage>('/admin/tenants/'+t.id+'/usage');setDrawer({kind:'usage',data:{tenant:t,usage:u}})
   }
 
+  // The auth screens replace the whole shell. All hooks above run on every
+  // render, so the early returns below are safe.
+  if(phase==='loading')return <AuthSplash text="正在检查登录状态…"/>
+  if(phase==='unsupported')return <AuthUnsupported config={authConfig}/>
+  if(phase==='setup')return <SetupPage config={authConfig} onDone={onAuthenticated}/>
+  if(phase==='login')return <LoginPage config={authConfig} notice={authNotice} onDone={onAuthenticated}/>
+
   const title=pages.find(x=>x.id===page)?.label||''
   return <div className="shell">
     <aside className={'sidebar '+(collapsed?'collapsed':'')}>
@@ -161,8 +222,9 @@ function App(){
         <div><h1>{title}</h1><p>{page==='dashboard'?'统一模型接入、路由、访问控制与审计':'校园 AI 基础设施管理中心'}</p></div>
         <div className="topActions">
           {busy&&<span className="loading"><RefreshCw/> 正在刷新</span>}
-          {who&&<span className="identity">{who.user}<small>{who.roles?.join(' · ')}</small></span>}
-          <button className="iconBtn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button>
+          {who&&<span className="identity">{who.username||who.user}<small>{who.roles?.join(' · ')}</small></span>}
+          <button className="iconBtn" onClick={()=>setDark(!dark)} title={dark?'切换到浅色主题':'切换到深色主题'}>{dark?<Sun/>:<Moon/>}</button>
+          <button className="iconBtn" onClick={()=>run(signOut)} title="退出登录"><LogOut/></button>
         </div>
       </header>
       <main>
@@ -174,7 +236,7 @@ function App(){
         {page==='logs'&&<Logs rows={logs} filters={filters} setFilters={setFilters} offset={logOffset} onApply={()=>run(()=>loadLogs(true))} onPrev={()=>{const n=Math.max(0,logOffset-50);setLogOffset(n);run(()=>loadLogs(false,n))}} onNext={()=>{const n=logOffset+50;setLogOffset(n);run(()=>loadLogs(false,n))}} onDetail={v=>setDrawer({kind:'log',data:v})} onExport={()=>run(()=>download('/admin/request-logs/export?'+new URLSearchParams(Object.entries(filters).filter(([,v])=>v) as [string,string][]),'campus-gateway-request-logs.csv'))}/>}
         {page==='audit'&&<Audit rows={audits}/>}
         {page==='security'&&<Security rows={security} onDetail={v=>setDrawer({kind:'security',data:v})}/>}
-        {page==='settings'&&<SettingsPage who={who} onSaved={()=>notify('开发模式 Token 已更新')}/>}
+        {page==='settings'&&<AccountPage who={who} onNotice={notify} onSignedOut={signOut}/>}
       </main>
     </section>
     {drawer&&<DrawerView drawer={drawer} providers={providers} tenants={tenants} models={models} onClose={()=>setDrawer(null)} onProvider={v=>run(()=>saveProvider(v))} onModel={v=>run(()=>saveModel(v))} onRoute={(m,v)=>run(()=>saveRoute(m,v))} onTenant={v=>run(()=>saveTenant(v))} onKey={v=>run(()=>saveKey(v))} onTest={(m,p)=>run(()=>modelTest(m,p))}/>}
@@ -263,13 +325,236 @@ function Logs({rows,filters,setFilters,offset,onApply,onPrev,onNext,onDetail,onE
 function Audit({rows}:{rows:AdminAudit[]}){return <Panel title="管理审计" sub="记录管理员对控制面的修改操作。">{rows.length?<Table heads={['时间','用户','操作','资源','来源','状态']}>{rows.map(v=><tr key={v.id}><td>{when(v.created_at)}</td><td><b>{v.actor}</b></td><td><span className="badge">{v.action}</span></td><td className="mono">{v.resource}</td><td>{v.client_ip||'—'}</td><td>{v.status_code}</td></tr>)}</Table>:<Empty text="暂无管理审计记录"/>}</Panel>}
 function Security({rows,onDetail}:{rows:SecurityEvent[];onDetail:(v:SecurityEvent)=>void}){return <Panel title="安全事件" sub="集中展示鉴权、权限、限流和租户配额拒绝事件。">{rows.length?<Table heads={['时间','事件','模型','来源 IP','详情']}>{rows.map(v=><tr key={v.id} className="clickRow" onClick={()=>onDetail(v)}><td>{when(v.created_at)}</td><td><span className="badge bad">{v.event_type}</span></td><td>{v.requested_model||'—'}</td><td>{v.client_ip||'—'}</td><td className="cut">{v.detail||'—'}</td></tr>)}</Table>:<Empty text="暂无安全事件"/>}</Panel>}
 
-function SettingsPage({who,onSaved}:{who:WhoAmI|null;onSaved:()=>void}){
- const [token,setLocal]=useState(getToken())
- return <div className="settingsGrid">
-  <Panel title="当前身份" sub="生产 trusted-header 模式下，身份应由校园 OIDC 反向认证层注入。"><div className="kv"><span>用户</span><b>{who?.user||'未认证'}</b><span>认证模式</span><b>{who?.auth_mode||'—'}</b><span>角色</span><b>{who?.roles?.join('、')||'—'}</b></div></Panel>
-  <Panel title="本地开发 Token" sub="仅用于 ADMIN_AUTH_MODE=token；生产环境不应依赖浏览器长期保存 Token。"><div className="form"><label>ADMIN_TOKEN<input type="password" value={token} onChange={e=>setLocal(e.target.value)}/></label><div className="formActions"><button className="btn secondary" onClick={()=>{setToken('');setLocal('');onSaved()}}>清除</button><button className="btn primary" onClick={()=>{setToken(token.trim());onSaved()}}>保存</button></div></div></Panel>
- </div>
+// ---------------------------------------------------------------------------
+// Authentication screens
+// ---------------------------------------------------------------------------
+
+function AuthSplash({text}:{text:string}){
+  return <div className="authPage"><div className="authCard authCenter">
+    <div className="brandMark lg">AI</div>
+    <p className="authHint"><Loader2 className="spin"/> {text}</p>
+  </div></div>
 }
+
+function AuthUnsupported({config}:{config:AuthConfig|null}){
+  return <div className="authPage"><div className="authCard authCenter">
+    <div className="brandMark lg">AI</div>
+    <h1 className="authTitle">控制台登录未启用</h1>
+    <p className="authHint">
+      当前网关的认证模式为 <code>{config?.auth_mode||'未知'}</code>，
+      管理控制台只在账号密码登录模式下可用。请联系校园信息化管理部门确认网关配置。
+    </p>
+  </div></div>
+}
+
+function LoginPage({config,notice,onDone}:{config:AuthConfig|null;notice:string;onDone:()=>void}){
+  const [username,setUsername]=useState('')
+  const [password,setPassword]=useState('')
+  const [error,setError]=useState('')
+  const [busy,setBusy]=useState(false)
+
+  const submit=async(e:FormEvent)=>{
+    e.preventDefault()
+    if(busy)return
+    setBusy(true);setError('')
+    try{
+      await login(username.trim(),password)
+      onDone()
+    }catch(err:any){
+      setError(err?.message||'登录失败')
+    }finally{
+      setBusy(false)
+    }
+  }
+
+  return <div className="authPage">
+    <form className="authCard" onSubmit={submit}>
+      <div className="authHead">
+        <div className="brandMark lg">AI</div>
+        <div><h1>校园模型网关</h1><p>Campus AI Gateway 管理控制台</p></div>
+      </div>
+      {notice&&<div className="authNotice"><ShieldCheck/>{notice}</div>}
+      <label className="field"><span>用户名</span>
+        <input autoFocus autoComplete="username" value={username} placeholder="请输入管理员用户名"
+          onChange={e=>setUsername(e.target.value)}/>
+      </label>
+      <label className="field"><span>密码</span>
+        <input type="password" autoComplete="current-password" value={password} placeholder="请输入密码"
+          onChange={e=>setPassword(e.target.value)}/>
+      </label>
+      {error&&<div className="authError"><AlertTriangle/>{error}</div>}
+      <button className="btn primary authSubmit" type="submit" disabled={busy||!username.trim()||!password}>
+        {busy?<><Loader2 className="spin"/>正在登录</>:<><Lock/>登录</>}
+      </button>
+      <p className="authHint">忘记密码请联系校园信息化管理部门重置管理员账号。</p>
+      {config&&config.access_ttl_seconds>0&&<p className="authHint subtle">登录凭证仅在当前页面内存中保存，不会写入浏览器本地存储。</p>}
+    </form>
+  </div>
+}
+
+function SetupPage({config,onDone}:{config:AuthConfig|null;onDone:()=>void}){
+  const [username,setUsername]=useState('admin')
+  const [displayName,setDisplayName]=useState('')
+  const [password,setPassword]=useState('')
+  const [confirmPassword,setConfirmPassword]=useState('')
+  const [error,setError]=useState('')
+  const [busy,setBusy]=useState(false)
+
+  const min=config?.min_password_length||10
+  const remoteBlocked=!!config?.setup_local_only&&!config?.setup_allowed_here
+  const mismatch=confirmPassword!==''&&password!==confirmPassword
+
+  const submit=async(e:FormEvent)=>{
+    e.preventDefault()
+    if(busy)return
+    if(password!==confirmPassword){setError('两次输入的密码不一致');return}
+    setBusy(true);setError('')
+    try{
+      await setupAdmin({username:username.trim(),display_name:displayName.trim(),password,confirm_password:confirmPassword})
+      onDone()
+    }catch(err:any){
+      setError(err?.message||'初始化失败')
+    }finally{
+      setBusy(false)
+    }
+  }
+
+  return <div className="authPage">
+    <form className="authCard" onSubmit={submit}>
+      <div className="authHead">
+        <div className="brandMark lg">AI</div>
+        <div><h1>创建管理员账号</h1><p>首次启动 · 校园模型网关</p></div>
+      </div>
+
+      {remoteBlocked
+        ? <div className="authError"><AlertTriangle/>出于安全考虑，首次初始化只允许在服务器本机进行。请在服务器上打开 <code>http://127.0.0.1:8080/admin-ui</code> 完成创建。</div>
+        : <div className="authNotice"><ShieldCheck/>这是首次启动，请创建唯一的超级管理员账号。该账号拥有全部管理权限。</div>}
+
+      <label className="field"><span>用户名</span>
+        <input autoFocus autoComplete="username" value={username} placeholder="用于日常登录，例如 admin"
+          onChange={e=>setUsername(e.target.value)}/>
+      </label>
+      <label className="field"><span>显示名称（可选）</span>
+        <input value={displayName} placeholder="例如 信息化中心管理员"
+          onChange={e=>setDisplayName(e.target.value)}/>
+      </label>
+      <label className="field"><span>密码</span>
+        <input type="password" autoComplete="new-password" value={password} placeholder={`至少 ${min} 位`}
+          onChange={e=>setPassword(e.target.value)}/>
+        <small className="hint">至少 {min} 位，且需包含字母、数字、符号中的至少两类；不能与用户名相同。</small>
+      </label>
+      <label className="field"><span>确认密码</span>
+        <input type="password" autoComplete="new-password" value={confirmPassword} placeholder="请再次输入密码"
+          onChange={e=>setConfirmPassword(e.target.value)}/>
+      </label>
+      {mismatch&&<div className="authError"><AlertTriangle/>两次输入的密码不一致</div>}
+      {error&&<div className="authError"><AlertTriangle/>{error}</div>}
+      <button className="btn primary authSubmit" type="submit"
+        disabled={busy||remoteBlocked||!username.trim()||!password||password!==confirmPassword}>
+        {busy?<><Loader2 className="spin"/>正在创建</>:<><ShieldCheck/>创建并登录</>}
+      </button>
+    </form>
+  </div>
+}
+
+// ---------------------------------------------------------------------------
+// Account and security
+// ---------------------------------------------------------------------------
+
+function AccountPage({who,onNotice,onSignedOut}:{who:WhoAmI|null;onNotice:(t:string,bad?:boolean)=>void;onSignedOut:()=>void}){
+  const [current,setCurrent]=useState('')
+  const [next,setNext]=useState('')
+  const [confirmNext,setConfirmNext]=useState('')
+  const [error,setError]=useState('')
+  const [busy,setBusy]=useState(false)
+  const [sessions,setSessions]=useState<AdminSessionView[]>([])
+  const [loadingSessions,setLoadingSessions]=useState(true)
+
+  const reloadSessions=async()=>{
+    setLoadingSessions(true)
+    try{setSessions(await listSessions())}
+    catch{/* the global 401 handler deals with an expired session */}
+    finally{setLoadingSessions(false)}
+  }
+  useEffect(()=>{reloadSessions()},[])
+
+  const submit=async(e:FormEvent)=>{
+    e.preventDefault()
+    if(busy)return
+    if(next!==confirmNext){setError('两次输入的新密码不一致');return}
+    setBusy(true);setError('')
+    try{
+      const out=await changePassword(current,next)
+      onNotice(out?.message||'密码已更新')
+      setCurrent('');setNext('');setConfirmNext('')
+      // Every session was revoked by the change, so return to the login screen.
+      clearSession()
+      onSignedOut()
+    }catch(err:any){
+      setError(err?.message||'修改密码失败')
+    }finally{
+      setBusy(false)
+    }
+  }
+
+  const revoke=async(id:string)=>{
+    if(!confirm('确认撤销该设备的登录状态？'))return
+    try{
+      await revokeSession(id)
+      if(sessions.find(s=>s.id===id)?.current){onNotice('当前会话已撤销，请重新登录');onSignedOut();return}
+      onNotice('已撤销该设备的登录状态')
+      await reloadSessions()
+    }catch(err:any){onNotice(err?.message||'撤销失败',true)}
+  }
+
+  return <div className="settingsGrid">
+    <Panel title="当前身份" sub="身份来自账号密码登录，权限由账号角色决定。">
+      <div className="kv">
+        <span>用户名</span><b>{who?.username||who?.user||'—'}</b>
+        <span>角色</span><b>{who?.roles?.join('、')||'—'}</b>
+        <span>认证方式</span><b>{who?.auth_mode==='session'?'账号密码登录':(who?.auth_mode||'—')}</b>
+        <span>登录凭证</span><b>仅保存在当前页面内存，自动续期</b>
+      </div>
+      <div className="panelFoot"><button className="btn secondary" onClick={onSignedOut}><LogOut/>退出登录</button></div>
+    </Panel>
+
+    <Panel title="修改密码" sub="修改成功后，所有设备上的登录状态都会立即失效，需要用新密码重新登录。">
+      <form className="form" onSubmit={submit}>
+        <F label="当前密码"><input type="password" autoComplete="current-password" value={current} onChange={e=>setCurrent(e.target.value)}/></F>
+        <F label="新密码" hint="至少 10 位，且需包含字母、数字、符号中的至少两类。">
+          <input type="password" autoComplete="new-password" value={next} onChange={e=>setNext(e.target.value)}/>
+        </F>
+        <F label="确认新密码"><input type="password" autoComplete="new-password" value={confirmNext} onChange={e=>setConfirmNext(e.target.value)}/></F>
+        {error&&<div className="authError"><AlertTriangle/>{error}</div>}
+        <div className="formActions">
+          <button className="btn primary" type="submit" disabled={busy||!current||!next||!confirmNext}>
+            {busy?<><Loader2 className="spin"/>正在更新</>:<><KeyRound/>更新密码</>}
+          </button>
+        </div>
+      </form>
+    </Panel>
+
+    <Panel title="登录设备" sub="这里列出当前账号仍然有效的登录会话。撤销后该设备需要重新登录。">
+      {loadingSessions
+        ? <div className="empty"><Loader2 className="spin"/><b>正在读取登录设备</b></div>
+        : sessions.length
+          ? <Table heads={['设备 / 来源','登录方式','最近活动','到期时间','']}>
+              {sessions.map(s=><tr key={s.id}>
+                <td><b>{s.ip||'未知地址'}</b>{s.current&&<span className="badge ok">当前设备</span>}<br/><span className="muted cut">{s.user_agent||'未知客户端'}</span></td>
+                <td><span className="badge">{s.login_method==='password'?'密码登录':s.login_method}</span></td>
+                <td>{when(s.last_active_at)}</td>
+                <td>{when(s.expires_at)}</td>
+                <td><button className="link dangerText" onClick={()=>revoke(s.id)}>撤销</button></td>
+              </tr>)}
+            </Table>
+          : <Empty text="没有其他有效登录会话"/>}
+    </Panel>
+  </div>
+}
+
+// ---------------------------------------------------------------------------
+// Shared presentational helpers
+// ---------------------------------------------------------------------------
 
 function Table({heads,children}:{heads:string[];children:any}){return <div className="tableWrap"><table><thead><tr>{heads.map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{children}</tbody></table></div>}
 

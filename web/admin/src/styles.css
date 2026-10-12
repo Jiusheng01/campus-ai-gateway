@@ -57,3 +57,30 @@ main{max-width:1540px;margin:0 auto;padding:24px 28px 48px}.stack{display:flex;f
 @media(max-width:780px){.sidebar{width:62px}.sidebar nav span,.sidebar .brand>div:not(.brandMark){display:none}.workspace,.collapsed+.workspace{margin-left:62px}.topbar{padding:0 14px}.topbar p,.identity{display:none}main{padding:14px}.healthGrid{grid-template-columns:repeat(2,1fr)}.metricGrid{grid-template-columns:repeat(2,1fr)}.tenantGrid,.providerGrid,.settingsGrid{grid-template-columns:1fr}.filters{grid-template-columns:1fr 1fr}.routeFlow{flex-direction:column}.routeStep{flex-direction:column;align-items:stretch}.failLine{flex-direction:row}.failLine svg{transform:rotate(90deg)}.routeBox{width:100%}.formGrid{grid-template-columns:1fr}}
 
 .hint{font-size:9px;line-height:1.45;color:var(--muted);font-weight:500}
+
+/* ------------------------------------------------------------------ */
+/* Authentication screens                                              */
+/* ------------------------------------------------------------------ */
+.authPage{min-height:100vh;display:grid;place-items:center;padding:24px;background:
+  radial-gradient(1100px 520px at 12% -10%,color-mix(in srgb,var(--primary) 12%,transparent),transparent 60%),
+  radial-gradient(900px 460px at 100% 110%,color-mix(in srgb,#7c3aed 10%,transparent),transparent 60%),
+  var(--bg)}
+.authCard{width:min(432px,100%);background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:16px}
+.authCard.authCenter{align-items:center;text-align:center;gap:12px}
+.authHead{display:flex;align-items:center;gap:13px}
+.authHead h1{margin:0;font-size:18px;letter-spacing:-.02em}
+.authHead p{margin:4px 0 0;font-size:11px;color:var(--muted)}
+.authTitle{margin:0;font-size:16px}
+.brandMark.lg{width:44px;height:44px;border-radius:14px;font-size:14px;flex:none}
+.authCard .field>span{font-size:11px}
+.authCard input{padding:11px 12px;font-size:12px}
+.authSubmit{justify-content:center;padding:11px 14px;font-size:12px;margin-top:2px}
+.authError,.authNotice{display:flex;align-items:flex-start;gap:8px;border-radius:10px;padding:10px 12px;font-size:11px;line-height:1.55}
+.authError{border:1px solid color-mix(in srgb,var(--bad) 28%,var(--line));background:color-mix(in srgb,var(--bad) 8%,var(--card));color:var(--bad)}
+.authError svg,.authNotice svg{flex:none;margin-top:1px}
+.authNotice{border:1px solid color-mix(in srgb,var(--primary) 24%,var(--line));background:var(--primary-soft);color:var(--text)}
+.authHint{font-size:10px;color:var(--muted);line-height:1.65;margin:0}
+.authHint.subtle{opacity:.75}
+.authCard code,.authError code{font-family:"Cascadia Code",Consolas,monospace;background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:10px}
+.spin{animation:spin 1s linear infinite}
+.panelFoot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--line)}
