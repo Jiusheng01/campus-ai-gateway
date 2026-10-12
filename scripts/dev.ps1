@@ -25,6 +25,33 @@ function Fail([string]$Message) {
     exit 1
 }
 
+# Windows PowerShell 5.1 turns anything a native executable writes to stderr
+# into a terminating error while $ErrorActionPreference is "Stop" - even when
+# the tool itself succeeded (docker compose progress, npm warnings, go test
+# output). Invoke-Native scopes the preference down to "Continue" for the call,
+# records the real exit code in $script:LastNativeExitCode, and restores the
+# caller's preference afterwards so genuine PowerShell errors still terminate.
+$script:LastNativeExitCode = 0
+
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Command
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Command
+        $script:LastNativeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+function Test-NativeSuccess {
+    return ($script:LastNativeExitCode -eq 0)
+}
+
 function Refresh-Path {
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $user = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -98,8 +125,8 @@ function Wait-TcpPort([string]$HostName, [int]$Port, [int]$Seconds = 30) {
 
 function Test-DockerReady {
     try {
-        & docker info *> $null
-        return ($LASTEXITCODE -eq 0)
+        Invoke-Native { & docker info *> $null }
+        return (Test-NativeSuccess)
     }
     catch {
         return $false
@@ -163,8 +190,8 @@ $composeFiles = @(
 )
 
 Write-Step "Starting PostgreSQL and Redis..."
-& docker compose @composeFiles up -d postgres redis
-if ($LASTEXITCODE -ne 0) {
+Invoke-Native { & docker compose @composeFiles up -d postgres redis }
+if (-not (Test-NativeSuccess)) {
     Fail "Unable to start PostgreSQL / Redis."
 }
 Write-Ok "PostgreSQL / Redis containers started"
@@ -172,8 +199,8 @@ Write-Ok "PostgreSQL / Redis containers started"
 Write-Step "Waiting for PostgreSQL..."
 $dbReady = $false
 for ($i = 0; $i -lt 30; $i++) {
-    & docker compose @composeFiles exec -T postgres pg_isready -U campus -d campus_gateway *> $null
-    if ($LASTEXITCODE -eq 0) {
+    Invoke-Native { & docker compose @composeFiles exec -T postgres pg_isready -U campus -d campus_gateway *> $null }
+    if (Test-NativeSuccess) {
         $dbReady = $true
         break
     }
@@ -188,9 +215,11 @@ Write-Step "Applying database migrations..."
 $migrations = Get-ChildItem ".\migrations\*.sql" -File | Sort-Object Name
 foreach ($migration in $migrations) {
     Write-Host ("       -> " + $migration.Name)
-    Get-Content $migration.FullName -Raw |
-        & docker compose @composeFiles exec -T postgres psql -v ON_ERROR_STOP=1 -U campus -d campus_gateway
-    if ($LASTEXITCODE -ne 0) {
+    Invoke-Native {
+        Get-Content $migration.FullName -Raw |
+            & docker compose @composeFiles exec -T postgres psql -v ON_ERROR_STOP=1 -U campus -d campus_gateway
+    }
+    if (-not (Test-NativeSuccess)) {
         Fail ("Migration failed: " + $migration.Name)
     }
 }
@@ -232,8 +261,8 @@ if (-not $thinkWatchRunning) {
         }
         if ($env:THINKWATCH_CONFIG_PATH -and (Test-Path $env:THINKWATCH_CONFIG_PATH)) {
             Write-Step "Validating ThinkWatch config..."
-            & $twExe --config $env:THINKWATCH_CONFIG_PATH check
-            if ($LASTEXITCODE -ne 0) {
+            Invoke-Native { & $twExe --config $env:THINKWATCH_CONFIG_PATH check }
+            if (-not (Test-NativeSuccess)) {
                 Fail "ThinkWatch config validation failed. Core was not started."
             }
         }
@@ -283,14 +312,14 @@ if (-not (Test-Path $adminPackage)) {
 Push-Location $adminDir
 try {
     if (-not (Test-Path $adminNodeModules)) {
-        & npm install --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) {
+        Invoke-Native { & npm install --no-audit --no-fund }
+        if (-not (Test-NativeSuccess)) {
             Fail "Unable to install Admin UI dependencies."
         }
     }
 
-    & npm run build
-    if ($LASTEXITCODE -ne 0) {
+    Invoke-Native { & npm run build }
+    if (-not (Test-NativeSuccess)) {
         Fail "Admin UI build failed."
     }
 }
@@ -301,8 +330,8 @@ Write-Ok "Admin UI v2 built"
 
 if (-not $SkipTests) {
     Write-Step "Running Go tests..."
-    & go test ./...
-    if ($LASTEXITCODE -ne 0) {
+    Invoke-Native { & go test ./... }
+    if (-not (Test-NativeSuccess)) {
         Fail "Go tests failed."
     }
     Write-Ok "Go tests passed"
