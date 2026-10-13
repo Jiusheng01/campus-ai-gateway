@@ -1,12 +1,12 @@
 import {useEffect,useState,type FormEvent} from 'react'
 import {
   Activity, AlertTriangle, BarChart3, Boxes, ChevronRight, CircleGauge, Database,
-  FileClock, KeyRound, LayoutDashboard, Loader2, Lock, LogOut, Menu, Moon, Network,
+  Eye, EyeOff, FileClock, KeyRound, LayoutDashboard, Loader2, Lock, LogOut, Menu, Moon, Network,
   RefreshCw, Route, ServerCog, Settings, ShieldAlert, ShieldCheck, Sun, UserRound, Users, X, Zap
 } from 'lucide-react'
 import {
-  api, changePassword, clearSession, download, getAuthConfig, listSessions, login, logout,
-  refreshSession, revokeSession, setUnauthenticatedHandler, setupAdmin,
+  api, changePassword, clearSession, download, getAuthConfig, isSessionMode, listSessions, login, logout,
+  refreshSession, revokeSession, setAuthMode, setUnauthenticatedHandler, setupAdmin, whoami,
   type AdminAudit, type AdminSessionView, type ApiKey, type AuthConfig, type DashboardStatus,
   type ModelConfig, type ModelRoute, type Provider, type RequestLog, type SecurityEvent,
   type Tenant, type TenantUsage, type WhoAmI
@@ -18,10 +18,14 @@ type Toast={text:string;bad?:boolean}|null
 
 // loading  — checking the auth config and trying to restore a session
 // setup    — no administrator exists yet, show the first-run form
-// login    — credentials required
+// login    — credentials required (session mode)
 // ready    — signed in
+// identity — trusted-header mode: the campus proxy must inject an identity
 // unsupported — the gateway is running a legacy auth mode this UI cannot drive
-type AuthPhase='loading'|'login'|'setup'|'ready'|'unsupported'
+type AuthPhase='loading'|'login'|'setup'|'ready'|'identity'|'unsupported'
+
+// authModeOf normalises the mode string once so every branch agrees on it.
+const authModeOf=(cfg:AuthConfig|null)=>(cfg?.auth_mode||'').toLowerCase()
 
 const pages:{id:Page;label:string;icon:any}[]=[
   {id:'dashboard',label:'总览',icon:LayoutDashboard},
@@ -80,9 +84,12 @@ function App(){
 
   useEffect(()=>{document.documentElement.dataset.theme=dark?'dark':'light';localStorage.setItem('campus_theme',dark?'dark':'light')},[dark])
 
-  // Boot sequence: read the public auth config, then try to restore a session
-  // from the HttpOnly refresh cookie. The access token is never restored from
-  // storage because it is never written there.
+  // Boot sequence: read the public auth config, then resolve the identity
+  // appropriate to the active mode. In session mode that means restoring from
+  // the HttpOnly refresh cookie; in trusted-header mode the campus reverse proxy
+  // has already injected the identity, so /admin/whoami is the only call needed.
+  // The access token is never restored from storage because it is never written
+  // there.
   useEffect(()=>{
     let cancelled=false
     ;(async()=>{
@@ -90,6 +97,22 @@ function App(){
         const cfg=await getAuthConfig()
         if(cancelled)return
         setAuthConfig(cfg)
+        setAuthMode(authModeOf(cfg))
+        const mode=authModeOf(cfg)
+
+        if(mode==='trusted-header'){
+          // No login form and no local session: ask the gateway who we are.
+          try{
+            const w=await whoami()
+            if(cancelled)return
+            setWho(w)
+            setPhase('ready')
+          }catch{
+            if(!cancelled)setPhase('identity')
+          }
+          return
+        }
+
         if(!cfg.login_enabled){setPhase('unsupported');return}
         if(cfg.needs_setup){setPhase('setup');return}
         const restored=await refreshSession()
@@ -102,15 +125,21 @@ function App(){
     return ()=>{cancelled=true}
   },[])
 
-  // A 401 that survives one refresh attempt means the session is gone; drop the
-  // operator back to the login screen with an explanation.
+  // A 401 that survives one refresh attempt means the session is gone. What
+  // that looks like depends on the mode: session mode returns to the login
+  // screen, trusted-header mode can only report that the campus identity is
+  // missing or lacks a management role.
   useEffect(()=>{
     setUnauthenticatedHandler(reason=>{
-      setAuthNotice(reason==='revoked'?'会话已被撤销，请重新登录。':'登录状态已过期，请重新登录。')
       setDrawer(null);setWho(null)
+      if(authModeOf(authConfig)==='trusted-header'){
+        setPhase('identity')
+        return
+      }
+      setAuthNotice(reason==='revoked'?'会话已被撤销，请重新登录。':'登录状态已过期，请重新登录。')
       setPhase('login')
     })
-  },[])
+  },[authConfig])
 
   useEffect(()=>{if(phase==='ready')loadPage(page)},[page,phase])
   useEffect(()=>{if(toast){const t=setTimeout(()=>setToast(null),2800);return()=>clearTimeout(t)}},[toast])
@@ -204,8 +233,11 @@ function App(){
   // render, so the early returns below are safe.
   if(phase==='loading')return <AuthSplash text="正在检查登录状态…"/>
   if(phase==='unsupported')return <AuthUnsupported config={authConfig}/>
+  if(phase==='identity')return <IdentityRequired onRetry={()=>window.location.reload()}/>
   if(phase==='setup')return <SetupPage config={authConfig} onDone={onAuthenticated}/>
   if(phase==='login')return <LoginPage config={authConfig} notice={authNotice} onDone={onAuthenticated}/>
+
+  const sessionMode=isSessionMode()
 
   const title=pages.find(x=>x.id===page)?.label||''
   return <div className="shell">
@@ -224,7 +256,7 @@ function App(){
           {busy&&<span className="loading"><RefreshCw/> 正在刷新</span>}
           {who&&<span className="identity">{who.username||who.user}<small>{who.roles?.join(' · ')}</small></span>}
           <button className="iconBtn" onClick={()=>setDark(!dark)} title={dark?'切换到浅色主题':'切换到深色主题'}>{dark?<Sun/>:<Moon/>}</button>
-          <button className="iconBtn" onClick={()=>run(signOut)} title="退出登录"><LogOut/></button>
+          {sessionMode&&<button className="iconBtn" onClick={()=>run(signOut)} title="退出登录"><LogOut/></button>}
         </div>
       </header>
       <main>
@@ -336,14 +368,66 @@ function AuthSplash({text}:{text:string}){
   </div></div>
 }
 
+// PasswordInput is a password field with a show/hide toggle.
+//
+// The toggle is an icon-only control, so it carries both an aria-label and a
+// title: without them a screen reader announces nothing useful.
+function PasswordInput({value,onChange,placeholder,autoComplete,autoFocus}:{
+  value:string
+  onChange:(v:string)=>void
+  placeholder?:string
+  autoComplete?:string
+  autoFocus?:boolean
+}){
+  const [visible,setVisible]=useState(false)
+  const label=visible?'隐藏密码':'显示密码'
+  return <div className="passwordWrap">
+    <input
+      type={visible?'text':'password'}
+      value={value}
+      placeholder={placeholder}
+      autoComplete={autoComplete}
+      autoFocus={autoFocus}
+      onChange={e=>onChange(e.target.value)}
+    />
+    <button type="button" className="revealBtn" onClick={()=>setVisible(v=>!v)}
+      aria-label={label} title={label} tabIndex={-1}>
+      {visible?<EyeOff/>:<Eye/>}
+    </button>
+  </div>
+}
+
 function AuthUnsupported({config}:{config:AuthConfig|null}){
+  const mode=(config?.auth_mode||'').toLowerCase()
+  const tokenMode=mode==='token'||mode===''
   return <div className="authPage"><div className="authCard authCenter">
     <div className="brandMark lg">AI</div>
-    <h1 className="authTitle">控制台登录未启用</h1>
+    <h1 className="authTitle">{tokenMode?'当前为应急 Token 模式':'控制台登录未启用'}</h1>
+    {tokenMode
+      ? <p className="authHint">
+          网关正以应急 Token 模式运行，管理控制台不提供登录入口。请通过管理 API 使用
+          <code>ADMIN_TOKEN</code> 访问，或将 <code>ADMIN_AUTH_MODE</code> 切换为
+          <code>session</code> 后使用账号密码登录。
+        </p>
+      : <p className="authHint">
+          当前网关的认证模式为 <code>{config?.auth_mode||'未知'}</code>，
+          管理控制台无法驱动该模式。请联系校园信息化管理部门确认网关配置。
+        </p>}
+  </div></div>
+}
+
+// IdentityRequired is the trusted-header failure screen. There is no local
+// credential to enter: the campus reverse proxy injects the identity, so the
+// only useful actions are to finish the campus login and retry.
+function IdentityRequired({onRetry}:{onRetry:()=>void}){
+  return <div className="authPage"><div className="authCard authCenter">
+    <div className="brandMark lg">AI</div>
+    <h1 className="authTitle">统一身份认证未完成</h1>
     <p className="authHint">
-      当前网关的认证模式为 <code>{config?.auth_mode||'未知'}</code>，
-      管理控制台只在账号密码登录模式下可用。请联系校园信息化管理部门确认网关配置。
+      当前网关使用学校统一身份认证。未能取得有效的管理身份，可能是统一身份认证尚未完成，
+      或当前账号不具备管理权限。请完成校园统一身份认证后重试，或联系校园信息化管理部门。
     </p>
+    <button className="btn primary authSubmit" onClick={onRetry}><RefreshCw/>重新检查</button>
   </div></div>
 }
 
@@ -379,15 +463,15 @@ function LoginPage({config,notice,onDone}:{config:AuthConfig|null;notice:string;
           onChange={e=>setUsername(e.target.value)}/>
       </label>
       <label className="field"><span>密码</span>
-        <input type="password" autoComplete="current-password" value={password} placeholder="请输入密码"
-          onChange={e=>setPassword(e.target.value)}/>
+        <PasswordInput autoComplete="current-password" value={password} placeholder="请输入密码"
+          onChange={setPassword}/>
       </label>
       {error&&<div className="authError"><AlertTriangle/>{error}</div>}
       <button className="btn primary authSubmit" type="submit" disabled={busy||!username.trim()||!password}>
         {busy?<><Loader2 className="spin"/>正在登录</>:<><Lock/>登录</>}
       </button>
       <p className="authHint">忘记密码请联系校园信息化管理部门重置管理员账号。</p>
-      {config&&config.access_ttl_seconds>0&&<p className="authHint subtle">登录凭证仅在当前页面内存中保存，不会写入浏览器本地存储。</p>}
+      {config&&config.access_ttl_seconds>0&&<p className="authHint subtle">登录状态会安全保存并在后台自动续期，不会写入浏览器本地存储。</p>}
     </form>
   </div>
 }
@@ -439,13 +523,13 @@ function SetupPage({config,onDone}:{config:AuthConfig|null;onDone:()=>void}){
           onChange={e=>setDisplayName(e.target.value)}/>
       </label>
       <label className="field"><span>密码</span>
-        <input type="password" autoComplete="new-password" value={password} placeholder={`至少 ${min} 位`}
-          onChange={e=>setPassword(e.target.value)}/>
+        <PasswordInput autoComplete="new-password" value={password} placeholder={`至少 ${min} 位`}
+          onChange={setPassword}/>
         <small className="hint">至少 {min} 位，且需包含字母、数字、符号中的至少两类；不能与用户名相同。</small>
       </label>
       <label className="field"><span>确认密码</span>
-        <input type="password" autoComplete="new-password" value={confirmPassword} placeholder="请再次输入密码"
-          onChange={e=>setConfirmPassword(e.target.value)}/>
+        <PasswordInput autoComplete="new-password" value={confirmPassword} placeholder="请再次输入密码"
+          onChange={setConfirmPassword}/>
       </label>
       {mismatch&&<div className="authError"><AlertTriangle/>两次输入的密码不一致</div>}
       {error&&<div className="authError"><AlertTriangle/>{error}</div>}
@@ -470,13 +554,18 @@ function AccountPage({who,onNotice,onSignedOut}:{who:WhoAmI|null;onNotice:(t:str
   const [sessions,setSessions]=useState<AdminSessionView[]>([])
   const [loadingSessions,setLoadingSessions]=useState(true)
 
+  const mode=(who?.auth_mode||'').toLowerCase()
+  const sessionMode=mode==='session'
+
   const reloadSessions=async()=>{
     setLoadingSessions(true)
     try{setSessions(await listSessions())}
     catch{/* the global 401 handler deals with an expired session */}
     finally{setLoadingSessions(false)}
   }
-  useEffect(()=>{reloadSessions()},[])
+  // Only session mode owns a device list; asking for it under trusted-header
+  // would just produce a 401 for no reason.
+  useEffect(()=>{if(sessionMode)reloadSessions()},[sessionMode])
 
   const submit=async(e:FormEvent)=>{
     e.preventDefault()
@@ -507,24 +596,44 @@ function AccountPage({who,onNotice,onSignedOut}:{who:WhoAmI|null;onNotice:(t:str
     }catch(err:any){onNotice(err?.message||'撤销失败',true)}
   }
 
+  // Trusted-header mode: the campus reverse proxy owns the credential, so there
+  // is no password to rotate and no local device list to manage. Showing those
+  // forms would imply this console holds a credential it does not have.
+  if(!sessionMode){
+    return <div className="settingsGrid">
+      <Panel title="当前身份" sub="身份由校园统一身份认证注入，权限由认证层提供的角色决定。">
+        <div className="kv">
+          <span>用户名</span><b>{who?.username||who?.user||'—'}</b>
+          <span>角色</span><b>{who?.roles?.join('、')||'—'}</b>
+          <span>认证方式</span><b>学校统一身份认证</b>
+        </div>
+      </Panel>
+      <Panel title="账号与安全" sub="密码与登录设备由校园统一身份认证平台管理。">
+        <p className="authHint">
+          本控制台不保存账号密码。如需修改密码或注销其他设备，请前往校园统一身份认证平台操作。
+        </p>
+      </Panel>
+    </div>
+  }
+
   return <div className="settingsGrid">
     <Panel title="当前身份" sub="身份来自账号密码登录，权限由账号角色决定。">
       <div className="kv">
         <span>用户名</span><b>{who?.username||who?.user||'—'}</b>
         <span>角色</span><b>{who?.roles?.join('、')||'—'}</b>
-        <span>认证方式</span><b>{who?.auth_mode==='session'?'账号密码登录':(who?.auth_mode||'—')}</b>
-        <span>登录凭证</span><b>仅保存在当前页面内存，自动续期</b>
+        <span>认证方式</span><b>账号密码登录</b>
+        <span>登录状态</span><b>安全会话 · 自动续期</b>
       </div>
       <div className="panelFoot"><button className="btn secondary" onClick={onSignedOut}><LogOut/>退出登录</button></div>
     </Panel>
 
     <Panel title="修改密码" sub="修改成功后，所有设备上的登录状态都会立即失效，需要用新密码重新登录。">
       <form className="form" onSubmit={submit}>
-        <F label="当前密码"><input type="password" autoComplete="current-password" value={current} onChange={e=>setCurrent(e.target.value)}/></F>
+        <F label="当前密码"><PasswordInput autoComplete="current-password" value={current} onChange={setCurrent}/></F>
         <F label="新密码" hint="至少 10 位，且需包含字母、数字、符号中的至少两类。">
-          <input type="password" autoComplete="new-password" value={next} onChange={e=>setNext(e.target.value)}/>
+          <PasswordInput autoComplete="new-password" value={next} onChange={setNext}/>
         </F>
-        <F label="确认新密码"><input type="password" autoComplete="new-password" value={confirmNext} onChange={e=>setConfirmNext(e.target.value)}/></F>
+        <F label="确认新密码"><PasswordInput autoComplete="new-password" value={confirmNext} onChange={setConfirmNext}/></F>
         {error&&<div className="authError"><AlertTriangle/>{error}</div>}
         <div className="formActions">
           <button className="btn primary" type="submit" disabled={busy||!current||!next||!confirmNext}>

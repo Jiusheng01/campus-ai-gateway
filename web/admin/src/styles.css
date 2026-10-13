@@ -84,3 +84,10 @@ main{max-width:1540px;margin:0 auto;padding:24px 28px 48px}.stack{display:flex;f
 .authCard code,.authError code{font-family:"Cascadia Code",Consolas,monospace;background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:10px}
 .spin{animation:spin 1s linear infinite}
 .panelFoot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--line)}
+
+.passwordWrap{position:relative;display:flex;align-items:center;width:100%}
+.passwordWrap input{padding-right:40px}
+.revealBtn{position:absolute;right:6px;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);cursor:pointer;line-height:0}
+.revealBtn:hover{color:var(--text);background:var(--soft)}
+.revealBtn:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.revealBtn svg{width:15px;height:15px}

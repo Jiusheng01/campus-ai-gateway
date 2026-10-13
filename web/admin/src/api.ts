@@ -51,7 +51,16 @@ let accessExpiresAt=0
 let refreshing:Promise<boolean>|null=null
 let onUnauthenticated:(reason:'expired'|'revoked'|'unknown')=>void=()=>{}
 
+// The active authentication mode, learned from /admin/auth-config at boot. Only
+// "session" mode has an access token and a refresh cookie; the other modes are
+// driven entirely by the surrounding infrastructure, so the client must not try
+// to refresh or store anything for them.
+let authMode=''
+
 export function setUnauthenticatedHandler(fn:(reason:'expired'|'revoked'|'unknown')=>void){onUnauthenticated=fn}
+export function setAuthMode(mode:string){authMode=(mode||'').toLowerCase()}
+export function getAuthMode(){return authMode}
+export function isSessionMode(){return authMode==='session'}
 export function getAccessToken(){return accessToken}
 export function accessExpiry(){return accessExpiresAt}
 export function hasSession(){return accessToken!==''}
@@ -102,7 +111,10 @@ export async function api<T>(path:string,opt:RequestInit={},retry=true):Promise<
   const message=data?.error?.message||('HTTP '+r.status)
 
   if(r.status===401&&retry&&!isAuthEndpoint(path)){
-    if(await refreshSession())return api<T>(path,opt,false)
+    // Only session mode owns a refresh cookie. In trusted-header mode the
+    // identity is injected by the campus reverse proxy, and there is nothing to
+    // refresh — attempting it would just produce a confusing 503.
+    if(isSessionMode()&&await refreshSession())return api<T>(path,opt,false)
     clearSession()
     onUnauthenticated(code==='session_revoked'?'revoked':'expired')
     throw new ApiError(message,401,code)
@@ -118,7 +130,7 @@ export async function download(path:string,filename:string){
     return h
   }
   let r=await fetch(path,{headers:authHeaders(),credentials:'same-origin'})
-  if(r.status===401&&!isAuthEndpoint(path)&&await refreshSession()){
+  if(r.status===401&&!isAuthEndpoint(path)&&isSessionMode()&&await refreshSession()){
     r=await fetch(path,{headers:authHeaders(),credentials:'same-origin'})
   }
   if(!r.ok){let msg='HTTP '+r.status;try{const d=await r.json();msg=d?.error?.message||msg}catch{}throw new ApiError(msg,r.status)}
@@ -180,6 +192,13 @@ export async function changePassword(currentPassword:string,newPassword:string){
 export async function listSessions(){
   const d=await api<{data:AdminSessionView[]}>('/admin/sessions')
   return d.data||[]
+}
+
+// whoami resolves the current administrator identity. It is used by
+// trusted-header mode, where the campus reverse proxy injects the identity and
+// there is no login form to submit.
+export async function whoami(){
+  return api<WhoAmI>('/admin/whoami',{},false)
 }
 
 export async function revokeSession(id:string){
