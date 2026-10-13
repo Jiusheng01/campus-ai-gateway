@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 )
@@ -125,20 +126,105 @@ func TestClientIPFromAcceptsBareAddressInTrustedList(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackRequest(t *testing.T) {
-	cases := map[string]bool{
-		"127.0.0.1:1234": true,
-		"[::1]:1234":     true,
-		"192.168.1.20:80": false,
-		"10.0.0.1:80":    false,
-		"":               false,
+// TestIsLocalSetupRequest covers the proxy-bypass regression: a reverse proxy
+// on the same host also connects from 127.0.0.1, so a peer-only loopback check
+// would let a remote visitor create the first super administrator.
+func TestIsLocalSetupRequest(t *testing.T) {
+	const (
+		loopback    = "127.0.0.1:41234"
+		ipv6Loop    = "[::1]:41234"
+		remote      = "203.0.113.1:41234"
+		trustedPeer = "198.51.100.9:41234"
+	)
+
+	cases := []struct {
+		name    string
+		remote  string
+		headers map[string]string
+		trusted []string
+		want    bool
+	}{
+		{name: "loopback direct", remote: loopback, want: true},
+		{name: "ipv6 loopback direct", remote: ipv6Loop, want: true},
+		{name: "remote direct", remote: remote, want: false},
+		{name: "empty remote address", remote: "", want: false},
+		{
+			name:    "loopback peer forwarding a public client, peer trusted",
+			remote:  loopback,
+			headers: map[string]string{"X-Forwarded-For": "203.0.113.1"},
+			trusted: []string{"127.0.0.1/32"},
+			want:    false,
+		},
+		{
+			name:    "loopback peer forwarding a loopback client, peer trusted",
+			remote:  loopback,
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1"},
+			trusted: []string{"127.0.0.1/32"},
+			want:    true,
+		},
+		{
+			name:    "loopback peer forwarding a public client, no trust entry",
+			remote:  loopback,
+			headers: map[string]string{"X-Forwarded-For": "203.0.113.1"},
+			want:    false,
+		},
+		{
+			name:    "trusted remote proxy forwarding a loopback client",
+			remote:  trustedPeer,
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1"},
+			trusted: []string{"198.51.100.0/24"},
+			want:    true,
+		},
+		{
+			name:    "trusted remote proxy forwarding a public client",
+			remote:  trustedPeer,
+			headers: map[string]string{"X-Forwarded-For": "203.0.113.5"},
+			trusted: []string{"198.51.100.0/24"},
+			want:    false,
+		},
+		{
+			name:    "untrusted remote peer claiming a loopback client",
+			remote:  trustedPeer,
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1"},
+			want:    false,
+		},
+		{
+			name:    "loopback peer with a Forwarded header but no trust entry",
+			remote:  loopback,
+			headers: map[string]string{"Forwarded": "for=203.0.113.1"},
+			want:    false,
+		},
+		{
+			name:    "loopback peer with X-Real-IP but no trust entry",
+			remote:  loopback,
+			headers: map[string]string{"X-Real-IP": "203.0.113.1"},
+			want:    false,
+		},
+		{
+			name:    "trusted proxy hop list ending in a public client",
+			remote:  loopback,
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1, 203.0.113.7"},
+			trusted: []string{"127.0.0.1/32"},
+			want:    false,
+		},
 	}
-	for addr, want := range cases {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.RemoteAddr = addr
-		if got := isLoopbackRequest(req); got != want {
-			t.Fatalf("isLoopbackRequest(%q) = %v, want %v", addr, got, want)
-		}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.TrustedProxyCIDRs = tc.trusted
+			s, _ := newTestServer(t, cfg)
+
+			req := httptest.NewRequest(http.MethodPost, "/admin/setup", nil)
+			req.RemoteAddr = tc.remote
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			if got := s.isLocalSetupRequest(req); got != tc.want {
+				t.Fatalf("isLocalSetupRequest(remote=%q headers=%v trusted=%v) = %v, want %v",
+					tc.remote, tc.headers, tc.trusted, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -801,5 +887,142 @@ func TestSelfServiceEndpointsBypassRBAC(t *testing.T) {
 			t.Fatalf("%s %s must be allowed for any signed-in account, got %d (%s)",
 				tc.method, tc.path, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// --- cacheability ----------------------------------------------------------
+
+// TestAuthResponsesSendNoStore pins that every response carrying an access token
+// or describing account state is marked uncacheable, so neither a shared cache
+// nor the browser back/forward cache can replay it.
+func TestAuthResponsesSendNoStore(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	cases := []struct {
+		name   string
+		handle http.HandlerFunc
+		method string
+		target string
+		body   string
+	}{
+		{"auth-config", s.handleAdminAuthConfig, http.MethodGet, "/admin/auth-config", ""},
+		{"setup", s.handleAdminSetup, http.MethodPost, "/admin/setup",
+			`{"username":"newadmin","display_name":"","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate"}`},
+		{"login", s.handleAdminLogin, http.MethodPost, "/admin/login",
+			`{"username":"campus-admin","password":"Campus#2026Gate"}`},
+		{"refresh", s.handleAdminRefresh, http.MethodPost, "/admin/auth/refresh", ""},
+		{"logout", s.handleAdminLogout, http.MethodPost, "/admin/auth/logout", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := postJSON(t, tc.handle, tc.method, tc.target, tc.body, nil)
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if got := rec.Header().Get("Pragma"); got != "no-cache" {
+				t.Fatalf("Pragma = %q, want no-cache", got)
+			}
+		})
+	}
+
+	t.Run("whoami", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/whoami", nil)
+		req = req.WithContext(withAdminPrincipal(req.Context(), adminPrincipal{
+			User: "campus-admin", Roles: map[string]bool{"auditor": true}, AuthMode: "session",
+		}))
+		rec := httptest.NewRecorder()
+		s.handleAdminWhoAmI(rec, req)
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("Cache-Control = %q, want no-store", got)
+		}
+		if got := rec.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("Pragma = %q, want no-cache", got)
+		}
+	})
+}
+
+// --- refresh concurrency at the HTTP layer ---------------------------------
+
+// TestRefreshHandlerBenignRaceKeepsCookie is the two-tab regression at the HTTP
+// layer: the second tab presents the same cookie, and the response must be 200
+// with the same successor rather than a cleared cookie.
+func TestRefreshHandlerBenignRaceKeepsCookie(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	login := loginForTest(t, s, store)
+	cookie := findCookie(login, adminRefreshCookieName)
+
+	call := func() (*httptest.ResponseRecorder, *http.Cookie) {
+		req := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/auth/refresh", nil)
+		req.AddCookie(cookie)
+		req.Header.Set("Origin", "http://gateway.local")
+		rec := httptest.NewRecorder()
+		s.handleAdminRefresh(rec, req)
+		return rec, findCookie(rec, adminRefreshCookieName)
+	}
+
+	first, firstCookie := call()
+	if first.Code != http.StatusOK {
+		t.Fatalf("first refresh: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	second, secondCookie := call()
+	if second.Code != http.StatusOK {
+		t.Fatalf("the second tab must not be signed out: got %d: %s", second.Code, second.Body.String())
+	}
+	if secondCookie == nil || secondCookie.Value == "" {
+		t.Fatal("a benign race must re-issue the cookie, not clear it")
+	}
+	if firstCookie.Value != secondCookie.Value {
+		t.Fatalf("both tabs must converge on one cookie value:/n first=%q\nsecond=%q",
+			firstCookie.Value, secondCookie.Value)
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("a benign race must not revoke the session, %d live", store.liveSessions())
+	}
+}
+
+// TestRefreshHandlerReplayOutsideGraceClearsCookie is the genuine-replay case:
+// the cookie is cleared, the family is revoked, and the attempt is auditable.
+func TestRefreshHandlerReplayOutsideGraceClearsCookie(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	login := loginForTest(t, s, store)
+	cookie := findCookie(login, adminRefreshCookieName)
+
+	base := time.Now()
+	s.adminAuth.now = func() time.Time { return base }
+
+	first := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/auth/refresh", nil)
+	first.AddCookie(cookie)
+	first.Header.Set("Origin", "http://gateway.local")
+	firstRec := httptest.NewRecorder()
+	s.handleAdminRefresh(firstRec, first)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first refresh: expected 200, got %d", firstRec.Code)
+	}
+
+	// Move past the grace window, then present the superseded cookie again.
+	s.adminAuth.now = func() time.Time {
+		return base.Add(testConfig().AdminRefreshReplayGrace + time.Second)
+	}
+
+	replay := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/auth/refresh", nil)
+	replay.AddCookie(cookie)
+	replay.Header.Set("Origin", "http://gateway.local")
+	replayRec := httptest.NewRecorder()
+	s.handleAdminRefresh(replayRec, replay)
+
+	if replayRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on replay, got %d", replayRec.Code)
+	}
+	if code := errorCode(t, replayRec); code != "refresh_replay_detected" {
+		t.Fatalf("expected code refresh_replay_detected, got %q", code)
+	}
+	cleared := findCookie(replayRec, adminRefreshCookieName)
+	if cleared == nil || cleared.Value != "" {
+		t.Fatal("a detected replay must clear the cookie")
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("a detected replay must revoke every session, %d live", store.liveSessions())
 	}
 }

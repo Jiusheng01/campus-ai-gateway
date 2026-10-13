@@ -127,7 +127,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
 			WithPolicy(cfg.AdminLoginMaxAttempts, cfg.AdminLoginWindow)
-		s.adminAuth = newAdminAuthService(pg, loginLimiter, []byte(cfg.KeyHMACSecret), cfg)
+		sessionKey, derived := cfg.AdminSessionKey()
+		if derived {
+			log.Printf("ADMIN_SESSION_SECRET is not configured; derived development key is being used. " +
+				"Set ADMIN_SESSION_SECRET (>= 32 bytes, e.g. `openssl rand -base64 48`) in production.")
+		}
+		s.adminAuth = newAdminAuthService(pg, loginLimiter, sessionKey, cfg)
 	}
 	s.routes()
 	s.bootstrapAdminUser(ctx)

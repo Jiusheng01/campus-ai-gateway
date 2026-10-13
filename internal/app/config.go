@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"net"
 	"os"
@@ -8,6 +10,16 @@ import (
 	"strings"
 	"time"
 )
+
+// AdminSessionSecretMinBytes is the minimum length accepted for an explicitly
+// configured ADMIN_SESSION_SECRET. Anything shorter is rejected at startup
+// rather than silently weakening access-token signing.
+const AdminSessionSecretMinBytes = 32
+
+// adminSessionDerivationLabel domain-separates the development fallback key.
+// It guarantees the derived value differs from API_KEY_HMAC_SECRET and from
+// every other HMAC the gateway computes with that secret.
+const adminSessionDerivationLabel = "campus-admin-session-v1"
 
 type Config struct {
 	HTTPAddr             string
@@ -40,6 +52,19 @@ type Config struct {
 	TrustedProxyCIDRs      []string      // proxies whose X-Forwarded-For we trust
 	AdminBootstrapUsername string        // optional non-interactive bootstrap
 	AdminBootstrapPassword string
+
+	// AdminSessionSecret is the dedicated key for administrator session
+	// cryptography (access-token HS256 signing and refresh rotation). Keeping
+	// it separate from API_KEY_HMAC_SECRET stops a compromise of one security
+	// domain from reaching the other. When empty, a domain-separated key is
+	// derived from API_KEY_HMAC_SECRET so local development needs no extra
+	// configuration; production is expected to set it explicitly.
+	AdminSessionSecret string
+
+	// AdminRefreshReplayGrace is how long a just-rotated refresh token is still
+	// accepted as a benign concurrent refresh (two browser tabs racing). Reuse
+	// beyond this window is treated as replay and revokes the session family.
+	AdminRefreshReplayGrace time.Duration
 }
 
 func LoadConfig() (Config, error) {
@@ -70,6 +95,9 @@ func LoadConfig() (Config, error) {
 		TrustedProxyCIDRs:      splitCSV(os.Getenv("TRUSTED_PROXY_CIDRS")),
 		AdminBootstrapUsername: strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_USERNAME")),
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
+
+		AdminSessionSecret:      os.Getenv("ADMIN_SESSION_SECRET"),
+		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", 30*time.Second),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -77,6 +105,12 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.KeyHMACSecret == "" {
 		return Config{}, errors.New("API_KEY_HMAC_SECRET is required")
+	}
+	if s := strings.TrimSpace(cfg.AdminSessionSecret); s != "" && len(s) < AdminSessionSecretMinBytes {
+		return Config{}, errors.New("ADMIN_SESSION_SECRET must be at least 32 bytes of entropy")
+	}
+	if cfg.AdminRefreshReplayGrace <= 0 {
+		return Config{}, errors.New("ADMIN_REFRESH_REPLAY_GRACE must be positive")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(cfg.AdminAuthMode)) {
@@ -132,6 +166,22 @@ func parseCIDROrIP(raw string) (*net.IPNet, net.IP, error) {
 // for existing deployments and are treated as opt-in legacy paths.
 func (c Config) SessionAuthEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "session")
+}
+
+// AdminSessionKey returns the key material for administrator session
+// cryptography: access-token HS256 signing and refresh-token rotation.
+//
+// The returned bool reports whether the development fallback was used, so the
+// caller can emit a startup warning. The fallback is a labelled HMAC over
+// API_KEY_HMAC_SECRET, which keeps the admin-session purpose domain-separated
+// from the API-key purpose instead of reusing the raw secret.
+func (c Config) AdminSessionKey() ([]byte, bool) {
+	if s := strings.TrimSpace(c.AdminSessionSecret); s != "" {
+		return []byte(s), false
+	}
+	mac := hmac.New(sha256.New, []byte(c.KeyHMACSecret))
+	mac.Write([]byte(adminSessionDerivationLabel))
+	return mac.Sum(nil), true
 }
 
 func getenv(key, fallback string) string {

@@ -51,19 +51,63 @@ func (p *Postgres) FindAdminUserByID(ctx context.Context, id string) (model.Admi
 	return scanAdminUser(p.Pool.QueryRow(ctx, q, id))
 }
 
-// CreateFirstAdminUser inserts the very first account. The NOT EXISTS guard is
-// part of the statement rather than a preceding SELECT, so two concurrent
-// first-run requests cannot both succeed.
+// firstAdminAdvisoryLockKey is a fixed advisory-lock key shared by every
+// gateway instance. It serialises the count-then-insert sequence that creates
+// the very first administrator.
+//
+// The value is arbitrary but must never change: it is the rendezvous point
+// between replicas. It spells "campusad" in ASCII.
+const firstAdminAdvisoryLockKey int64 = 0x63616D7075736164
+
+// CreateFirstAdminUser inserts the very first account.
+//
+// A bare `INSERT ... WHERE NOT EXISTS` is not enough here: under READ COMMITTED
+// two concurrent transactions can both observe an empty table and both insert,
+// which would leave two super administrators behind. The whole sequence runs
+// inside one transaction that first takes a session-scoped advisory lock, so
+// the second caller blocks until the first commits and then sees count > 0.
+//
+// It returns ErrAdminUserNotFound when an account already exists, which the
+// service layer maps to "setup is no longer allowed".
 func (p *Postgres) CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error) {
 	encoded, err := json.Marshal(roles)
 	if err != nil {
 		return model.AdminUser{}, err
 	}
+
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	// Rollback after a successful commit is a no-op, so this is safe as the
+	// single cleanup path.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The lock is released when the transaction ends, so a crashed caller can
+	// never wedge first-run setup.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, firstAdminAdvisoryLockKey); err != nil {
+		return model.AdminUser{}, err
+	}
+
+	var existing int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_admin_user`).Scan(&existing); err != nil {
+		return model.AdminUser{}, err
+	}
+	if existing > 0 {
+		return model.AdminUser{}, ErrAdminUserNotFound
+	}
+
 	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles)
-SELECT $1, $2, $3, $4::jsonb
-WHERE NOT EXISTS (SELECT 1 FROM gateway_admin_user)
+VALUES ($1, $2, $3, $4::jsonb)
 RETURNING ` + adminUserColumns
-	return scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded))
+	user, err := scanAdminUser(tx.QueryRow(ctx, q, username, displayName, passwordHash, encoded))
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.AdminUser{}, err
+	}
+	return user, nil
 }
 
 // UpdateAdminUserPassword rotates the hash and bumps auth_version in the same

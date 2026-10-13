@@ -1,12 +1,18 @@
 package security
 
 import (
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// base64EncodedLen is the unpadded base64 length of n raw bytes.
+func base64EncodedLen(n int) int { return base64.RawStdEncoding.EncodedLen(n) }
 
 // testParams keeps Argon2id cheap so the suite stays fast. The production
 // policy is exercised separately in TestDefaultParamsRoundTrip.
@@ -279,5 +285,72 @@ func TestDummyVerifyDoesNotPanicAndAlwaysFails(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("dummy hash must never validate a real password")
+	}
+}
+
+// --- parameter bounds ------------------------------------------------------
+
+// phcString builds a PHC string with arbitrary work factors, so tests can
+// describe hashes a corrupted or tampered row might contain.
+func phcString(memory, iterations uint32, parallelism uint8, saltLen, keyLen int) string {
+	salt := strings.Repeat("A", base64EncodedLen(saltLen))
+	key := strings.Repeat("A", base64EncodedLen(keyLen))
+	return fmt.Sprintf("$%s$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2idName, argon2idVer, memory, iterations, parallelism, salt, key)
+}
+
+// TestArgon2idParameterBoundsRejectHostileHashes covers the resource-exhaustion
+// regression: the verifier derives a key with whatever the row says, so a row
+// claiming m=4294967295 must be rejected before argon2.IDKey allocates.
+func TestArgon2idParameterBoundsRejectHostileHashes(t *testing.T) {
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{"memory zero", phcString(0, 2, 1, 16, 32)},
+		{"memory below the floor", phcString(1024, 2, 1, 16, 32)},
+		{"memory above the ceiling", phcString(4294967295, 2, 1, 16, 32)},
+		{"iterations above the ceiling", phcString(19456, 999999, 1, 16, 32)},
+		{"parallelism above the ceiling", phcString(19456, 2, 255, 16, 32)},
+		{"salt too small", phcString(19456, 2, 1, 4, 32)},
+		{"salt too large", phcString(19456, 2, 1, 128, 32)},
+		{"key too small", phcString(19456, 2, 1, 16, 8)},
+		{"key too large", phcString(19456, 2, 1, 16, 128)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			_, _, err := VerifyPassword(tc.hash, "Campus#2026Gate")
+			if !errors.Is(err, ErrPasswordHashMalformed) {
+				t.Fatalf("expected ErrPasswordHashMalformed, got %v", err)
+			}
+			// Rejection must happen before key derivation; deriving first would
+			// show up as a multi-second delay (or an OOM).
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Fatalf("rejection took %s; bounds must be checked before key derivation", elapsed)
+			}
+		})
+	}
+}
+
+// TestArgon2idAcceptsLegacyParametersInsideTheBounds pins that the bounds do not
+// lock out accounts hashed with reasonable older parameters; those are let
+// through and flagged for a transparent upgrade instead.
+func TestArgon2idAcceptsLegacyParametersInsideTheBounds(t *testing.T) {
+	params := PasswordParams{Memory: 64 * 1024, Iterations: 3, Parallelism: 2, SaltLength: 32, KeyLength: 64}
+	hash, err := HashPasswordWithParams("Campus#2026Gate", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, needsRehash, err := VerifyPassword(hash, "Campus#2026Gate")
+	if err != nil {
+		t.Fatalf("a hash inside the bounds must verify: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected the password to verify")
+	}
+	if !needsRehash {
+		t.Fatal("non-default parameters must be flagged for rehash")
 	}
 }

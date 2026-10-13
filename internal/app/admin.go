@@ -128,6 +128,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodGet {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)

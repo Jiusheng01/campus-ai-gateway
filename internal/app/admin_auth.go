@@ -265,17 +265,57 @@ func remoteHost(remoteAddr string) string {
 	return host
 }
 
-// isLoopbackRequest reports whether the request originated on the local machine.
-// It is used to gate first-run setup. A trusted proxy is not enough: the whole
-// point is that the operator must be sitting at the machine.
-func isLoopbackRequest(r *http.Request) bool {
-	host := remoteHost(r.RemoteAddr)
-	if host == "" {
+// isLocalSetupRequest decides whether first-run setup may run for this request.
+//
+// The check deliberately does not ask "is the peer loopback". A reverse proxy
+// running on the same host also connects from 127.0.0.1, so a peer-only check
+// would let a remote visitor create the first super administrator through the
+// proxy. The decision uses the resolved client address instead, and fails
+// closed whenever forwarding headers arrive from a peer that is not a
+// configured trusted proxy.
+//
+//  1. Loopback peer, no forwarding headers      -> local
+//  2. Trusted proxy peer, resolved client is
+//     loopback                                    -> local
+//  3. Trusted proxy peer, resolved client is
+//     public or LAN                               -> rejected
+//  4. Loopback peer with forwarding headers but
+//     not a configured trusted proxy              -> rejected (fail closed)
+//  5. Any other peer (remote direct, or a
+//     non-trusted remote proxy)                   -> rejected
+func (s *Server) isLocalSetupRequest(r *http.Request) bool {
+	peer := remoteHost(r.RemoteAddr)
+	peerIP := net.ParseIP(peer)
+	peerIsLoopback := peerIP != nil && peerIP.IsLoopback()
+	peerIsTrusted := s.isTrustedProxy(peer)
+
+	// Rule 5: a direct connection from anywhere other than loopback is never
+	// local. A remote proxy we were not told to trust is treated the same way.
+	if !peerIsLoopback && !peerIsTrusted {
 		return false
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
+
+	if hasForwardingHeaders(r) {
+		// Rule 4: forwarding headers are only meaningful from a proxy we were
+		// explicitly configured to trust. A loopback peer that is not in
+		// TRUSTED_PROXY_CIDRS could be any local process, so refuse rather than
+		// guess at the client address.
+		if !peerIsTrusted {
+			return false
+		}
+		// Rules 2 and 3: trust the resolved client address, not the hop.
+		clientIP := net.ParseIP(s.clientIPFrom(r))
+		return clientIP != nil && clientIP.IsLoopback()
 	}
-	return ip.IsLoopback()
+
+	// Rule 1: no forwarding headers, so the peer address is the client address.
+	return peerIsLoopback
+}
+
+// hasForwardingHeaders reports whether the request carries any header a proxy
+// would use to describe the original client.
+func hasForwardingHeaders(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("X-Forwarded-For")) != "" ||
+		strings.TrimSpace(r.Header.Get("Forwarded")) != "" ||
+		strings.TrimSpace(r.Header.Get("X-Real-IP")) != ""
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -11,12 +12,13 @@ import (
 // ErrAdminSessionNotFound is returned when a session id does not exist.
 var ErrAdminSessionNotFound = errors.New("admin session not found")
 
-const adminSessionColumns = `sid::text, user_id::text, version, user_auth_version, status, refresh_hash, login_method, ip, user_agent, created_at, last_active_at, expires_at, revoked_at, revoke_reason`
+const adminSessionColumns = `sid::text, user_id::text, version, user_auth_version, status, refresh_hash, previous_refresh_hash, previous_refresh_valid_until, login_method, ip, user_agent, created_at, last_active_at, expires_at, revoked_at, revoke_reason`
 
 func scanAdminSession(row pgx.Row) (model.AdminSession, error) {
 	var s model.AdminSession
 	if err := row.Scan(
 		&s.SID, &s.UserID, &s.Version, &s.UserAuthVersion, &s.Status, &s.RefreshHash,
+		&s.PreviousRefreshHash, &s.PreviousRefreshValidUntil,
 		&s.LoginMethod, &s.IP, &s.UserAgent, &s.CreatedAt, &s.LastActiveAt,
 		&s.ExpiresAt, &s.RevokedAt, &s.RevokeReason,
 	); err != nil {
@@ -45,14 +47,20 @@ func (p *Postgres) FindAdminSessionByID(ctx context.Context, sid string) (model.
 	return scanAdminSession(p.Pool.QueryRow(ctx, q, sid))
 }
 
-// RotateAdminSessionRefresh replaces the refresh hash in place and reports
-// whether this caller was the one holding the current hash. That check is what
-// makes rotation safe under concurrent refreshes: exactly one of them wins.
-func (p *Postgres) RotateAdminSessionRefresh(ctx context.Context, sid, oldHash, newHash string) (bool, error) {
+// RotateAdminSessionRefresh replaces the refresh hash in place, parks the
+// superseded hash in the previous slot, and reports whether this caller was the
+// one holding the current hash.
+//
+// The compare-and-set is what makes rotation atomic: exactly one concurrent
+// request wins. The losers are not treated as attackers — the service layer
+// looks at the previous slot, which this statement fills, to recognise a benign
+// race inside the grace window.
+func (p *Postgres) RotateAdminSessionRefresh(ctx context.Context, sid, oldHash, newHash string, graceUntil time.Time) (bool, error) {
 	tag, err := p.Pool.Exec(ctx,
-		`UPDATE gateway_admin_session SET refresh_hash=$3, last_active_at=NOW()
-		 WHERE sid=$1 AND refresh_hash=$2 AND status=$4 AND revoked_at IS NULL`,
-		sid, oldHash, newHash, model.AdminSessionActive)
+		`UPDATE gateway_admin_session
+		 SET refresh_hash=$3, previous_refresh_hash=$2, previous_refresh_valid_until=$4, last_active_at=NOW()
+		 WHERE sid=$1 AND refresh_hash=$2 AND status=$5 AND revoked_at IS NULL`,
+		sid, oldHash, newHash, graceUntil, model.AdminSessionActive)
 	if err != nil {
 		return false, err
 	}

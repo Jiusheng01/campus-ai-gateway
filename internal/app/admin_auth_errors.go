@@ -29,9 +29,15 @@ var (
 	// auth_version moved on, or a session past its absolute lifetime.
 	ErrAdminSessionExpired = errors.New("administrator session has expired")
 
-	// ErrAdminSessionRevoked covers an explicitly revoked session, a session
-	// version mismatch, and a detected refresh-token replay.
+	// ErrAdminSessionRevoked covers an explicitly revoked session and a session
+	// version mismatch.
 	ErrAdminSessionRevoked = errors.New("administrator session has been revoked")
+
+	// ErrAdminRefreshReplay means a refresh token was reused outside the benign
+	// concurrency grace window. Unlike a revoked session this is a security
+	// event: the account's whole session family is retired and the attempt is
+	// recorded in the audit trail.
+	ErrAdminRefreshReplay = errors.New("refresh token replay detected; all sessions have been revoked")
 
 	// ErrAdminSessionNotFound means the session id in the credential does not
 	// exist. Treated as unauthenticated rather than revoked.
@@ -97,6 +103,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusUnauthorized, "session_expired"
 	case errors.Is(err, ErrAdminSessionRevoked):
 		return http.StatusUnauthorized, "session_revoked"
+	case errors.Is(err, ErrAdminRefreshReplay):
+		return http.StatusUnauthorized, "refresh_replay_detected"
 	case errors.Is(err, ErrAdminSessionNotFound):
 		return http.StatusUnauthorized, "session_not_found"
 	case errors.Is(err, ErrAdminUserNotFound):

@@ -34,6 +34,11 @@ type fakeAdminStore struct {
 
 	// rotateCalls records (sid, oldHash, newHash) for rotation assertions.
 	rotateCalls []string
+
+	// staleRead, when set, is returned by the next FindAdminSessionByID call
+	// instead of the stored row, then cleared. It reproduces the interleaving
+	// where a second request read the session before the first rotation landed.
+	staleRead *model.AdminSession
 }
 
 func newFakeAdminStore() *fakeAdminStore {
@@ -127,6 +132,11 @@ func (f *fakeAdminStore) CreateAdminSession(_ context.Context, s model.AdminSess
 }
 
 func (f *fakeAdminStore) FindAdminSessionByID(_ context.Context, sid string) (model.AdminSession, error) {
+	if f.staleRead != nil {
+		s := *f.staleRead
+		f.staleRead = nil
+		return s, nil
+	}
 	s, ok := f.sessions[sid]
 	if !ok {
 		return model.AdminSession{}, storage.ErrAdminSessionNotFound
@@ -134,7 +144,7 @@ func (f *fakeAdminStore) FindAdminSessionByID(_ context.Context, sid string) (mo
 	return s, nil
 }
 
-func (f *fakeAdminStore) RotateAdminSessionRefresh(_ context.Context, sid, oldHash, newHash string) (bool, error) {
+func (f *fakeAdminStore) RotateAdminSessionRefresh(_ context.Context, sid, oldHash, newHash string, graceUntil time.Time) (bool, error) {
 	s, ok := f.sessions[sid]
 	if !ok {
 		return false, nil
@@ -143,6 +153,11 @@ func (f *fakeAdminStore) RotateAdminSessionRefresh(_ context.Context, sid, oldHa
 		return false, nil
 	}
 	f.rotateCalls = append(f.rotateCalls, sid)
+	// Mirror the real statement: park the superseded hash in the previous slot
+	// so a benign concurrent refresh can still be recognised.
+	s.PreviousRefreshHash = oldHash
+	until := graceUntil
+	s.PreviousRefreshValidUntil = &until
 	s.RefreshHash = newHash
 	f.sessions[sid] = s
 	return true, nil
@@ -245,12 +260,13 @@ func (l *fakeLimiter) ResetAdminLogin(_ context.Context, ip, username string) er
 
 func testConfig() Config {
 	return Config{
-		AdminAuthMode:         "session",
-		AdminAccessTTL:        15 * time.Minute,
-		AdminRefreshTTL:       30 * 24 * time.Hour,
-		AdminLoginMaxAttempts: 8,
-		AdminLoginWindow:      15 * time.Minute,
-		AdminSetupLocalOnly:   true,
+		AdminAuthMode:           "session",
+		AdminAccessTTL:          15 * time.Minute,
+		AdminRefreshTTL:         30 * 24 * time.Hour,
+		AdminLoginMaxAttempts:   8,
+		AdminLoginWindow:        15 * time.Minute,
+		AdminSetupLocalOnly:     true,
+		AdminRefreshReplayGrace: 30 * time.Second,
 	}
 }
 
@@ -517,28 +533,69 @@ func TestRefreshRotatesToken(t *testing.T) {
 	}
 }
 
-func TestRefreshReuseRevokesEverySession(t *testing.T) {
+// TestRefreshReuseWithinGraceIsBenign covers the multi-tab regression: two
+// browser tabs refresh at the same moment, and the loser of the database race
+// must not be mistaken for a leaked credential.
+func TestRefreshReuseWithinGraceIsBenign(t *testing.T) {
 	svc, store, _ := newTestService(t)
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
 
-	// Open two sessions, then rotate the first one.
+	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	first, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// The second tab presents the same superseded token inside the grace window.
+	second, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("a concurrent refresh inside the grace window must succeed, got %v", err)
+	}
+	// Rotation is deterministic, so both tabs converge on one cookie value.
+	// Otherwise the later response would clobber the earlier one.
+	if second.RefreshToken != first.RefreshToken {
+		t.Fatalf("concurrent refreshes must converge on one successor:\n first=%q\nsecond=%q",
+			first.RefreshToken, second.RefreshToken)
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("a benign race must not revoke anything, %d live sessions", store.liveSessions())
+	}
+	if reason := store.sessions[s1.Session.SID].RevokeReason; reason != "" {
+		t.Fatalf("a benign race must not record a revoke reason, got %q", reason)
+	}
+	if _, err := svc.refresh(context.Background(), second.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("the successor must stay usable: %v", err)
+	}
+}
+
+// TestRefreshReplayOutsideGraceRevokesEverySession covers genuine reuse: the
+// superseded token reappears after the benign-concurrency window has closed.
+func TestRefreshReplayOutsideGraceRevokesEverySession(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
 	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
 	_, _ = svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
 	if store.liveSessions() != 2 {
 		t.Fatalf("expected 2 live sessions, got %d", store.liveSessions())
 	}
 
+	base := time.Now()
+	svc.now = func() time.Time { return base }
 	rotated, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
 	if err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
 
-	// Replaying the superseded token is the reuse signal.
-	if _, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminSessionRevoked) {
-		t.Fatalf("expected ErrAdminSessionRevoked on reuse, got %v", err)
+	// Move past the grace window before the superseded token reappears.
+	svc.now = func() time.Time { return base.Add(testConfig().AdminRefreshReplayGrace + time.Second) }
+
+	if _, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminRefreshReplay) {
+		t.Fatalf("expected ErrAdminRefreshReplay on reuse outside the grace window, got %v", err)
 	}
 	if store.liveSessions() != 0 {
-		t.Fatalf("reuse must revoke every session of the account, %d still live", store.liveSessions())
+		t.Fatalf("replay must revoke every session of the account, %d still live", store.liveSessions())
 	}
 	if store.sessions[s1.Session.SID].RevokeReason != revokeReasonReuse {
 		t.Fatalf("expected reason %q, got %q", revokeReasonReuse, store.sessions[s1.Session.SID].RevokeReason)
@@ -977,5 +1034,151 @@ func TestFilterAdminRoles(t *testing.T) {
 	}
 	if fallback := filterAdminRoles(nil); !fallback["auditor"] || len(fallback) != 1 {
 		t.Fatalf("an account with no known role must fall back to auditor, got %v", fallback)
+	}
+}
+
+// --- concurrent refresh rotation -------------------------------------------
+
+// TestRefreshLostCompareAndSetIsBenign reproduces the exact multi-tab
+// interleaving: both requests read the session while it still held R1, one wins
+// the compare-and-set, and the loser must still be answered with the successor
+// instead of being signed out.
+func TestRefreshLostCompareAndSetIsBenign(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	before := store.sessions[s1.Session.SID]
+
+	winner, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("winner refresh: %v", err)
+	}
+
+	// The loser had already read the row before the winner committed.
+	store.staleRead = &before
+
+	loser, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("the loser of the compare-and-set must not be signed out: %v", err)
+	}
+	if loser.RefreshToken != winner.RefreshToken {
+		t.Fatalf("both tabs must receive the same successor:\nwinner=%q\n loser=%q",
+			winner.RefreshToken, loser.RefreshToken)
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("a lost compare-and-set must not revoke the session, %d live", store.liveSessions())
+	}
+	if reason := store.sessions[s1.Session.SID].RevokeReason; reason != "" {
+		t.Fatalf("a lost compare-and-set must not record a revoke reason, got %q", reason)
+	}
+}
+
+// TestRefreshSecondReadAfterRotationIsBenign covers the ordering where the
+// second request only touches the database after the first rotation finished.
+func TestRefreshSecondReadAfterRotationIsBenign(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	first, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	second, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("second refresh inside the grace window: %v", err)
+	}
+	if first.RefreshToken != second.RefreshToken {
+		t.Fatalf("both responses must carry the same successor")
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("expected the session to stay live, %d live", store.liveSessions())
+	}
+}
+
+// TestRefreshRaceDoesNotRevokeOtherSessions pins the blast radius: a benign race
+// on one session must leave the account's other devices alone.
+func TestRefreshRaceDoesNotRevokeOtherSessions(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	a, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	b, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
+
+	if _, err := svc.refresh(context.Background(), a.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("session A first refresh: %v", err)
+	}
+	if _, err := svc.refresh(context.Background(), a.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("session A concurrent refresh: %v", err)
+	}
+
+	if store.liveSessions() != 2 {
+		t.Fatalf("session B must survive a race on session A, %d live", store.liveSessions())
+	}
+	if _, err := svc.refresh(context.Background(), b.RefreshToken, "10.0.0.6", ""); err != nil {
+		t.Fatalf("session B must still be able to refresh: %v", err)
+	}
+}
+
+// TestDeriveNextAdminRefreshTokenIsDeterministic documents the property the
+// whole rotation scheme depends on: the same presented token always yields the
+// same successor, so racing callers converge instead of clobbering each other.
+func TestDeriveNextAdminRefreshTokenIsDeterministic(t *testing.T) {
+	secret := []byte("unit-test-signing-secret")
+
+	plain1, hash1, err := security.DeriveNextAdminRefreshToken(secret, "sid-1", "secret-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain2, hash2, err := security.DeriveNextAdminRefreshToken(secret, "sid-1", "secret-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain1 != plain2 || hash1 != hash2 {
+		t.Fatalf("derivation must be deterministic: %q/%q vs %q/%q", plain1, hash1, plain2, hash2)
+	}
+
+	other, _, err := security.DeriveNextAdminRefreshToken(secret, "sid-1", "secret-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == plain1 {
+		t.Fatal("a different presented secret must derive a different successor")
+	}
+
+	otherSID, _, err := security.DeriveNextAdminRefreshToken(secret, "sid-2", "secret-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherSID == plain1 {
+		t.Fatal("a different session must derive a different successor")
+	}
+}
+
+// TestRefreshUsesDerivedSuccessorNotRandomValue pins that rotation derives the
+// successor rather than drawing a fresh random secret, which is what makes the
+// concurrent case converge.
+func TestRefreshUsesDerivedSuccessorNotRandomValue(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	_, presentedSecret, err := security.SplitAdminRefreshToken(s1.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _, err := security.DeriveNextAdminRefreshToken(svc.secret, s1.Session.SID, presentedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := svc.refresh(context.Background(), s1.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if out.RefreshToken != want {
+		t.Fatalf("rotation must derive the successor:\n want=%q\n got =%q", want, out.RefreshToken)
 	}
 }

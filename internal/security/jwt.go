@@ -277,6 +277,35 @@ func SplitAdminRefreshToken(plain string) (sessionID, secret string, err error) 
 	return sessionID, secret, nil
 }
 
+// AdminRefreshRotationLabel domain-separates the rotation derivation from every
+// other use of the admin session secret.
+const AdminRefreshRotationLabel = "refresh-rotation-v1"
+
+// DeriveNextAdminRefreshToken computes the successor of a refresh token.
+//
+// The successor is a pure function of (secret, session id, current secret), so
+// the same presented token always yields byte-identical successors. That is
+// what makes concurrent refreshes safe: when two browser tabs race with the
+// same token, both derive the same next cookie, and the loser of the database
+// race can still answer 200 with a token that matches what the winner stored,
+// instead of clearing the cookie the winner just set.
+func DeriveNextAdminRefreshToken(secret []byte, sessionID, currentSecret string) (plain, hash string, err error) {
+	if len(secret) == 0 {
+		return "", "", errors.New("refresh rotation secret is empty")
+	}
+	if sessionID == "" || currentSecret == "" {
+		return "", "", ErrRefreshTokenMalformed
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(AdminRefreshRotationLabel))
+	mac.Write([]byte(sessionID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(currentSecret))
+	next := b64.EncodeToString(mac.Sum(nil))
+	plain = sessionID + "." + next
+	return plain, HashAdminRefreshToken(plain), nil
+}
+
 // b64 is the unpadded base64url alphabet required by JWT.
 var b64 = base64.RawURLEncoding
 

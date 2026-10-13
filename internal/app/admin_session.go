@@ -53,7 +53,7 @@ type adminStore interface {
 
 	CreateAdminSession(ctx context.Context, s model.AdminSession) (model.AdminSession, error)
 	FindAdminSessionByID(ctx context.Context, sid string) (model.AdminSession, error)
-	RotateAdminSessionRefresh(ctx context.Context, sid, oldHash, newHash string) (bool, error)
+	RotateAdminSessionRefresh(ctx context.Context, sid, oldHash, newHash string, graceUntil time.Time) (bool, error)
 	TouchAdminSession(ctx context.Context, sid string)
 	RevokeAdminSession(ctx context.Context, sid, reason string) error
 	RevokeSessionsForUser(ctx context.Context, userID, reason string) error
@@ -84,6 +84,10 @@ type adminAuthService struct {
 	maxAttempts int64
 	window      time.Duration
 
+	// grace is how long a just-superseded refresh token is still accepted as a
+	// benign concurrent refresh. See refresh() for the full rationale.
+	grace time.Duration
+
 	// now is injectable so tests can control expiry without sleeping.
 	now func() time.Time
 }
@@ -97,6 +101,7 @@ func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []b
 		refreshTTL:  cfg.AdminRefreshTTL,
 		maxAttempts: cfg.AdminLoginMaxAttempts,
 		window:      cfg.AdminLoginWindow,
+		grace:       cfg.AdminRefreshReplayGrace,
 		now:         time.Now,
 	}
 }
@@ -161,7 +166,12 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 		return adminTokens{}, ErrAdminCredentialsInvalid
 	}
 
-	if allowed, _, err := a.limiter.AllowAdminLogin(ctx, ip, username); err == nil && !allowed {
+	// Throttling fails open when Redis is unavailable: locking every
+	// administrator out of the console during a cache outage is worse than
+	// briefly losing the counter. The failure is logged rather than swallowed.
+	if allowed, _, err := a.limiter.AllowAdminLogin(ctx, ip, username); err != nil {
+		log.Printf("admin login: rate limiter unavailable, allowing the attempt: %v", err)
+	} else if !allowed {
 		return adminTokens{}, ErrAdminRateLimited
 	}
 
@@ -171,7 +181,7 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 			// Burn comparable CPU so a missing username is not measurably
 			// faster than a wrong password, then count the failure.
 			security.DummyVerify(password)
-			_ = a.limiter.RecordAdminLoginFailure(ctx, ip, username)
+			a.recordLoginFailure(ctx, ip, username)
 			return adminTokens{}, ErrAdminCredentialsInvalid
 		}
 		return adminTokens{}, ErrAdminInternal
@@ -184,11 +194,11 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 		return adminTokens{}, ErrAdminInternal
 	}
 	if !valid {
-		_ = a.limiter.RecordAdminLoginFailure(ctx, ip, username)
+		a.recordLoginFailure(ctx, ip, username)
 		return adminTokens{}, ErrAdminCredentialsInvalid
 	}
 	if user.Status != model.AdminStatusEnabled {
-		_ = a.limiter.RecordAdminLoginFailure(ctx, ip, username)
+		a.recordLoginFailure(ctx, ip, username)
 		return adminTokens{}, ErrAdminUserDisabled
 	}
 
@@ -206,9 +216,19 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 	if err != nil {
 		return adminTokens{}, err
 	}
-	_ = a.limiter.ResetAdminLogin(ctx, ip, username)
+	if err := a.limiter.ResetAdminLogin(ctx, ip, username); err != nil {
+		log.Printf("admin login: could not reset the throttle counters: %v", err)
+	}
 	a.store.TouchAdminUserLogin(ctx, user.ID)
 	return tokens, nil
+}
+
+// recordLoginFailure advances the throttle counters and reports a limiter
+// outage instead of hiding it.
+func (a *adminAuthService) recordLoginFailure(ctx context.Context, ip, username string) {
+	if err := a.limiter.RecordAdminLoginFailure(ctx, ip, username); err != nil {
+		log.Printf("admin login: could not record the failed attempt: %v", err)
+	}
 }
 
 // openSession creates the session row and mints both tokens.
@@ -274,11 +294,21 @@ func (a *adminAuthService) mintAccessToken(user model.AdminUser, session model.A
 
 // refresh validates a refresh token, rotates it, and issues a new access token.
 //
-// Reuse detection: if the presented token does not match the hash on file, the
-// token is an old one that has already been rotated. That means a copy leaked,
-// so every session of the account is revoked rather than just this one.
+// Rotation is replay-safe under concurrency, which matters because two browser
+// tabs are separate JavaScript runtimes and cannot coordinate with each other:
+//
+//   - The successor of a token is derived deterministically from the session id
+//     and the presented secret, so both tabs compute byte-identical successors.
+//     Whichever request wins the database compare-and-set, both responses carry
+//     the same valid cookie instead of one of them clearing the other's.
+//   - The superseded hash is parked in previous_refresh_hash for a short grace
+//     window, so a token that arrives just after the winner's rotation is
+//     recognised as a benign race and answered with 200 plus the same successor.
+//   - Only a token that is neither the current hash nor a grace-window
+//     predecessor is a replay. Only then is the account's session family
+//     revoked.
 func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAgent string) (adminTokens, error) {
-	sid, _, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
+	sid, secret, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
 	if err != nil {
 		return adminTokens{}, ErrAdminUnauthenticated
 	}
@@ -299,14 +329,6 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		return adminTokens{}, ErrAdminSessionExpired
 	}
 
-	presented := security.HashAdminRefreshToken(strings.TrimSpace(refreshToken))
-	if presented != session.RefreshHash {
-		// Replay of a rotated token: assume the family is compromised.
-		_ = a.store.RevokeSessionsForUser(ctx, session.UserID, revokeReasonReuse)
-		log.Printf("admin refresh: refresh token reuse detected for user %s; all sessions revoked", session.UserID)
-		return adminTokens{}, ErrAdminSessionRevoked
-	}
-
 	user, err := a.store.FindAdminUserByID(ctx, session.UserID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAdminUserNotFound) {
@@ -325,34 +347,85 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		return adminTokens{}, ErrAdminSessionExpired
 	}
 
-	newPlain, newHash, err := security.NewAdminRefreshToken(session.SID)
+	// Deterministic successor: identical for every caller presenting this token.
+	nextPlain, nextHash, err := security.DeriveNextAdminRefreshToken(a.secret, session.SID, secret)
 	if err != nil {
-		return adminTokens{}, ErrAdminInternal
-	}
-	rotated, err := a.store.RotateAdminSessionRefresh(ctx, session.SID, session.RefreshHash, newHash)
-	if err != nil {
-		return adminTokens{}, ErrAdminInternal
-	}
-	if !rotated {
-		// Another request rotated first. This is the benign concurrent-refresh
-		// race (two tabs), not a replay, so do not revoke the whole family.
-		return adminTokens{}, ErrAdminSessionRevoked
+		return adminTokens{}, ErrAdminUnauthenticated
 	}
 
+	presented := security.HashAdminRefreshToken(strings.TrimSpace(refreshToken))
+
+	switch {
+	case presented == session.RefreshHash:
+		rotated, err := a.store.RotateAdminSessionRefresh(ctx, session.SID, presented, nextHash, now.Add(a.grace))
+		if err != nil {
+			return adminTokens{}, ErrAdminInternal
+		}
+		if rotated {
+			return a.finishRefresh(session, user, nextPlain, now)
+		}
+		// Lost the compare-and-set: a concurrent request rotated first. Re-read
+		// the row and decide between the benign race and a replay. Losing the
+		// CAS alone is never evidence of compromise.
+		fresh, err := a.store.FindAdminSessionByID(ctx, session.SID)
+		if err != nil {
+			if errors.Is(err, storage.ErrAdminSessionNotFound) {
+				return adminTokens{}, ErrAdminSessionNotFound
+			}
+			return adminTokens{}, ErrAdminInternal
+		}
+		if a.isBenignRace(fresh, presented, now) {
+			return a.finishRefresh(session, user, nextPlain, now)
+		}
+		return a.replayDetected(ctx, session.UserID)
+
+	case a.isBenignRace(session, presented, now):
+		// This request read the row before the winner's rotation landed. The
+		// successor is the same token the winner produced, so hand it back
+		// rather than signing the operator out.
+		return a.finishRefresh(session, user, nextPlain, now)
+
+	default:
+		return a.replayDetected(ctx, session.UserID)
+	}
+}
+
+// isBenignRace reports whether a presented hash is the session's just-superseded
+// refresh hash and still inside the grace window.
+func (a *adminAuthService) isBenignRace(session model.AdminSession, presented string, now time.Time) bool {
+	if session.PreviousRefreshHash == "" || presented != session.PreviousRefreshHash {
+		return false
+	}
+	if session.PreviousRefreshValidUntil == nil {
+		return false
+	}
+	return !now.After(*session.PreviousRefreshValidUntil)
+}
+
+// finishRefresh mints the access token that accompanies a successful rotation.
+func (a *adminAuthService) finishRefresh(session model.AdminSession, user model.AdminUser, nextPlain string, now time.Time) (adminTokens, error) {
 	access, accessExp, err := a.mintAccessToken(user, session)
 	if err != nil {
 		return adminTokens{}, ErrAdminInternal
 	}
-	session.RefreshHash = newHash
 	session.LastActiveAt = now
 	return adminTokens{
 		AccessToken:      access,
 		AccessExpiresAt:  accessExp,
-		RefreshToken:     newPlain,
+		RefreshToken:     nextPlain,
 		RefreshExpiresAt: session.ExpiresAt,
 		Session:          session,
 		User:             user,
 	}, nil
+}
+
+// replayDetected retires the whole session family of an account. A refresh
+// token that is neither the current hash nor a grace-window predecessor means a
+// copy leaked, so every session is revoked rather than just this one.
+func (a *adminAuthService) replayDetected(ctx context.Context, userID string) (adminTokens, error) {
+	_ = a.store.RevokeSessionsForUser(ctx, userID, revokeReasonReuse)
+	log.Printf("admin refresh: refresh token reuse outside the grace window for user %s; all sessions revoked", userID)
+	return adminTokens{}, ErrAdminRefreshReplay
 }
 
 // --- access token verification --------------------------------------------

@@ -41,12 +41,19 @@ type AdminSession struct {
 	UserAuthVersion int64
 	Status          int
 	RefreshHash     string
-	LoginMethod     string
-	IP              string
-	UserAgent       string
-	CreatedAt       time.Time
-	LastActiveAt    time.Time
-	ExpiresAt       time.Time
-	RevokedAt       *time.Time
-	RevokeReason    string
+	// PreviousRefreshHash is the refresh hash this session had immediately
+	// before the most recent rotation. Together with
+	// PreviousRefreshValidUntil it lets a just-superseded token be accepted as
+	// a benign concurrent refresh (two tabs racing) instead of being mistaken
+	// for a leaked credential.
+	PreviousRefreshHash       string
+	PreviousRefreshValidUntil *time.Time
+	LoginMethod               string
+	IP                        string
+	UserAgent                 string
+	CreatedAt                 time.Time
+	LastActiveAt              time.Time
+	ExpiresAt                 time.Time
+	RevokedAt                 *time.Time
+	RevokeReason              string
 }

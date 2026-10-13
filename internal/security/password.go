@@ -33,6 +33,50 @@ const (
 	defaultKeyLength   uint32 = 32
 )
 
+// Hard bounds on the parameters read back from a stored PHC string.
+//
+// The verifier derives a key with whatever the row says, so a corrupted or
+// tampered row (m=4294967295, t=999999, p=255) would turn one login attempt
+// into a CPU and memory denial of service. Anything outside these ranges is
+// rejected before argon2.IDKey is called, so the allocation never happens.
+//
+// The ceilings are far above the current policy (19 MiB / t=2 / p=1) yet far
+// below anything that could exhaust a gateway node, which leaves room for a
+// future policy bump without a code change.
+const (
+	minArgon2MemoryKiB   uint32 = 8 * 1024   // 8 MiB
+	maxArgon2MemoryKiB   uint32 = 256 * 1024 // 256 MiB
+	minArgon2Iterations  uint32 = 1
+	maxArgon2Iterations  uint32 = 10
+	minArgon2Parallelism uint8  = 1
+	maxArgon2Parallelism uint8  = 4
+	minArgon2SaltBytes   uint32 = 8
+	maxArgon2SaltBytes   uint32 = 64
+	minArgon2KeyBytes    uint32 = 16
+	maxArgon2KeyBytes    uint32 = 64
+)
+
+// validateArgon2Params enforces the bounds above. It is called after parsing
+// and before any key derivation.
+func validateArgon2Params(p PasswordParams, saltLen, keyLen uint32) error {
+	if p.Memory < minArgon2MemoryKiB || p.Memory > maxArgon2MemoryKiB {
+		return ErrPasswordHashMalformed
+	}
+	if p.Iterations < minArgon2Iterations || p.Iterations > maxArgon2Iterations {
+		return ErrPasswordHashMalformed
+	}
+	if p.Parallelism < minArgon2Parallelism || p.Parallelism > maxArgon2Parallelism {
+		return ErrPasswordHashMalformed
+	}
+	if saltLen < minArgon2SaltBytes || saltLen > maxArgon2SaltBytes {
+		return ErrPasswordHashMalformed
+	}
+	if keyLen < minArgon2KeyBytes || keyLen > maxArgon2KeyBytes {
+		return ErrPasswordHashMalformed
+	}
+	return nil
+}
+
 // Sentinel errors. Callers match on these instead of inspecting error strings.
 var (
 	// ErrPasswordHashMalformed means the stored value is not a hash we wrote:
@@ -179,6 +223,11 @@ func decodeArgon2id(encoded string) (PasswordParams, []byte, []byte, error) {
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil || len(key) == 0 {
 		return PasswordParams{}, nil, nil, ErrPasswordHashMalformed
+	}
+	// Reject absurd work factors before they reach argon2.IDKey, which would
+	// otherwise allocate memory and burn CPU as instructed by the row.
+	if err := validateArgon2Params(p, uint32(len(salt)), uint32(len(key))); err != nil {
+		return PasswordParams{}, nil, nil, err
 	}
 	return p, salt, key, nil
 }

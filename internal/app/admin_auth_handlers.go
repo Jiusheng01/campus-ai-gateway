@@ -60,9 +60,19 @@ type adminLoginResponse struct {
 	User        adminAccountView `json:"user"`
 }
 
+// writeAuthNoStore marks an authentication response as uncacheable.
+//
+// These responses carry an access token or describe account state, so neither a
+// shared cache nor the browser's back/forward cache may replay them.
+func writeAuthNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
 // --- GET /admin/auth-config ------------------------------------------------
 
 func (s *Server) handleAdminAuthConfig(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -74,7 +84,7 @@ func (s *Server) handleAdminAuthConfig(w http.ResponseWriter, r *http.Request) {
 		AuthMode:          strings.ToLower(strings.TrimSpace(s.cfg.AdminAuthMode)),
 		LoginEnabled:      s.cfg.SessionAuthEnabled(),
 		SetupLocalOnly:    s.cfg.AdminSetupLocalOnly,
-		SetupAllowedHere:  !s.cfg.AdminSetupLocalOnly || isLoopbackRequest(r),
+		SetupAllowedHere:  !s.cfg.AdminSetupLocalOnly || s.isLocalSetupRequest(r),
 		MinPasswordLength: MinAdminPasswordLength,
 		AccessTTLSeconds:  int64(s.cfg.AdminAccessTTL / time.Second),
 	}
@@ -100,6 +110,7 @@ type adminSetupRequest struct {
 }
 
 func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -125,7 +136,7 @@ func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 	// First-run setup is restricted to the machine itself. A remote caller is
 	// told the setup is pending but not permitted here, rather than getting a
 	// generic 403 that would be indistinguishable from a permissions problem.
-	if s.cfg.AdminSetupLocalOnly && !isLoopbackRequest(r) {
+	if s.cfg.AdminSetupLocalOnly && !s.isLocalSetupRequest(r) {
 		s.auditAdminAuth(r, "admin_setup_remote_rejected", http.StatusForbidden, "setup attempted from "+s.clientIPFrom(r))
 		writeAdminError(w, reqID, ErrAdminSetupRemoteForbidden)
 		return
@@ -169,6 +180,7 @@ type adminLoginRequest struct {
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -206,6 +218,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 // --- POST /admin/auth/refresh ---------------------------------------------
 
 func (s *Server) handleAdminRefresh(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -230,8 +243,12 @@ func (s *Server) handleAdminRefresh(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := s.adminAuth.refresh(r.Context(), raw, s.clientIPFrom(r), r.UserAgent())
 	if err != nil {
-		// Any failure invalidates the cookie so the browser stops presenting a
-		// token the server has already rejected.
+		// Only a genuine failure invalidates the cookie. A benign concurrent
+		// refresh returns success above, so a second tab can never clear the
+		// rotation the first tab just received.
+		if errors.Is(err, ErrAdminRefreshReplay) {
+			s.auditAdminAuth(r, "admin_refresh_replay_detected", http.StatusUnauthorized, "")
+		}
 		s.clearAdminRefreshCookie(w)
 		writeAdminError(w, reqID, err)
 		return
@@ -249,6 +266,7 @@ func (s *Server) handleAdminRefresh(w http.ResponseWriter, r *http.Request) {
 // are not subject to cookie path rules; from a browser it can only clear the
 // cookie, which is why the UI calls the /admin/auth/logout form.
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
