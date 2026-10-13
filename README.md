@@ -187,7 +187,12 @@ http://127.0.0.1:8080/admin-ui
 
 Access Token 只保存在页面内存中并自动续期，Refresh Token 走 `HttpOnly` + `SameSite=Strict` Cookie，**不使用 localStorage / sessionStorage / IndexedDB 保存任何凭据**。
 
+刷新采用**确定性轮换 + 宽限期**：同一个旧 Refresh Token 总是派生出同一个后继 Token，
+刚被轮换掉的 Token 在 `ADMIN_REFRESH_REPLAY_GRACE`（默认 30s）内再次出现会被当作多标签页并发刷新
+正常处理，只有超出宽限期的重用才判定为泄露并撤销该账号全部会话。
+
 `ADMIN_AUTH_MODE=token` 仍保留用于本地调试或应急，但控制台不再提供保存 Token 的入口。
+`ADMIN_AUTH_MODE=trusted-header`（校园 SSO）下控制台直接使用代理注入的身份，不显示账号密码登录。
 
 详见 `docs/ADMIN_UI.md` 与 `docs/SSO_RBAC.md`。
 
@@ -540,11 +545,13 @@ scripts/
 正式部署前必须替换：
 
 - API_KEY_HMAC_SECRET
+- `ADMIN_SESSION_SECRET`（管理员会话专用密钥，≥ 32 字节，**不得与 API_KEY_HMAC_SECRET 相同**；未设置时会从后者域分离派生并打印警告）
 - PostgreSQL 密码
 - Redis 安全配置
 - Provider credentials
 - 首个管理员账号的密码（首次启动时在界面上创建）
 - `ADMIN_TOKEN`（仅在 `ADMIN_AUTH_MODE=token` 应急模式下使用；默认 `session` 模式不读取该变量）
+- `TRUSTED_PROXY_CIDRS`（部署在反向代理之后时必须配置，否则首次初始化只允许本机直连）
 
 生产环境的管理员长期认证方案：
 

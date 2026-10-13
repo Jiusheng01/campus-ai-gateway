@@ -64,14 +64,25 @@ ADMIN_BOOTSTRAP_PASSWORD=<强密码>
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `ADMIN_AUTH_MODE` | `session` | 认证模式 |
+| `ADMIN_SESSION_SECRET` | 空 | 管理员会话专用密钥（Access Token 签名 + Refresh 轮换派生），至少 32 字节；空则从 `API_KEY_HMAC_SECRET` 域分离派生并告警 |
 | `ADMIN_ACCESS_TTL` | `15m` | Access Token 有效期 |
 | `ADMIN_REFRESH_TTL` | `720h`（30 天） | 会话与 Refresh Cookie 有效期 |
-| `ADMIN_LOGIN_MAX_ATTEMPTS` | `8` | 登录失败限流阈值（每个窗口） |
+| `ADMIN_REFRESH_REPLAY_GRACE` | `30s` | 刚被轮换掉的 Refresh Token 仍被视为「并发刷新」的宽限期，见 §1.5 |
+| `ADMIN_LOGIN_MAX_ATTEMPTS` | `8` | 登录失败限流阈值（每个窗口）；用户名维度为 4 倍 |
 | `ADMIN_LOGIN_WINDOW` | `15m` | 限流窗口长度 |
 | `ADMIN_COOKIE_SECURE` | `false` | 走 HTTPS 时置 `true` |
-| `ADMIN_SETUP_LOCAL_ONLY` | `true` | 首次初始化仅限本机 |
+| `ADMIN_SETUP_LOCAL_ONLY` | `true` | 首次初始化仅限本机，见 §1.6 |
 | `TRUSTED_PROXY_CIDRS` | 空 | 可信反向代理网段，见 §1.6 |
 | `ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD` | 空 | 无人值守初始化（可选） |
+
+`ADMIN_SESSION_SECRET` 必须与 `API_KEY_HMAC_SECRET` **取不同值**：
+
+```text
+openssl rand -base64 48
+```
+
+未配置时网关会打印 `ADMIN_SESSION_SECRET is not configured; derived development key is being used.`
+该回退只为本地开发开箱即用，生产必须显式配置。
 
 `ADMIN_TOKEN` 在 `session` 模式下**完全不生效**，避免残留的环境变量意外绕过登录系统。
 
@@ -86,9 +97,39 @@ POST /admin/login
 
 - 前端**不使用** localStorage / sessionStorage / IndexedDB 保存任何凭据。
 - 数据库只保存 Refresh Token 的 SHA-256 摘要，明文只存在于浏览器 Cookie 中。
-- 每次刷新都会**轮换** Refresh Token。若检测到已被轮换过的旧 Token 被再次使用，视为泄露，**撤销该账号的全部会话**。
+- 所有认证响应（`/admin/setup`、`/admin/login`、`/admin/auth/refresh`、`/admin/auth/logout`、
+  `/admin/auth-config`、`/admin/whoami`）都带 `Cache-Control: no-store` 与 `Pragma: no-cache`。
 - 账号的 `auth_version` 变化（改密码等）会让所有已签发凭证立即失效；会话自身的 `version` 变化只影响单个设备。
 - 角色与账号状态**不写入令牌**，每次请求都从数据库读取，因此改角色 / 停用账号是即时生效的。
+
+#### Refresh Token 轮换与并发语义
+
+刷新时，下一个 Refresh Token 由 `HMAC(ADMIN_SESSION_SECRET, "refresh-rotation-v1" || sid || 当前密钥)`
+**确定性派生**，因此同一个旧 Token 永远派生出同一个后继 Token。
+
+数据库保留上一代摘要及其宽限截止时间：
+
+```text
+refresh_hash                  当前有效摘要
+previous_refresh_hash         刚被轮换掉的摘要
+previous_refresh_valid_until  该摘要仍可被接受的截止时间（now + ADMIN_REFRESH_REPLAY_GRACE）
+```
+
+判定规则：
+
+| 情况 | 处理 |
+|---|---|
+| 提交的是当前摘要 | 正常轮换，返回后继 Token |
+| 提交的是上一代摘要，且在宽限期内 | **良性并发刷新**（多标签页）：返回同一个后继 Token，`200`，不撤销任何会话，不清 Cookie |
+| 竞争失败（CAS 未命中）但宽限期内的上一代摘要匹配 | 同上，按良性处理 |
+| 提交的是更早的摘要，或已超出宽限期 | **判定为 replay**：撤销该账号全部会话，`401 refresh_replay_detected`，清 Cookie，写审计 |
+| 会话已撤销 / 已过期 | `401`，清 Cookie |
+
+因此：
+
+- 多个浏览器标签页同时刷新**不会**被误判为凭据泄露，也不会互相清除对方的 Cookie；
+- 真正被轮换掉的旧 Token 在宽限期之外再次出现才会触发全会话撤销；
+- 只有 `session_revoked`、`session_expired`、`refresh_replay_detected` 等真实失败才会清除 Cookie。
 
 ### 1.6 反向代理下的真实客户端 IP
 
@@ -97,6 +138,35 @@ POST /admin/login
 ```text
 TRUSTED_PROXY_CIDRS=127.0.0.1/32,10.0.0.0/8
 ```
+
+**首次初始化也遵循同一规则。** `ADMIN_SETUP_LOCAL_ONLY=true` 时判断的是解析后的真实客户端地址，
+而不是最后一跳：
+
+| 直连对端 | 转发头 | 解析出的客户端 | 结果 |
+|---|---|---|---|
+| 本机 | 无 | 本机 | 允许 |
+| 可信代理 | 有 | 本机 | 允许 |
+| 可信代理 | 有 | 公网 / 内网其它地址 | 拒绝 `setup_required_but_remote_forbidden` |
+| 本机 | 有，但该对端不在可信列表 | 无法确认 | 拒绝（fail closed） |
+| 其它地址 | — | — | 拒绝 |
+
+这堵住了「反向代理与本机同址，于是远程访问者被误判为 localhost」的绕过路径。
+
+#### 登录限流的三个维度
+
+| 维度 | Redis 键 | 阈值 |
+|---|---|---|
+| 客户端 IP | `gw:admin:login:ip:<hash>` | `ADMIN_LOGIN_MAX_ATTEMPTS` |
+| IP + 用户名 | `gw:admin:login:pair:<hash>:<hash>` | `ADMIN_LOGIN_MAX_ATTEMPTS` |
+| 用户名（跨 IP） | `gw:admin:login:user:<hash>` | `ADMIN_LOGIN_MAX_ATTEMPTS × 4` |
+
+用户名先做 `lower(trim(username))` 归一化再哈希，与账号的大小写不敏感查找保持一致，
+避免通过变换大小写放大预算。键名中只出现哈希值，不写入原始用户名或 IP。
+
+登录成功只清除 **IP+用户名** 与 **用户名** 两个计数，**不清除 IP 级 spray 计数**：
+否则持有任意一个合法低权限账号的攻击者可以靠不断成功登录来清空整个 IP 的防护预算。
+
+Redis 不可用时限流 fail-open（不锁死管理员），但会记录 warning 日志，不会静默失败。
 
 ### 1.7 管理端接口
 
@@ -163,6 +233,9 @@ ADMIN_TOKEN=<long random secret>
 
 该 Token 映射为 `super_admin`，用于在账号系统不可用时应急进入控制台。日常运行不建议启用。
 
+**Admin UI 在 `token` 模式下不提供登录表单，也不提供任何 Token 输入框**：页面会明确提示当前为
+应急 Token 模式，需要走管理 API 使用 `ADMIN_TOKEN`，或把 `ADMIN_AUTH_MODE` 切换为 `session`。
+
 ### 3.2 校园 SSO（`trusted-header`）
 
 ```text
@@ -192,6 +265,24 @@ X-Forwarded-Groups: gateway_admin,auditor
 
 启用 `trusted-header` 后，不要把 Gateway 管理端口直接暴露给用户网络，只有可信反向代理应该能访问该端口。
 
+#### Admin UI 在 `trusted-header` 模式下的行为
+
+控制台**不再显示账号密码登录**，也不显示 Refresh Session：
+
+```text
+打开 /admin-ui
+  -> GET /admin/auth-config            （login_enabled=false，auth_mode=trusted-header）
+  -> GET /admin/whoami                 （由代理注入的身份头解析）
+       ├─ 200  -> 直接进入控制台
+       └─ 401/403 -> 显示「统一身份认证未完成或当前账号无管理权限」提示页
+```
+
+- 不调用 `/admin/auth/refresh`（该端点在此模式下返回 `503`）。
+- 401 不会被当成「登录过期」，而是回到统一身份认证提示页。
+- 「系统设置」中显示 **认证方式：学校统一身份认证**，不显示本地修改密码，也不显示本地登录设备列表
+  （密码与设备由校园统一身份认证平台管理）。
+- 顶栏不显示退出登录按钮。
+
 ---
 
 ## 4. 学校 IdP 最终接入
@@ -215,13 +306,28 @@ Gateway 本身不绑定具体学校 IdP。最终部署时需要在 oauth2-proxy 
 - `gateway_admin_user`（`migrations/0007_admin_users.sql`）
 - `gateway_admin_session`（`migrations/0008_admin_sessions.sql`）
 
-两个脚本都是**幂等**的：
+`0009_admin_session_refresh_rotation.sql` 为并发刷新安全性补充两列：
 
-- `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`
+- `previous_refresh_hash`
+- `previous_refresh_valid_until`
+
+三个脚本都是**幂等**的：
+
+- `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`
 - `0007` 还会为已存在的旧表补上 `auth_version` 列，并把大小写敏感的用户名唯一约束替换为 `lower(username)` 唯一索引
 - 不会修改 Tenant / API Key / Provider / Model 等既有数据
 
 若库中已存在仅大小写不同的重复用户名，`lower(username)` 唯一索引会创建失败，此时旧的约束仍然保留、数据未被破坏，请先清理重复账号再重新执行。
+
+---
+
+## 5.1 首个管理员的原子创建
+
+`CreateFirstAdminUser` 在**单个事务**内先取 `pg_advisory_xact_lock(<固定常量>)`，再 `COUNT(*)`，
+最后插入。仅依赖 `INSERT ... WHERE NOT EXISTS` 不足以保证原子性：在 READ COMMITTED 下两个并发事务
+可能都看到空表并各自插入，从而留下两个超级管理员。
+
+因此并发初始化时只有一个请求成功，另一个得到 `setup_not_allowed`。
 
 ---
 
