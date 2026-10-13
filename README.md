@@ -1,302 +1,266 @@
 # Campus AI Gateway
 
-校园大模型统一接入、模型路由、限流与安全审计网关。
+校园大模型统一接入、模型路由、访问控制、限流与安全审计网关。
 
-本项目定位在校园 AI 平台的 **模型网关 / 模型路由 / 访问控制 / 审计** 层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入 Qwen 等模型服务，并在 Go Gateway 中承担租户、Virtual API Key、配额、模型权限与请求审计。
+Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态：**M0/M1 基线已真实验收；M1.5～M4 的网关侧实现、管理面、审计、SSO/RBAC 接入边界、配额、监控与压测工具已进入代码基线。真实 DeepSeek/Failover、学校 IdP、HA 与 30,000 RPM 仍需最终环境统一验收。**
+> 当前状态（2026-10-13）：核心网关、Admin UI v2、管理员会话认证 v2、多 Provider 控制面、配额与审计已经进入 `main`。
 >
-> 已真实验证：Virtual Key → Go Gateway → ThinkWatch Core → 阿里百炼 Qwen → Token Usage → PostgreSQL 审计日志。
+> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
+>
+> 仍需最终环境验收：完整业务数据面的双 Provider Failover、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
 
 ---
 
-## 1. 当前能力
+## 1. 核心能力
 
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
-| OpenAI-compatible API | ✅ | /v1/models、/v1/chat/completions |
-| Virtual API Key | ✅ | sk-campus-*，HMAC-SHA256 摘要存储 |
-| 租户管理 | ✅ | 新增、编辑、启用/停用 |
-| Key 状态 / 过期校验 | ✅ | 支持禁用和过期时间 |
-| 模型白名单 | ✅ | 每个 Key 独立授权模型 |
-| IP 白名单 | ✅ | 每个 Key 独立配置 |
-| RPM 限流 | ✅ | Redis |
-| TPM 控制 | ✅ | 当前为请求前预占式 |
-| 最大并发控制 | ✅ | Redis |
-| Request ID | ✅ | X-Request-Id |
-| SSE 透明代理 | ✅ | 支持流式返回，不缓冲客户端响应 |
-| Token Usage 采集 | ✅ | 非流式 + OpenAI SSE 最终 usage chunk |
-| 请求审计 | ✅ | PostgreSQL gateway_request_log |
-| ThinkWatch Core 接入 | ✅ | HTTP 数据面接入 |
-| Qwen 真实调用 | ✅ | campus-smart 已完成端到端验收 |
-| Provider 管理 | ✅ | 新增、编辑、启用/停用 |
-| Model 管理 | ✅ | 虚拟模型 → Provider → 上游模型 |
-| ThinkWatch 配置同步 | ✅ | 生成前校验、备份、原子替换 |
-| 网页模型测试 | ✅ | 后台直接测试模型、Token、延迟 |
-| Admin UI v2 | ✅ | React + TypeScript + Vite；构建后嵌入 Go，运行时无需 Node 进程 |
-| Windows 一键初始化 | ✅ | scripts/setup.ps1 |
-| Windows 一键开发启动 | ✅ | scripts/dev.ps1 |
-| 多 Provider Failover 控制面 | ✅ | Route CRUD/UI + ThinkWatch renderer；真实双 Provider 验收待最终测试 |
-| 实际 Provider / 上游模型回填 | 🧪 | 审计字段 + telemetry 采集契约完成；ThinkWatch 最终 telemetry 待验收 |
-| SSO / RBAC | ✅* | trusted-header + RBAC 完成；学校真实 IdP 待最终验收 |
-| 30,000 RPM 压测验收 | ⏳ | k6 500 RPS 工具完成；真实目标环境尚未压测 |
+| OpenAI-compatible API | ✅ | `/v1/models`、`/v1/chat/completions`，并保留 Embedding / ASR 透明代理基础 |
+| 业务 API Key | ✅ | `sk-campus-*`，数据库只保存前缀与 HMAC-SHA256 摘要 |
+| Tenant 管理 | ✅ | 新增、编辑、启用 / 停用、配额与用量 |
+| 模型 / IP Allowlist | ✅ | 每个业务 Key 独立授权 |
+| RPM / TPM / 最大并发 | ✅ | Redis；Token 使用预占 + 最终 usage reconcile |
+| Request ID / 请求审计 | ✅ | PostgreSQL `gateway_request_log` |
+| SSE 透明代理 | ✅ | 流式响应不被 Gateway 缓冲 |
+| Provider 管理 | ✅ | CRUD、状态、Base URL、凭据环境变量名 |
+| 虚拟模型 / Route 管理 | ✅ | 一个虚拟模型可绑定多条 Provider 路线 |
+| ThinkWatch 配置同步 | ✅ | 校验、备份、原子替换 |
+| Qwen 真实调用 | ✅ | `campus-smart` 已完成真实端到端调用 |
+| Volcengine Ark / 豆包 | ✅* | 真实模型测试已通过；完整业务数据面 Failover 仍待最终验收 |
+| 多 Provider Failover 控制面 | ✅ | Route 优先级 / 权重 / 超时 + ThinkWatch renderer |
+| 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成；最终 Provider / attempts 取决于 ThinkWatch 实际 telemetry |
+| Admin UI v2 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
+| 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
+| RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
+| trusted-header / 校园 SSO 边界 | ✅* | Gateway 侧完成；学校真实 IdP 待验收 |
+| 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
+| Prometheus / 健康检查 | ✅ | `/healthz`、`/readyz`、`/metrics` |
+| 30,000 RPM | ⏳ | k6 工具已完成，目标环境尚未正式压测 |
 
 ---
 
 ## 2. 架构
 
-~~~text
+```text
 业务系统 / AI 应用
         │
-        │ OpenAI-compatible API
+        │  OpenAI-compatible API
+        │  Authorization: Bearer sk-campus-...
         ▼
-┌────────────────────────────────────────────┐
-│            Campus AI Gateway               │
-│                                            │
-│ Tenant / Virtual Key                       │
-│ HMAC Auth / Expire / Status                │
-│ Model & IP Allowlist                       │
-│ RPM / TPM / Concurrency                    │
-│ Request ID / Audit / Usage                 │
-│ Admin API / Embedded Admin UI              │
-└──────────────────┬─────────────────────────┘
-                   │
-                   ▼
-┌────────────────────────────────────────────┐
-│              ThinkWatch Core               │
-│ Routing / Failover / Circuit Breaker / Guard│
-└──────────────────┬─────────────────────────┘
-                   │
-                   ▼
-           LLM Providers
-       Qwen / DeepSeek / ...
+┌──────────────────────────────────────────────┐
+│              Campus AI Gateway               │
+│                                              │
+│ Tenant / API Key / Model & IP Allowlist      │
+│ RPM / TPM / Concurrency / Quota              │
+│ Request ID / Usage / Audit                   │
+│                                              │
+│ Admin Session Auth / RBAC / Admin Audit      │
+│ Embedded Admin UI                            │
+└────────────────────┬─────────────────────────┘
+                     │
+                     ▼
+┌──────────────────────────────────────────────┐
+│               ThinkWatch Core                │
+│ Routing / Failover / Circuit Breaker / Guard │
+└────────────────────┬─────────────────────────┘
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+   Alibaba Cloud Qwen     Volcengine Ark
+        / ...                  / ...
 
 Data:
-  PostgreSQL -> tenants / keys / providers / models / audit
-  Redis      -> RPM / TPM / concurrency
-~~~
+  PostgreSQL -> tenants / keys / providers / models / sessions / audit
+  Redis      -> RPM / TPM / concurrency / login throttle
+```
 
-当前阶段 **Go Gateway 是校园侧控制面和访问控制边界**，ThinkWatch Core 负责底层模型数据面能力。项目不直接复制 ThinkWatch Core 源码，避免过早深改 Rust 核心。
-
----
-
-## 3. 已完成真实验收
-
-### 3.1 业务链路
-
-已实际验证：
-
-~~~text
-sk-campus-* Virtual Key
-        ↓
-租户 / Key 鉴权
-        ↓
-模型白名单
-        ↓
-RPM / TPM / 并发控制
-        ↓
-Go Gateway
-        ↓
-ThinkWatch Core
-        ↓
-campus-smart
-        ↓
-Qwen
-        ↓
-OpenAI-compatible Response
-        ↓
-Token / latency / HTTP status
-        ↓
-PostgreSQL 审计
-~~~
-
-真实请求已返回：
-
-- model = campus-smart
-- HTTP 200
-- prompt / completion / total tokens
-- 请求延迟
-- 对应 Request ID
-- 请求日志落库
-
-### 3.2 已验证异常路径
-
-- 错误 Virtual Key → 401
-- 模型越权 → 403
-- RPM 超限 → 429
-- 并发超限 → 429
-- SSE 流式返回正常
-- ThinkWatch Provider 凭据缺失时能返回明确错误
+Go Gateway 是校园侧控制面和访问控制边界；ThinkWatch Core 负责底层模型路由与数据面能力。项目不复制 ThinkWatch Core 源码，而是通过配置同步和 API 契约集成。
 
 ---
 
-## 4. 内置管理后台
+## 3. Admin UI 与管理员认证
 
 启动 Gateway 后访问：
 
-~~~text
+```text
 http://127.0.0.1:8080/admin-ui
-~~~
+```
 
-当前页面：
+主要页面包括：
 
-~~~text
-校园模型网关
-├── 总览
-│   ├── Gateway
-│   ├── PostgreSQL
-│   ├── Redis
-│   ├── ThinkWatch
-│   ├── 今日请求
-│   ├── 今日 Tokens
-│   ├── 今日错误
-│   └── 平均延迟
-├── Provider 管理
-├── 模型管理
-│   ├── 同步到 ThinkWatch
-│   └── 测试模型
-├── 租户管理
-├── API Key 管理
-└── 请求日志
-~~~
-
-管理 API 与业务 Virtual Key 分离：
-
-- 管理端：管理员账号 + 密码登录（默认）；`ADMIN_TOKEN` 仅在 `ADMIN_AUTH_MODE=token` 应急模式下生效
-- 业务端：sk-campus-*
-
-当前后台已升级为 React + TypeScript + Vite 前端工程，构建后静态资源继续嵌入 Go Gateway，因此生产运行时不需要额外 Node 服务。
-
-主要界面：
-
-- 可收缩侧栏
-- 浅色 / 深色主题
-- 系统健康状态横幅
-- Gateway / PostgreSQL / Redis / ThinkWatch 状态
-- 今日请求、Token、错误、平均延迟、P95、Failover 指标
+- 总览与系统健康状态
 - Provider 管理
-- 虚拟模型 + Route Failover 链可视化
-- Tenant 配额和实际用量
-- API Key 管理
-- 请求日志筛选 / 分页 / CSV / 详情 Drawer
-- 管理审计
-- 安全事件
-- 当前身份与认证模式
+- 虚拟模型与 Route 管理
+- ThinkWatch 同步与模型测试
+- Tenant / API Key 管理
+- 请求日志筛选、分页、CSV 与详情
+- 管理审计与安全事件
+- 当前身份、修改密码、登录设备与退出登录
 
-默认 `ADMIN_AUTH_MODE=session`：管理员用账号 + 密码登录，首次启动会在界面上引导创建管理员账号，**界面上不出现任何 Token 概念**。
+默认：
 
-Access Token 只保存在页面内存中并自动续期，Refresh Token 走 `HttpOnly` + `SameSite=Strict` Cookie，**不使用 localStorage / sessionStorage / IndexedDB 保存任何凭据**。
+```text
+ADMIN_AUTH_MODE=session
+```
 
-刷新采用**确定性轮换 + 宽限期**：同一个旧 Refresh Token 总是派生出同一个后继 Token，
-刚被轮换掉的 Token 在 `ADMIN_REFRESH_REPLAY_GRACE`（默认 30s）内再次出现会被当作多标签页并发刷新
-正常处理，只有超出宽限期的重用才判定为泄露并撤销该账号全部会话。
+### 首次启动
 
-`ADMIN_AUTH_MODE=token` 仍保留用于本地调试或应急，但控制台不再提供保存 Token 的入口。
-`ADMIN_AUTH_MODE=trusted-header`（校园 SSO）下控制台直接使用代理注入的身份，不显示账号密码登录。
+数据库中没有管理员时，Admin UI 会显示“创建管理员账号”。
 
-详见 `docs/ADMIN_UI.md` 与 `docs/SSO_RBAC.md`。
+首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。
+
+创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。
+
+数据库已经存在管理员后，不再提供公开“注册”入口。当前也没有面向管理员的自助“忘记密码”流程。
+
+### 会话模型
+
+管理员认证采用：
+
+```text
+用户名 + 密码
+    ↓
+Argon2id
+    ↓
+短期 Access Token（仅页面内存）
+    +
+HttpOnly Refresh Cookie
+    ↓
+服务端持久 Session
+    ↓
+RBAC
+```
+
+安全特性：
+
+- 新密码使用 Argon2id；兼容 bcrypt 旧密码并可透明升级
+- Access Token 不写入 localStorage / sessionStorage / IndexedDB
+- Refresh Cookie 为 `HttpOnly` + `SameSite=Strict`
+- Refresh Token 确定性轮换，默认 30 秒并发宽限期
+- 多标签页同时刷新不会被误判为 Token 泄露
+- 超出宽限期的旧 Refresh Token 重用会触发 replay 检测并撤销会话
+- 修改密码会提升 `auth_version` 并使已有会话失效
+- 支持登录设备列表与单设备撤销
+- 登录限流覆盖 IP、IP + username、username 三个维度
+- 登录 / Setup / Refresh 等认证响应使用 `Cache-Control: no-store`
+- `ADMIN_SESSION_SECRET` 与业务 API Key HMAC 密钥分离
+
+生产环境必须独立设置：
+
+```text
+ADMIN_SESSION_SECRET
+```
+
+建议使用至少 32 字节随机值，并且不要与 `API_KEY_HMAC_SECRET` 相同。
+
+### trusted-header / 校园 SSO
+
+生产可使用：
+
+```text
+Campus IdP
+    ↓
+oauth2-proxy / 等价 OIDC 组件
+    ↓
+trusted-header
+    ↓
+Campus AI Gateway RBAC
+```
+
+`ADMIN_AUTH_MODE=trusted-header` 时，Admin UI 不显示本地账号密码登录，而是直接使用可信代理注入的身份。
+
+`ADMIN_AUTH_MODE=token` 仅保留为应急模式，Admin UI 不提供 Token 输入框。
+
+详见：
+
+- `docs/ADMIN_UI.md`
+- `docs/SSO_RBAC.md`
+- `docs/PRODUCTION.md`
 
 ---
 
+## 4. Windows 本地开发
 
-### Admin UI v2 构建
+### 环境
 
-本地开发需要 Node.js 22+（仅构建阶段）：
+- Go 1.24+
+- Docker Desktop
+- Node.js 22+（仅 Admin UI 构建阶段）
+- ThinkWatch Core
 
-~~~powershell
-npm --prefix .\web\admin install
-npm --prefix .\web\admin run check
-npm --prefix .\web\admin run build
-~~~
+### 第一次初始化
 
-日常使用 `scripts/dev.ps1` 时会自动完成前端构建，然后再启动 Go Gateway。
-
-## 5. Windows 本地开发
-
-### 5.1 第一次：一键初始化
-
-~~~powershell
+```powershell
 cd D:\AI\campus-ai-gateway
 .\scripts\setup.ps1
-~~~
+```
 
-脚本会：
+ThinkWatch Core 不在常见目录时：
 
-- 检查 Go / Docker
-- 自动寻找 twcore.exe
-- 保存 TWCORE_EXE
-- 设置 THINKWATCH_CONFIG_PATH
-- 校验 ThinkWatch 配置
-- 从 ThinkWatch clients 配置识别 tw-* Gateway Key
-- 保存 THINKWATCH_GATEWAY_KEY
-- 检查 DASHSCOPE_API_KEY
-- 缺少 Provider Key 时使用隐藏输入
-- 自动启动开发环境
-
-如果 ThinkWatch Core 不在常见目录：
-
-~~~powershell
+```powershell
 .\scripts\setup.ps1 -TwCorePath "D:\AI\ThinkWatch-Core\twcore.exe"
-~~~
+```
 
 只初始化、不启动：
 
-~~~powershell
+```powershell
 .\scripts\setup.ps1 -NoStart
-~~~
+```
 
-### 5.2 日常开发
+### 日常启动
 
-以后通常只需要：
-
-~~~powershell
+```powershell
 .\scripts\dev.ps1
-~~~
+```
 
-如果 8080 上有旧 Gateway：
+8080 已有旧 Gateway 时：
 
-~~~powershell
+```powershell
 .\scripts\dev.ps1 -ForceRestart
-~~~
+```
 
-查看状态：
+只启动、不自动打开浏览器：
 
-~~~powershell
+```powershell
+.\scripts\dev.ps1 -ForceRestart -NoBrowser
+```
+
+查看 / 停止：
+
+```powershell
 .\scripts\status.ps1
-~~~
-
-停止 Gateway + PostgreSQL + Redis：
-
-~~~powershell
 .\scripts\stop.ps1
-~~~
+```
 
 ---
 
-## 6. Provider 与模型管理
+## 5. Provider 与模型
 
-Provider 当前保存：
+Provider 只保存：
 
 - 名称
 - Base URL
 - 协议
-- Provider 凭据环境变量名
+- 凭据环境变量名
 - 启用状态
 
-例如 Qwen：
+**真实 Provider API Key 不写入 PostgreSQL，也不通过 Admin UI 保存。**
 
-~~~text
-name:           qwen
-protocol:       openai-chat
-credential_env: DASHSCOPE_API_KEY
-status:         enabled
-~~~
+内置模板包括：
 
-**真实 Provider API Key 不保存到 PostgreSQL，也不通过管理页面持久化。**
+| Provider | Base URL | Credential Env |
+| --- | --- | --- |
+| Qwen / 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
+| Volcengine Ark / 豆包 | `https://ark.cn-beijing.volces.com/api/v3` | `ARK_API_KEY` |
+| DeepSeek | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| GLM | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` |
+| Moonshot / Kimi | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` |
 
-当前数据模型：
+当前 Route 数据模型：
 
-~~~text
+```text
 virtual model alias
     ↓
 gateway_model_route (1..N)
@@ -304,91 +268,97 @@ gateway_model_route (1..N)
 provider + upstream model
     ↓
 priority / weight / timeout / status
-~~~
+```
 
-已验证示例：
+示例：
 
-~~~text
+```text
 campus-smart
-    ↓
-qwen
-    ↓
-qwen3.7-flash-2026-07-15
-~~~
+    ├── priority 1 -> qwen
+    └── priority 2 -> volcengine-ark
+```
 
-管理后台“模型管理”提供 **同步到 ThinkWatch**。
+管理后台修改 Provider / Model / Route 后，需要执行“同步 ThinkWatch”。
 
-同步过程：
+同步流程：
 
-~~~text
-PostgreSQL Provider / Model
+```text
+PostgreSQL Provider / Model / Route
         ↓
-生成临时 config
+生成临时 ThinkWatch config
         ↓
 twcore check
         ↓
-校验成功
+备份原配置
         ↓
-备份 config.yaml.campus.bak
-        ↓
-原子替换 config.yaml
+原子替换
         ↓
 ThinkWatch reload
-~~~
+```
 
-只更新 ThinkWatch 顶层 providers / aliases，保留 listen / clients 等其它配置。
+Windows 默认 ThinkWatch 配置路径：
 
-Windows 默认配置路径：
-
-~~~text
+```text
 %APPDATA%\ThinkWatch\config.yaml
-~~~
+```
+
+### Volcengine Ark 本地开发
+
+当前 PowerShell 需要先存在：
+
+```powershell
+$env:ARK_API_KEY
+```
+
+如果只保存在 Windows User / Machine 环境变量而当前终端尚未加载，可先把它导入当前 Process，再启动 Gateway / ThinkWatch。
+
+不要把真实 Ark Key 提交到仓库。
 
 ---
 
-## 7. 租户与 Virtual API Key
+## 6. Tenant 与业务 API Key
 
 关系：
 
-~~~text
+```text
 Tenant
 ├── Key A
 ├── Key B
 └── Key C
-~~~
+```
 
-同一部门可以按业务系统拆分多个 Key，各自配置：
+每个业务 Key 可以独立设置：
 
 - 模型白名单
-- IP 白名单
+- IP / CIDR 白名单
 - RPM
 - TPM
 - 最大并发
 - 有效期
 - 启用 / 停用
 
-完整 Key 形如：
+完整 Key：
 
-~~~text
+```text
 sk-campus-...
-~~~
+```
 
-完整 Key **只在创建时显示一次**。数据库仅保存 key_prefix 和 HMAC-SHA256 key_digest，不保存完整明文 Key。
+完整 Key 只在创建时显示一次。数据库保存 `key_prefix` 与 HMAC-SHA256 `key_digest`，不保存完整明文 Key。
 
 ---
 
-## 8. API 调用
+## 7. API 调用
 
 ### Models
 
-~~~bash
+```bash
 curl http://127.0.0.1:8080/v1/models \
   -H "Authorization: Bearer sk-campus-..."
-~~~
+```
 
 ### Chat Completions
 
-~~~bash
+```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-campus-..." \
   -H "Content-Type: application/json" \
@@ -399,58 +369,82 @@ curl http://127.0.0.1:8080/v1/chat/completions \
     ],
     "stream": false
   }'
-~~~
+```
+
+业务请求会经过 Gateway 的 Tenant / Key / Allowlist / Quota / Audit 链路。
+
+> Admin UI 中的“模型测试”用于直接验证 ThinkWatch 模型连通性，它不是业务数据面请求，因此不会写入 `gateway_request_log`。需要验证完整 Gateway 数据面时，请使用 `/v1/*` + `sk-campus-*` 业务 Key。
 
 ---
 
-## 9. 请求审计
+## 8. 请求与管理审计
 
-认证通过的 /v1/* 请求写入 gateway_request_log。
+业务 `/v1/*` 请求写入：
 
-当前记录：
+```text
+gateway_request_log
+```
 
-- request_id
-- tenant_id
-- api_key_id
-- client_ip
-- requested_model
-- actual_model
-- provider
-- stream
-- input tokens
-- output tokens
-- total tokens
-- latency_ms
-- status_code
-- error_code
-- created_at
+主要字段包括：
 
-其中 provider 字段已经预留，但当前还没有从 ThinkWatch telemetry 中可靠回填真实 Provider。
+- `request_id`
+- `tenant_id`
+- `api_key_id`
+- `client_ip`
+- `requested_model`
+- `actual_model`
+- `provider`
+- `upstream_model`
+- `route_priority`
+- `attempts`
+- `failover`
+- Token usage
+- latency
+- HTTP status / error code
+- `created_at`
 
-### 当前已知限制
+管理员操作与安全事件分别写入独立审计表，避免和业务请求混在一起。
 
-- TPM 当前是**预占式**，不是最终 usage 的严格实时结算。
-- 请求日志中的真实 Provider / 最终上游模型还需结合 ThinkWatch telemetry / trace 回填。
-- 管理后台请求日志目前是基础列表，还未完成高级筛选、分页、导出。
+路由事实字段不会由 Gateway 猜测。ThinkWatch 没有提供可信最终 telemetry 时，Provider / attempts 等字段可以保持 unknown。
 
 ---
 
-## 10. 目录
+## 9. Admin UI 构建
 
-~~~text
+Admin UI 源码位于：
+
+```text
+web/admin/
+```
+
+检查与构建：
+
+```powershell
+npm --prefix .\web\admin install
+npm --prefix .\web\admin run check
+npm --prefix .\web\admin run build
+```
+
+生产运行时只使用构建后嵌入 Go 的静态资源，不需要单独运行 Node 服务。
+
+---
+
+## 10. 目录结构
+
+```text
 cmd/
-├── server/              Gateway HTTP 服务入口
-└── keygen/              Virtual Key 工具
+├── server/                 Gateway HTTP 服务入口
+└── keygen/                 业务 API Key 工具
 
 internal/
-├── app/                 Server / middleware / Admin API / embedded UI
-│   └── adminui/dist/    Admin UI v2 Vite 构建产物
-├── httpx/               HTTP 公共能力
-├── model/               数据结构
-├── proxy/               ThinkWatch 透明代理
-├── ratelimit/           Redis 限流
-├── security/            Virtual Key HMAC
-└── storage/             PostgreSQL / Redis
+├── app/                    Server / Admin API / Auth / Embedded UI
+│   └── adminui/dist/       Admin UI v2 构建产物
+├── httpx/                  HTTP 公共能力
+├── model/                  数据结构
+├── proxy/                  ThinkWatch 透明代理
+├── ratelimit/              Redis 限流
+├── security/               API Key HMAC / Password / JWT
+└── storage/                PostgreSQL / Redis
 
 migrations/
 ├── 0001_init.sql
@@ -458,192 +452,153 @@ migrations/
 ├── 0003_model_routes.sql
 ├── 0004_route_audit.sql
 ├── 0005_security_events.sql
-└── 0006_quota.sql
+├── 0006_quota.sql
+├── 0007_admin_users.sql
+├── 0008_admin_sessions.sql
+└── 0009_admin_session_refresh_rotation.sql
+
+web/
+└── admin/                  React + TypeScript + Vite
 
 deploy/
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
 └── nginx/
 
-web/
-└── admin/               React + TypeScript + Vite 管理后台源码
-
 scripts/
 ├── setup.ps1
 ├── dev.ps1
 ├── status.ps1
-└── stop.ps1
-~~~
+├── stop.ps1
+├── verify-failover.ps1
+└── e2e-admin-auth-v2.sh
+```
 
 ---
 
-## 11. 与校园 AI 项目需求的对应关系
+## 11. 测试与验收
 
-本仓库不是完整“校园 AI 助手门户 / 智能体 / 知识库”产品，而是其中的 **统一模型接入和安全治理基础设施**。
+常规检查：
 
-| 校园 AI 需求方向 | 本项目当前状态 |
-| --- | --- |
-| 主流大模型统一接入 | Qwen 已真实接通；其它 Provider 待接入 |
-| 模型管理 | Provider / Model 后台已完成 |
-| 模型自由切换基础 | 虚拟模型 Alias 已完成；多 Provider 绑定待完成 |
-| 调用权限管理 | Tenant + Virtual Key + Model/IP Allowlist 已完成 |
-| 高并发限流 | RPM / TPM / Concurrency 已实现；目标压测未完成 |
-| 调用日志 | Request ID / Token / latency / status 已完成 |
-| 本地化部署基础 | Go + PostgreSQL + Redis + ThinkWatch 本地运行 |
-| 安全审计 | Key 摘要存储 + 请求审计已完成 |
-| 角色权限 | 尚未完成 SSO / RBAC |
-| 多模型 Failover | ThinkWatch 具备底层能力；本项目控制面配置尚在开发 |
-| 30,000 RPM | **尚未完成目标压测，不能视为已满足** |
-| HTTPS / 正式安全部署 | Nginx 基础存在，生产硬化尚未完成 |
+```powershell
+npm --prefix .\web\admin run check
+npm --prefix .\web\admin run build
+go test -count=1 ./...
+go vet ./...
+go build ./...
+```
 
----
+管理员认证 E2E：
 
-## 12. Roadmap
+```bash
+bash scripts/e2e-admin-auth-v2.sh
+```
 
-### M1：模型控制面
+认证 v2 已覆盖：
 
-- [x] Provider 管理
-- [x] Model 管理
-- [x] Tenant 管理
-- [x] Virtual Key 管理
-- [x] ThinkWatch 配置同步
-- [x] 网页模型测试
-- [x] 一个虚拟模型绑定多个 Provider
-- [x] Provider 优先级
-- [x] Failover 路由控制面（真实双 Provider 最终验收待执行）
-- [ ] Circuit Breaker 状态展示
-- [x] 审计 Schema/采集契约（ThinkWatch 最终 telemetry 待验收）
+- 首次本机 Setup
+- 反向代理远程绕过防护
+- 用户名 / 密码登录
+- Argon2id / bcrypt 迁移
+- Access / Refresh Session
+- 多标签页并发 Refresh
+- Replay grace / replay detection
+- Session revoke
+- 改密全会话失效
+- CSRF
+- 登录限流
+- trusted-header
+- 五角色 RBAC
+- 浏览器凭据不落持久化存储
 
-### M2：安全与运营
+最终环境统一验收请参考：
 
-- [x] 学校统一身份认证接入边界（trusted-header / external OIDC；真实 IdP 待验收）
-- [x] RBAC
-- [x] 管理员操作日志
-- [x] 安全事件
-- [ ] Guard / 敏感策略事件展示
-- [x] 审计筛选 / 分页 / 导出
-- [x] 租户维度统计
-
-### M3：性能与生产化
-
-- [x] TPM usage reconcile（无 usage 时保留估算）
-- [ ] 分布式部署验证
-- [ ] 30,000 RPM 目标压测
-- [ ] 突发流量压测
-- [ ] SSE 高并发压测
-- [x] HTTPS 生产示例配置（证书/域名最终环境提供）
-- [ ] Secret Manager / KMS
-- [ ] PostgreSQL / Redis 高可用
-- [x] Prometheus 指标/配置 + 容量验收文档（真实告警平台最终环境配置）
+```text
+docs/FINAL_ACCEPTANCE.md
+```
 
 ---
 
-## 13. 安全说明
+## 12. 安全与生产部署
 
-本地开发默认值仅用于开发。
+本地开发默认值不能直接用于生产。
 
-正式部署前必须替换：
+生产必须重点处理：
 
-- API_KEY_HMAC_SECRET
-- `ADMIN_SESSION_SECRET`（管理员会话专用密钥，≥ 32 字节，**不得与 API_KEY_HMAC_SECRET 相同**；未设置时会从后者域分离派生并打印警告）
+- `API_KEY_HMAC_SECRET`
+- `ADMIN_SESSION_SECRET`
 - PostgreSQL 密码
 - Redis 安全配置
 - Provider credentials
-- 首个管理员账号的密码（首次启动时在界面上创建）
-- `ADMIN_TOKEN`（仅在 `ADMIN_AUTH_MODE=token` 应急模式下使用；默认 `session` 模式不读取该变量）
-- `TRUSTED_PROXY_CIDRS`（部署在反向代理之后时必须配置，否则首次初始化只允许本机直连）
+- 管理员强密码
+- `ADMIN_COOKIE_SECURE=true`
+- `TRUSTED_PROXY_CIDRS`
+- HTTPS
+- Secret Manager / KMS / Vault
+- PostgreSQL / Redis / Gateway HA
 
-生产环境的管理员长期认证方案：
+Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓库或业务数据库。
 
-~~~text
-学校统一身份认证（可选）
-        ↓
-管理员账号密码登录 / SSO
-        ↓
-HttpOnly Refresh Cookie + 内存 Access Token
-        ↓
-RBAC
-        ↓
-管理操作审计
-~~~
-
-管理员认证**不依赖浏览器 localStorage**。走 HTTPS 部署时请设置 `ADMIN_COOKIE_SECURE=true`。
-
-Provider API Key 推荐通过环境变量、Secret Manager、KMS / Vault 管理，不应写入代码仓库或业务数据库。
+管理员认证不依赖浏览器 localStorage。
 
 ---
 
-## 14. 当前结论
+## 13. 当前已知限制
 
-项目已经从概念验证进入：
-
-> **可运行、可管理、可真实调用、可限流、可审计的校园大模型统一接入网关。**
-
-当前最重要的下一步：
-
-> **当前开发阶段已转入最终统一验收：真实 DeepSeek/Failover、ThinkWatch route telemetry、学校 SSO、HA 与 30,000 RPM。**
+- 完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
+- ThinkWatch 最终 Provider / attempts / failover telemetry 仍取决于 Core 暴露的可信路由事实。
+- 学校真实 IdP 尚未完成现场集成验收。
+- 目前没有管理员自助“忘记密码”与完整管理员生命周期 UI。
+- `ADMIN_SESSION_IDLE_TTL` 尚未实现；当前主要使用 Refresh absolute TTL。
+- 管理员 Access JWT 当前仍使用项目内 HS256 实现，后续可迁移成熟 JWT 库。
+- Multi-Gateway / PostgreSQL / Redis HA 尚未做目标环境故障切换验收。
+- Embedding / ASR 的真实 Provider 尚未完成最终验收。
+- 30,000 RPM 仍必须在代表性生产拓扑实测，不能仅凭代码或本地压测标记通过。
 
 ---
 
-## 15. 2026-10-10 Roadmap 实现更新
+## 14. Roadmap
 
-当前代码已经继续完成了原 Development Plan 的主要网关侧工作：
+### 已完成
 
-- **M1.5 多 Provider 控制面**：`gateway_model_route`、Route CRUD、Admin Route UI、DeepSeek Provider preset、ThinkWatch 多 Provider route renderer、可恢复的 Qwen -> DeepSeek Failover 验证脚本。
-- **M1.6 路由审计**：新增 `upstream_model / route_priority / attempts / failover`。Gateway 支持 ThinkWatch route telemetry Header 采集契约；当前 ThinkWatch Core 版本未提供普通 HTTP Header 形式的最终路由事实时，字段保持 unknown，不会猜测实际 Provider。
-- **M2.0 安全与管理审计**：`gateway_admin_audit_log`、`gateway_security_event`，业务请求日志与管理员操作分离。
-- **M2.1 SSO/RBAC**：保留本地 `ADMIN_TOKEN` 开发模式；生产支持 trusted-header，推荐由成熟 `oauth2-proxy`/等价 OIDC 组件负责学校登录与 Session，Gateway 负责角色授权。角色包括 `super_admin / gateway_admin / tenant_admin / auditor / operator`。
-- **M2.2 配额**：API Key TPM 已从纯预占升级为 `estimate -> reserve -> actual usage -> reconcile`；Tenant 支持月请求、日/月 Token Redis 共享配额与实际 usage 对账；金额预算字段仅用于配置/报表，不在缺少权威价格与实际 Route telemetry 时猜测扣费。
-- **M2.3 Admin UI**：Dashboard P95/Failover/Provider 指标、Route 管理、Tenant quota/用量、请求日志筛选/分页/CSV、管理审计、安全事件。
-- **M3.0/M3.1**：`/healthz`、`/readyz`、`/metrics`，Prometheus 配置、HTTPS 双 Gateway Nginx 示例、k6 500 RPS 压测脚本和生产/HA 指南。**这不等于 30,000 RPM 已通过，必须在目标环境实测。**
-- **M4.0 基础**：`/v1/embeddings` 继续走虚拟模型权限与透明代理；`/v1/audio/transcriptions` 增加 multipart model 解析/授权/透明代理基础。真实 Embedding/ASR Provider 仍需最终环境验收。
+- [x] Provider / Model / Route 控制面
+- [x] Tenant / 业务 API Key
+- [x] RPM / TPM / 最大并发
+- [x] 请求日志 / 管理审计 / 安全事件
+- [x] Admin UI v2
+- [x] 管理员 Session Auth v2
+- [x] RBAC
+- [x] trusted-header SSO 接入边界
+- [x] ThinkWatch 配置同步
+- [x] 多 Provider Route 控制面
+- [x] Qwen 真实调用
+- [x] Volcengine Ark 真实模型连通
+- [x] Prometheus / readiness / production 示例
+- [x] k6 性能验收工具
 
-### 多 Provider Route API
+### 下一阶段
 
-- `GET /admin/models/{model_id}/routes`
-- `POST /admin/models/{model_id}/routes`
-- `PUT /admin/model-routes/{route_id}`
-- `DELETE /admin/model-routes/{route_id}`
+- [ ] 完整业务数据面 Qwen -> Ark Failover 验收
+- [ ] ThinkWatch 最终 Route telemetry bridge
+- [ ] 学校真实 IdP 接入验收
+- [ ] 管理员生命周期管理 / 密码恢复
+- [ ] Multi-Gateway / PostgreSQL / Redis HA
+- [ ] Embedding / ASR 真实 Provider
+- [ ] 30,000 RPM 正式性能验收
+- [ ] Secret Manager / KMS 接入
 
-Route 修改会事务化同步 legacy 主绑定，且禁止删除最后一条 Route、禁止停用/删除最后一条启用 Route。真正的 Failover/Circuit Breaker 继续由 ThinkWatch Core 执行，不在 Go Gateway 再造一套路由引擎。
+---
 
-### DeepSeek
+## 15. 项目定位
 
-Admin UI 已提供 DeepSeek preset：`https://api.deepseek.com/v1` + `openai-chat` + `DEEPSEEK_API_KEY`。代码不保存真实厂商密钥。真实 DeepSeek Key 与真实请求属于最终统一验收。
+本仓库不是完整的“校园 AI 助手 / 智能体 / 知识库”产品。
 
-### SSO / RBAC
+它负责的是校园 AI 平台中更底层、也更关键的一层：
 
-生产建议：`Campus IdP -> oauth2-proxy -> Campus AI Gateway trusted-header -> RBAC`。详情见 `docs/SSO_RBAC.md`。本地开发仍可使用 `ADMIN_AUTH_MODE=token`。
+> **统一模型接入 + 访问控制 + 路由治理 + 配额 + 安全审计 + 管理控制面。**
 
-### 配额
+当前项目已经进入：
 
-Tenant 支持 `daily_token_limit / monthly_token_limit / monthly_request_limit / monthly_budget_micros`。Token 通过 Redis 预占并使用最终 usage 对账；没有可信 usage 时保留估算。详情见 `docs/QUOTAS.md`。
+> **可运行、可管理、可真实调用、可多 Provider 配置、可认证授权、可限流、可审计的校园大模型统一接入网关。**
 
-### 运维与压测
-
-- `GET /healthz`：进程存活
-- `GET /readyz`：PostgreSQL + Redis readiness
-- `GET /metrics`：Prometheus text metrics
-- `loadtest/k6-models.js`
-- `loadtest/k6-chat.js`
-- `docs/PERFORMANCE_TEST.md`
-- `docs/PRODUCTION.md`
-
-30,000 RPM ~= 500 RPS 只有在代表性生产拓扑记录实际 RPS、P50/P95/P99、错误率、CPU、内存、Redis、PostgreSQL、ThinkWatch 数据后才能标记通过。
-
-### 最终统一验收入口
-
-开发阶段不再要求逐项人工测试。最终一次性验收请按：`docs/FINAL_ACCEPTANCE.md`。
-
-仍然必须在真实环境完成的项目：
-
-1. DeepSeek 真实凭据和调用；
-2. Qwen -> DeepSeek 真实 Failover；
-3. ThinkWatch 最终 Provider/attempt telemetry bridge；
-4. 学校真实 IdP 登录和各角色 RBAC；
-5. Tenant quota 组合场景；
-6. Multi-Gateway / PostgreSQL / Redis HA 故障切换；
-7. Embedding / ASR 真实 Provider；
-8. 30,000 RPM 性能验收。
-
-相关新增文档：`docs/OPEN_SOURCE_REUSE.md`、`docs/FAILOVER_TEST.md`、`docs/SSO_RBAC.md`、`docs/QUOTAS.md`、`docs/PERFORMANCE_TEST.md`、`docs/PRODUCTION.md`、`docs/MODEL_SERVICES.md`、`docs/FINAL_ACCEPTANCE.md`。
+接下来重点从“继续堆功能”转向真实生产环境的 **Failover、SSO、HA、Telemetry 与性能验收**。
