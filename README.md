@@ -162,7 +162,7 @@ http://127.0.0.1:8080/admin-ui
 
 管理 API 与业务 Virtual Key 分离：
 
-- 管理端：ADMIN_TOKEN
+- 管理端：管理员账号 + 密码登录（默认）；`ADMIN_TOKEN` 仅在 `ADMIN_AUTH_MODE=token` 应急模式下生效
 - 业务端：sk-campus-*
 
 当前后台已升级为 React + TypeScript + Vite 前端工程，构建后静态资源继续嵌入 Go Gateway，因此生产运行时不需要额外 Node 服务。
@@ -183,11 +183,18 @@ http://127.0.0.1:8080/admin-ui
 - 安全事件
 - 当前身份与认证模式
 
-本地开发 `ADMIN_AUTH_MODE=token` 时，可把 ADMIN_TOKEN 保存到浏览器 localStorage。
+默认 `ADMIN_AUTH_MODE=session`：管理员用账号 + 密码登录，首次启动会在界面上引导创建管理员账号，**界面上不出现任何 Token 概念**。
 
-> localStorage Token 仅用于本地开发。生产 `trusted-header` 模式由校园 OIDC / oauth2-proxy 等可信反向认证层注入身份，Admin UI 不要求浏览器保存管理员长期 Token。
+Access Token 只保存在页面内存中并自动续期，Refresh Token 走 `HttpOnly` + `SameSite=Strict` Cookie，**不使用 localStorage / sessionStorage / IndexedDB 保存任何凭据**。
 
-详见 `docs/ADMIN_UI.md`。
+刷新采用**确定性轮换 + 宽限期**：同一个旧 Refresh Token 总是派生出同一个后继 Token，
+刚被轮换掉的 Token 在 `ADMIN_REFRESH_REPLAY_GRACE`（默认 30s）内再次出现会被当作多标签页并发刷新
+正常处理，只有超出宽限期的重用才判定为泄露并撤销该账号全部会话。
+
+`ADMIN_AUTH_MODE=token` 仍保留用于本地调试或应急，但控制台不再提供保存 Token 的入口。
+`ADMIN_AUTH_MODE=trusted-header`（校园 SSO）下控制台直接使用代理注入的身份，不显示账号密码登录。
+
+详见 `docs/ADMIN_UI.md` 与 `docs/SSO_RBAC.md`。
 
 ---
 
@@ -537,23 +544,30 @@ scripts/
 
 正式部署前必须替换：
 
-- ADMIN_TOKEN
 - API_KEY_HMAC_SECRET
+- `ADMIN_SESSION_SECRET`（管理员会话专用密钥，≥ 32 字节，**不得与 API_KEY_HMAC_SECRET 相同**；未设置时会从后者域分离派生并打印警告）
 - PostgreSQL 密码
 - Redis 安全配置
 - Provider credentials
+- 首个管理员账号的密码（首次启动时在界面上创建）
+- `ADMIN_TOKEN`（仅在 `ADMIN_AUTH_MODE=token` 应急模式下使用；默认 `session` 模式不读取该变量）
+- `TRUSTED_PROXY_CIDRS`（部署在反向代理之后时必须配置，否则首次初始化只允许本机直连）
 
-生产环境不得继续使用浏览器 localStorage 作为管理员长期认证方案，应接入：
+生产环境的管理员长期认证方案：
 
 ~~~text
-学校统一身份认证
+学校统一身份认证（可选）
         ↓
-后台登录 Session
+管理员账号密码登录 / SSO
+        ↓
+HttpOnly Refresh Cookie + 内存 Access Token
         ↓
 RBAC
         ↓
 管理操作审计
 ~~~
+
+管理员认证**不依赖浏览器 localStorage**。走 HTTPS 部署时请设置 `ADMIN_COOKIE_SECURE=true`。
 
 Provider API Key 推荐通过环境变量、Secret Manager、KMS / Vault 管理，不应写入代码仓库或业务数据库。
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -28,12 +29,13 @@ import (
 const auditCaptureLimit = 1 << 20
 
 type Server struct {
-	cfg   Config
-	pg    *storage.Postgres
-	redis *storage.Redis
-	limit *ratelimit.Limiter
-	proxy http.Handler
-	mux   *http.ServeMux
+	cfg       Config
+	pg        *storage.Postgres
+	redis     *storage.Redis
+	limit     *ratelimit.Limiter
+	proxy     http.Handler
+	mux       *http.ServeMux
+	adminAuth *adminAuthService
 }
 
 type requestEnvelope struct {
@@ -122,8 +124,48 @@ func NewServer(cfg Config) (*Server, error) {
 		proxy: rp,
 		mux:   http.NewServeMux(),
 	}
+	if cfg.SessionAuthEnabled() {
+		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
+			WithPolicy(cfg.AdminLoginMaxAttempts, cfg.AdminLoginWindow)
+		sessionKey, derived := cfg.AdminSessionKey()
+		if derived {
+			log.Printf("ADMIN_SESSION_SECRET is not configured; derived development key is being used. " +
+				"Set ADMIN_SESSION_SECRET (>= 32 bytes, e.g. `openssl rand -base64 48`) in production.")
+		}
+		s.adminAuth = newAdminAuthService(pg, loginLimiter, sessionKey, cfg)
+	}
 	s.routes()
+	s.bootstrapAdminUser(ctx)
 	return s, nil
+}
+
+// bootstrapAdminUser creates an initial administrator from ADMIN_BOOTSTRAP_USERNAME
+// / ADMIN_BOOTSTRAP_PASSWORD when no account exists yet. It exists so an
+// unattended deployment can come up without an operator at the keyboard; the
+// interactive /admin/setup flow remains the default. A failure is logged and
+// never blocks startup, so a bad bootstrap value cannot take the gateway down.
+func (s *Server) bootstrapAdminUser(ctx context.Context) {
+	if s.adminAuth == nil {
+		return
+	}
+	username := s.cfg.AdminBootstrapUsername
+	password := s.cfg.AdminBootstrapPassword
+	if username == "" || password == "" {
+		return
+	}
+	needsSetup, err := s.adminAuth.needsSetup(ctx)
+	if err != nil {
+		log.Printf("admin bootstrap: cannot count administrators: %v", err)
+		return
+	}
+	if !needsSetup {
+		return
+	}
+	if _, err := s.adminAuth.setup(ctx, username, "Administrator", password); err != nil {
+		log.Printf("admin bootstrap: could not create the initial administrator: %v", err)
+		return
+	}
+	log.Printf("admin bootstrap: created the initial administrator %q", username)
 }
 
 func (s *Server) Close() {
@@ -154,6 +196,20 @@ func (s *Server) routes() {
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
 	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
 	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
+
+	// Public authentication endpoints. They must be registered with an exact
+	// pattern so they win over the catch-all "/admin/" registration below,
+	// which is wrapped in adminMiddleware.
+	s.mux.HandleFunc("/admin/auth-config", s.handleAdminAuthConfig)
+	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
+	s.mux.HandleFunc("/admin/setup", s.handleAdminSetup)
+	s.mux.HandleFunc("/admin/auth/refresh", s.handleAdminRefresh)
+	s.mux.HandleFunc("/admin/auth/logout", s.handleAdminLogout)
+	s.mux.HandleFunc("/admin/logout", s.handleAdminLogout)
+
+	s.mux.Handle("/admin/password", s.adminMiddleware(http.HandlerFunc(s.handleAdminPasswordChange)))
+	s.mux.Handle("/admin/sessions", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessions)))
+	s.mux.Handle("/admin/sessions/", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessionByID)))
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
@@ -194,7 +250,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		reqID := r.Header.Get("X-Request-Id")
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: clientIP(r), Detail: "missing bearer token"})
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: s.clientIPFrom(r), Detail: "missing bearer token"})
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Missing bearer token", reqID)
 			return
 		}
@@ -202,17 +258,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		plain := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		k, err := s.pg.FindAPIKeyByDigest(r.Context(), security.Digest(s.cfg.KeyHMACSecret, plain))
 		if err != nil || k.Status != 1 {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: clientIP(r), Detail: "unknown or disabled key"})
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: s.clientIPFrom(r), Detail: "unknown or disabled key"})
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key", reqID)
 			return
 		}
 		if k.ExpireAt != nil && time.Now().After(*k.ExpireAt) {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "api_key_expired", ClientIP: clientIP(r)})
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "api_key_expired", ClientIP: s.clientIPFrom(r)})
 			httpx.Error(w, http.StatusUnauthorized, "api_key_expired", "API key expired", reqID)
 			return
 		}
-		if len(k.AllowedIPs) > 0 && !ipAllowed(clientIP(r), k.AllowedIPs) {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "ip_forbidden", ClientIP: clientIP(r)})
+		if len(k.AllowedIPs) > 0 && !ipAllowed(s.clientIPFrom(r), k.AllowedIPs) {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "ip_forbidden", ClientIP: s.clientIPFrom(r)})
 			httpx.Error(w, http.StatusForbidden, "ip_not_allowed", "Client IP is not allowed", reqID)
 			return
 		}
@@ -268,7 +324,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			RequestID:      reqID,
 			TenantID:       id.TenantID,
 			APIKeyID:       id.APIKeyID,
-			ClientIP:       clientIP(r),
+			ClientIP:       s.clientIPFrom(r),
 			RequestedModel: envelope.Model,
 			ActualModel:    actualModel,
 			Provider:       telemetry.Provider,
@@ -299,14 +355,14 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 
 	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
 	if err != nil || !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: clientIP(r)})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_request_quota_exceeded", "Tenant monthly request quota exceeded", reqID)
 		return
 	}
 
 	allowed, err = s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
 	if err != nil || !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: clientIP(r)})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: s.clientIPFrom(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
 		return
 	}
@@ -346,7 +402,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 	if envelope.Model != "" && len(id.AllowedModels) > 0 {
 		if _, ok := id.AllowedModels[envelope.Model]; !ok {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: clientIP(r), RequestedModel: envelope.Model})
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
 			return
 		}
@@ -355,14 +411,14 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	reserveAmount := estimateTPM(body, envelope)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
 	if err != nil || !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
 		return
 	}
 	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
 		_ = tenantReservation.Refund(r.Context())
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
 		return
 	}
@@ -371,7 +427,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !allowed {
 		_ = reservation.Refund(r.Context())
 		_ = tenantReservation.Refund(r.Context())
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: clientIP(r), RequestedModel: envelope.Model})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
 		return
 	}
@@ -567,17 +623,6 @@ func (s *Server) recordSecurityEvent(r *http.Request, event model.SecurityEvent)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = s.pg.InsertSecurityEvent(ctx, event)
-}
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func ipAllowed(ip string, allowed []string) bool {

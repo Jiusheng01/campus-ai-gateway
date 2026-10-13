@@ -34,11 +34,13 @@ HTTPS 应在托管负载均衡器或 Nginx 上终止。
 生产环境的敏感配置必须来自 Secret 管理机制，而不是提交到仓库：
 
 - `API_KEY_HMAC_SECRET`
+- `ADMIN_SESSION_SECRET`
 - `ADMIN_PROXY_SECRET`
 - PostgreSQL / Redis 凭据
 - `THINKWATCH_GATEWAY_KEY`
 - `DASHSCOPE_API_KEY`
 - `DEEPSEEK_API_KEY`
+- `ARK_API_KEY`
 - 校园 OIDC Client Secret
 
 推荐：
@@ -46,6 +48,36 @@ HTTPS 应在托管负载均衡器或 Nginx 上终止。
 - Kubernetes Secret
 - Vault
 - KMS / Secret Manager
+
+### ADMIN_SESSION_SECRET
+
+管理员会话专用密钥，用于 Access Token 的 HS256 签名与 Refresh Token 轮换派生。
+它与 `API_KEY_HMAC_SECRET` 属于**不同安全域**，必须单独设置，不能复用。
+
+```text
+openssl rand -base64 48
+```
+
+要求至少 32 字节。未配置时网关会从 `API_KEY_HMAC_SECRET` 经带标签的 HMAC 派生一个
+开发用密钥，并在启动日志打印警告；该回退只为本地开发开箱即用，生产必须显式配置。
+
+### TRUSTED_PROXY_CIDRS 与首次初始化
+
+`TRUSTED_PROXY_CIDRS` 列出可信反向代理地址。`X-Forwarded-For` / `Forwarded` /
+`X-Real-IP` 只有在直连 peer 属于该列表时才会被采信。
+
+首次初始化（`ADMIN_SETUP_LOCAL_ONLY=true`，默认）判断的是**解析后的真实客户端地址**，
+而不是最后一跳 peer：
+
+- 本机直连、且不带转发头 → 允许
+- 可信代理转发、解析出的客户端为本机 → 允许
+- 可信代理转发、解析出的客户端为公网/内网其它地址 → 拒绝
+- 本机 peer 但带转发头、而该 peer 不在 `TRUSTED_PROXY_CIDRS` 中 → 拒绝（fail closed）
+
+因此，**在反向代理后面部署时，远程访问者无法通过代理创建第一个管理员账号**。
+运维必须先在本机完成初始化，或使用 `ADMIN_BOOTSTRAP_USERNAME` /
+`ADMIN_BOOTSTRAP_PASSWORD` 进行无人值守初始化。
+
 
 ## 4. PostgreSQL
 

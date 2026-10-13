@@ -82,15 +82,30 @@ Route Telemetry 不存在时显示“未知”，不会根据计划 Route 猜测
 
 ## 认证
 
-### 本地开发
+### 默认：账号密码登录
+
+```text
+ADMIN_AUTH_MODE=session
+```
+
+首次启动会在界面上引导创建管理员账号（用户名 / 密码 / 确认密码），界面上不出现任何 Token 概念。
+
+- Access Token：短期，只保存在页面内存，自动续期
+- Refresh Token：`HttpOnly` + `SameSite=Strict` Cookie（`campus_admin_refresh`，Path 限定 `/admin/auth`）
+- 不使用 localStorage / sessionStorage / IndexedDB 保存任何凭据
+
+「系统设置 → 账号与安全」提供修改密码、查看登录设备、撤销设备与退出登录。
+
+### 本地调试 / 应急：token
 
 ```text
 ADMIN_AUTH_MODE=token
+ADMIN_TOKEN=<long random secret>
 ```
 
-可以在“系统设置”保存本地 `ADMIN_TOKEN`。
+该模式下控制台不提供保存 Token 的入口，请由反向代理或 API 客户端在 `Authorization: Bearer` 头中携带。
 
-### 生产
+### 生产：trusted-header
 
 ```text
 ADMIN_AUTH_MODE=trusted-header

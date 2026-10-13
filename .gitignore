@@ -14,3 +14,9 @@ coverage.out
 # OS
 .DS_Store
 Thumbs.db
+
+# Admin UI build output.
+# internal/app/adminui/dist/index.html stays tracked as a placeholder so that
+# go:embed always finds the directory; the real bundle is produced by
+# `npm --prefix web/admin run build` before the Go build.
+internal/app/adminui/dist/assets/
