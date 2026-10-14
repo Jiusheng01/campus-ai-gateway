@@ -1,35 +1,25 @@
 import type {ReactNode} from 'react'
 import {Loader2, LogOut, Menu, Moon, Sun} from 'lucide-react'
 import {IconButton} from '../components/ui/Button'
-import {navGroups, pageMeta, type Page} from './navigation'
+import {navGroups, pageMeta, type NavItem, type Page } from './navigation'
+import {primaryRole, roleLabel} from '../lib/roles'
 import type {WhoAmI} from '../api'
-
-const ROLE_LABELS: Record<string, string> = {
-  super_admin: '超级管理员',
-  gateway_admin: '网关管理员',
-  tenant_admin: '租户管理员',
-  auditor: '审计员',
-  operator: '运维人员',
-}
-
-const roleLabel = (r: string) => ROLE_LABELS[r] || r
 
 /**
  * The identity chip shows one role plus a count.
  *
- * Five role strings in the topbar is unreadable and pushes the theme and
- * logout controls around as the width changes.
+ * Six role strings in the topbar is unreadable and pushes the theme and logout
+ * controls around as the width changes.
  */
 function IdentityChip({who}: {who: WhoAmI | null}) {
   if (!who) return null
   const name = who.username || who.user || '未知用户'
   const roles = who.roles || []
-  const primary = roles[0]
   return (
-    <span className="identity" title={roles.map(roleLabel).join('、')}>
+    <span className="identity" title={roles.map(roleLabel).join('、') || roleLabel('member')}>
       <b className="identityName">{name}</b>
       <small className="identityRole">
-        {primary ? roleLabel(primary) : '无角色'}
+        {roleLabel(primaryRole(roles))}
         {roles.length > 1 && <span className="identityMore">+{roles.length - 1}</span>}
       </small>
     </span>
@@ -50,6 +40,14 @@ type Props = {
   children: ReactNode
 }
 
+// visibleItems is what the navigation shows. Hiding a page someone may not open
+// is a courtesy: the gateway's allow-list is still what answers the request.
+function visibleItems(roles: string[]): NavItem[] {
+  return navGroups
+    .flatMap(g => g.items)
+    .filter(item => roles.some(r => item.roles.includes(r)))
+}
+
 export function Shell({
   page,
   onNavigate,
@@ -64,6 +62,12 @@ export function Shell({
   children,
 }: Props) {
   const meta = pageMeta[page]
+  const items = visibleItems(who?.roles || [])
+  // Group the visible items back into their headings, dropping any group that
+  // has nothing left in it.
+  const groups = navGroups
+    .map(g => ({...g, items: g.items.filter(i => items.includes(i))}))
+    .filter(g => g.items.length > 0)
 
   return (
     <div className={`shell ${collapsed ? 'isCollapsed' : ''}`}>
@@ -81,7 +85,7 @@ export function Shell({
         </div>
 
         <nav className="nav" aria-label="主导航">
-          {navGroups.map(group => (
+          {groups.map(group => (
             <div className="navGroup" key={group.id}>
               {!collapsed && <span className="navGroupLabel">{group.label}</span>}
               {collapsed && <span className="navGroupRule" aria-hidden />}

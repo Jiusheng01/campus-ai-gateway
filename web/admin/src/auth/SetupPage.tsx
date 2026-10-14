@@ -1,9 +1,9 @@
 import {useState, type FormEvent} from 'react'
 import {AlertTriangle, Loader2, ShieldCheck} from 'lucide-react'
-import {setupAdmin, type AuthConfig} from '../api'
+import {setupAdmin, type AuthConfig, type LoginResult} from '../api'
 import {PasswordInput} from '../components/ui/PasswordInput'
 
-export function SetupPage({config, onDone}: {config: AuthConfig | null; onDone: () => void}) {
+export function SetupPage({config, onDone}: {config: AuthConfig | null; onDone: (result: LoginResult) => void}) {
   const [username, setUsername] = useState('admin')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
@@ -25,8 +25,15 @@ export function SetupPage({config, onDone}: {config: AuthConfig | null; onDone: 
     setBusy(true)
     setError('')
     try {
-      await setupAdmin({username: username.trim(), display_name: displayName.trim(), password, confirm_password: confirmPassword})
-      onDone()
+      // Setup signs the operator in directly, so the token it returns decides
+      // where they land — a super administrator on the dashboard.
+      const result = await setupAdmin({
+        username: username.trim(),
+        display_name: displayName.trim(),
+        password,
+        confirm_password: confirmPassword,
+      })
+      onDone(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : '初始化失败')
     } finally {

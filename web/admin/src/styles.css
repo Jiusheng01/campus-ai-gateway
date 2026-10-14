@@ -1069,3 +1069,49 @@ input:focus, select:focus, textarea:focus {
   .miniCardRows { grid-template-columns: 1fr 1fr; }
   .providerRow { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Account system: auth tabs, registration and the member home page    */
+/* ------------------------------------------------------------------ */
+
+/* Shared by the login form and the registration form, so the card keeps one
+   rhythm regardless of which tab is open. */
+.authForm{display:flex;flex-direction:column;gap:14px}
+
+/* A shared card with two tabs. Both tabs are real buttons in a tablist, so a
+   screen reader announces the switch rather than presenting two forms. */
+.authTabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface-subtle);border:1px solid var(--border);border-radius:var(--radius-md)}
+.authTab{border:0;background:transparent;border-radius:var(--radius-sm);padding:8px 10px;font-size:12.5px;font-weight:600;color:var(--text-muted)}
+.authTab:hover{color:var(--text)}
+.authTab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)}
+.authTab:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+
+/* An in-line action inside a hint sentence, used instead of a full-width
+   button where the sentence is the affordance. */
+.linkInline{border:0;background:none;color:var(--primary);padding:0 3px;font-size:inherit;font-weight:600;font-family:inherit}
+.linkInline:hover{text-decoration:underline}
+
+/* --- 我的账号（普通用户首页） ---------------------------------------- */
+.accountHero{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:18px}
+.accountAvatar{width:44px;height:44px;flex:none;border-radius:999px;display:grid;place-items:center;background:var(--primary-soft);border:1px solid color-mix(in srgb,var(--primary) 22%,var(--border));color:var(--primary)}
+.accountAvatar svg{width:22px;height:22px}
+.accountIdentity{min-width:0}
+.accountName{display:block;font-size:16px;font-weight:700}
+.accountHandle{display:block;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);margin-top:2px}
+.accountFacts{display:flex;flex-wrap:wrap;gap:10px 24px;margin:0 0 0 auto;padding:0}
+.accountFacts > div{min-width:110px}
+.accountFacts dt{font-size:11.5px;color:var(--text-muted);margin-bottom:5px}
+.accountFacts dd{margin:0;display:flex;align-items:center;gap:6px}
+
+.accountNotice{display:flex;gap:11px;align-items:flex-start;padding:15px 18px;border-bottom:1px solid var(--border)}
+.accountNotice > svg{width:17px;height:17px;color:var(--primary);margin-top:2px;flex:none}
+.accountNotice b{display:block;font-size:13px;margin-bottom:4px}
+.accountNotice p{margin:0;font-size:12px;color:var(--text-muted);line-height:1.65;max-width:680px}
+.accountCan{list-style:none;margin:0;padding:14px 18px;display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px}
+.accountCan li{display:flex;align-items:center;gap:7px;color:var(--text-muted)}
+.accountCan li:before{content:"";width:5px;height:5px;border-radius:999px;background:var(--primary);flex:none}
+
+/* A detail row laid out vertically, used where the value is a control rather
+   than a single value. */
+.detailRow.column{display:flex;flex-direction:column;align-items:flex-start;gap:9px}
+.detailRow.column .detailKey{margin:0}

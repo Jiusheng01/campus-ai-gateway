@@ -9,8 +9,8 @@ import {useResource} from '../lib/useResource'
 
 const MODE_INFO: Record<string, {label: string; description: string; icon: typeof KeyRound; tone: 'success' | 'info' | 'warning'}> = {
   session: {
-    label: '本地管理员会话',
-    description: '使用管理员账号密码登录。访问凭证只保存在页面内存中，刷新凭证走 HttpOnly Cookie，不写入浏览器本地存储。',
+    label: '账号密码登录',
+    description: '使用账号密码登录。访问凭证只保存在页面内存中，刷新凭证走 HttpOnly Cookie，不写入浏览器本地存储。',
     icon: KeyRound,
     tone: 'success',
   },

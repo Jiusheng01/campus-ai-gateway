@@ -28,12 +28,19 @@ import {fmt, ms, num, ratio} from '../lib/format'
  * Dashboard, arranged in three layers so the operator reads it top-down:
  * business KPIs, then infrastructure, then per-supplier telemetry.
  */
-export function DashboardPage() {
+export function DashboardPage({roles}: {roles: string[]}) {
   const toast = useToast()
   const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
   const [testing, setTesting] = useState<ModelConfig[] | null>(null)
   const [syncing, setSyncing] = useState(false)
+
+  // Quick actions are gated by the same allow-list the gateway uses, so the
+  // dashboard never offers a button whose only possible result is a 403. A
+  // tenant_admin may read the status the page reports; they may not change the
+  // routing that produced it.
+  const canSync = roles.includes('super_admin') || roles.includes('gateway_admin')
+  const canTestModel = canSync || roles.includes('operator')
 
   const sync = async () => {
     const ok = await confirm({
@@ -77,14 +84,20 @@ export function DashboardPage() {
 
   return (
     <div className="stack">
-      <div className="quickActions">
-        <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
-          同步 ThinkWatch
-        </Button>
-        <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
-          模型连通测试
-        </Button>
-      </div>
+      {(canSync || canTestModel) && (
+        <div className="quickActions">
+          {canSync && (
+            <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
+              同步 ThinkWatch
+            </Button>
+          )}
+          {canTestModel && (
+            <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
+              模型连通测试
+            </Button>
+          )}
+        </div>
+      )}
 
       {error ? (
         <Panel title="运行状态">
