@@ -139,7 +139,113 @@ PATCH /admin/users/{id}             # display_name / roles / status
 
 ---
 
-## 6. 普通用户看到什么
+## 6. 账户变更语义
+
+一个 PATCH 是**一个逻辑变更**。`UpdateAdminUserAccount` 在单个事务里完成
+`pg_advisory_xact_lock` → `SELECT ... FOR UPDATE` → 计算最终状态 → 一次 last-super-admin
+判定 → 一次 UPDATE，并返回真实的 `AdminUserChangeSet`。
+
+### auth_version
+
+`auth_version` 是凭据失效的开关：它一变，所有在它之前签发的 Access Token 与 Session
+立即失效。
+
+| 变更 | auth_version | 会话 |
+|---|---|---|
+| 仅 display_name | **+0** | 保留 |
+| 仅 roles | **+1** | 撤销 |
+| 仅 status | **+1** | 撤销 |
+| roles + status | **+1** | 撤销一次 |
+| roles + display_name | **+1** | 撤销一次 |
+| status + display_name | **+1** | 撤销一次 |
+| 三者同时 | **+1** | 撤销一次 |
+| **no-op** | **+0** | 保留 |
+
+显示名称是标签，不影响鉴权，所以改它不踢人下线。权限与状态决定 Access Token 携带的
+授权上下文，所以它们一变就必须让旧 Token 失效。
+
+**一个 PATCH 最多 +1**，无论它改了几个字段。
+
+### no-op
+
+如果三个字段都没有实际变化：
+
+- 不执行 UPDATE
+- 不 bump `auth_version`
+- 不修改 `updated_at`
+- 不撤销任何 Session
+- 不写任何业务审计
+
+「请求里有 roles 字段」和「roles 变了」是两件事。只改显示名称的请求里 roles 字段
+根本没被发送（前端只发变化字段），即使发送了相同值，后端也比较前后状态后按 no-op 处理。
+
+角色比较走 canonical 形式，因此「同样的角色换个顺序」不算变化。
+
+### 角色校验
+
+管理员 PATCH 携带未知角色返回 `400 invalid_request`，不静默丢弃 ——
+`["gateway_admin","god_mode"]` 被拒绝，而不是变成 `["gateway_admin"]`。
+
+之后 `NormalizeAccountRoles` 负责去重、`member` 与管理角色互斥、固定排序。
+公开注册仍然完全不接受 roles 字段。
+
+### 事务原子性
+
+一个被拒绝的 PATCH 不会半途生效。例如同时改 roles + status + display_name 而违反
+last-super-admin 时，**所有字段都保持不变**，不会出现「显示名称改了但角色被拒绝」。
+
+### 撤销原因
+
+每个逻辑 mutation 只调用一次 `RevokeSessionsForUser`，原因按实际变化记录：
+
+```text
+仅 roles                → role_changed
+status → disabled       → account_disabled
+status → enabled        → account_status_changed
+roles + status          → account_security_changed
+```
+
+撤销是 best effort：事务已经 bump 了 `auth_version`，旧 Token 在下一次请求就会失效，
+因此清理 session 行失败不会回滚已经提交的权限变更。
+
+### 审计
+
+审计按真实 ChangeSet 记录，多字段 PATCH 写多条语义事件：
+
+```text
+roles + disable  →  user.role.update + user.disable
+roles + profile  →  user.role.update + user.profile.update
+三字段           →  user.role.update + user.disable/enable + user.profile.update
+no-op            →  不写任何业务审计
+```
+
+---
+
+## 7. 注册限流
+
+限流是**一次原子 Redis 操作**：`ConsumeRegistration` 在同一个 Lua 脚本里完成
+INCR、TTL 与判定。
+
+分两步（先问「可以吗」再「记一次」）会留下 TOCTOU 窗口：上限 5 时，同时到达的 50 个
+请求可以全部读到计数 4、全部通过、再各自自增，一次突发就绕过了整个 anti-abuse 限制。
+
+- 判定是 `current <= maxAttempts`，所以上限 5 恰好放行 5 个。
+- **窗口从第一个请求起算且不延长**：只在 `current == 1` 时设置过期，反复重试无法把
+  重置时间推远。
+- `PUBLIC_REGISTER_MAX_ATTEMPTS=0` 关闭限流，此时完全不访问 Redis。
+- **Redis 不可用时拒绝注册**（`503 registration_unavailable`）。这与登录限流的
+  fail-open 相反：计数器拿不到时无限注册比暂时不能注册更糟。
+
+消耗时机在基础校验之后、创建账号之前，因此：
+
+```text
+不计费：malformed JSON / 弱密码 / 确认不一致 / 超长用户名 / 携带安全字段
+计费：  用户名重复（否则可用已知存在的名字免费探测接口）
+```
+
+---
+
+## 8. 普通用户看到什么
 
 member 登录后不会进入总览：它没有 `/admin/status` 权限，进入只会到处 403。
 它看到的是「我的账号」页：
@@ -153,7 +259,7 @@ member 唯一被允许的后端能力是自助端点：`/admin/whoami`、`/admin
 
 ---
 
-## 7. 与业务 Tenant / API Key 的关系
+## 9. 与业务 Tenant / API Key 的关系
 
 **本轮没有把账号绑定到 API Key。** 现有模型仍是：
 
@@ -166,8 +272,14 @@ member 第一版只是控制面账号，不拥有任何 API Key、配额或用�
 
 ---
 
-## 8. Technical debt
+## 10. Technical debt
 
+- **用户列表没有分页与检索**。`ListAdminUsers` 固定上限 500 条：校园规模够用，
+  但开放注册正式投产前需要
+  `GET /admin/users?page_size=50&cursor=...&q=zhangsan`。
+- **注册成功但 Session 创建失败**时，账号已存在而客户端拿到 500，用户会以为注册失败
+  并重试（然后撞用户名重复）。需要一个 `account_created_login_failed` 之类的响应，
+  但不要在 Session 体系上做大型事务重构。
 - 表名仍是 `gateway_admin_user` / `gateway_admin_session`，Go 类型仍是
   `model.AdminUser`。它们现在承载全部账号（含 member），名字属于历史遗留。
   **本轮刻意没有重命名：** 已是经过验证的 Session Auth v2 套件，为改名字做一次

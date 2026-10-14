@@ -193,7 +193,7 @@ FROM gateway_admin_user
 和首个管理员守卫都不需要新列、新索引或新视图。
 
 表重命名（`gateway_admin_user` → `gateway_user`、`gateway_admin_session` → `gateway_user_session`）
-按规格要求留到账户体系稳定后单独做，理由记录在 `docs/ACCOUNTS.md` 第 8 节。
+按规格要求留到账户体系稳定后单独做，理由记录在 `docs/ACCOUNTS.md` 第 10 节。
 
 ---
 
@@ -227,9 +227,9 @@ operator      → 总览 / 系统设置
 tenant_admin 与 auditor 看不到「同步 ThinkWatch」和「模型连通测试」，因为它们的后端允许列表里
 没有这两个端点。
 
-### 两个改动的 발견
+### 浏览器实测抓到的缺陷
 
-浏览器实测抓到两个纯自动化测试没暴露的缺陷，都已修复并有回归测试：
+浏览器实测抓到三个纯自动化测试没暴露的缺陷，都已修复并有回归测试：
 
 1. **`useEffect` 放在提前 return 之后**（`App.tsx`）导致 hook 数量随渲染变化，
    React 直接白屏（`Rendered more hooks than during the previous render`）。
@@ -318,17 +318,157 @@ trusted-header    /auth/register → 404
 
 ---
 
-## 8. Future Work
+## 8. Pre-merge security hardening
 
-规格明确列出、本轮未做的项：
+代码审查在合并前发现 7 个问题，本轮全部修复。
+
+### 8.1 注册限流：两阶段改成一次原子 Consume（P1）
+
+原来的接口是 `AllowRegistration()` 再 `RecordRegistration()`，中间存在
+time-of-check-to-time-of-use 窗口：限制为 5 时，同时到达的 50 个请求可以全部读到
+计数 4、全部判定通过、再各自 INCR —— 一次突发就能放进远超策略数量的账号。
+这是公开注册 anti-abuse 的直接绕过。
+
+现在是一次调用完成 INCR + TTL + 判定：
 
 ```text
-邮箱验证 / 邀请码 / 管理员审批
-忘记密码、密码自助重置
-CAPTCHA / Turnstile
-个人 API Key、用户计费、个人模型调用、用户充值与额度
-校园 SSO 自动开户（trusted-header identity 暂不写入用户表）
-gateway_admin_user → gateway_user 表重命名（技术债，见 docs/ACCOUNTS.md）
+ConsumeRegistration(ctx, ip) (allowed bool, retryAfter time.Duration, err error)
+```
+
+Lua 脚本先自增再回答，因此第 5 个调用者拿到最后一个名额，第 6 个被拒绝，
+与并发数无关。判定是 `current <= maxAttempts`，即上限 5 恰好放行 5 个（不是 4 个）。
+
+**TTL 不会被攻击请求延长**：脚本只在 `current == 1` 时设置过期，窗口从第一个请求起算；
+`ttl < 0` 的补设分支只用于修复异常丢失 TTL 的 key。反复重试无法把重置时间推远。
+
+`PUBLIC_REGISTER_MAX_ATTEMPTS=0` 仍然表示关闭限流，此时**完全不访问 Redis**。
+
+Redis 不可用时**仍然 fail closed**（`503 registration_unavailable`）；登录限流的
+fail-open 策略保持不变，两者没有统一。
+
+消耗时机也固定下来：在基础校验（username 格式、display_name 长度、密码策略）、
+setup 与 registration-enabled 判定**之后**，`CreateUser` **之前**消费一次。
+因此 malformed JSON / 弱密码 / 确认不一致 / 超长用户名 / 携带安全字段的请求不计费，
+而**用户名重复必须计费** —— 否则可以用一个已知存在的名字免费探测接口。
+
+### 8.2 统一用户 Mutation：一次事务、一次 UPDATE、auth_version 最多 +1（P1/P2）
+
+原来 roles / status / display_name 走三个独立 storage mutation，由此产生四个问题：
+
+- 一个 PATCH 同时改 roles 和 status 时 `auth_version` **加两次**
+- 只改显示名称也会踢用户下线（前端总是发送三个字段）
+- 无变化的 PATCH 仍然 bump 版本
+- 多字段 PATCH 不是原子的：因 last-super-admin 被拒绝时，display_name 可能已经写进去了
+
+现在合成一次调用：
+
+```text
+UpdateAdminUserAccount(ctx, id, mutation) (model.AdminUser, AdminUserChangeSet, error)
+```
+
+事务内顺序：`BEGIN` → `pg_advisory_xact_lock` → `SELECT ... FOR UPDATE` → 计算最终状态 →
+**按最终状态做一次** last-super-admin 判定 → 一次 UPDATE → `COMMIT`。
+
+**advisory lock 必须保留**，不能只靠行锁：两个降级请求可能改的是**不同的行**
+（super1 与 super2），行锁各自生效、各自看到对方仍是 enabled，于是双双提交，
+最终 0 个 super_admin。锁是跨行的全局串行化点。
+
+一次 UPDATE 用 CASE 表达版本语义：
+
+```sql
+auth_version = CASE WHEN $5 THEN auth_version + 1 ELSE auth_version END,
+updated_at   = CASE WHEN $6 THEN NOW()   ELSE updated_at   END
+```
+
+`auth_version` 语义固定为：
+
+| 变更 | auth_version | 会话 |
+|---|---|---|
+| 仅 display_name | +0 | 保留 |
+| 仅 roles | +1 | 撤销 |
+| 仅 status | +1 | 撤销 |
+| roles + status | +1 | 撤销一次 |
+| roles + display_name | +1 | 撤销一次 |
+| status + display_name | +1 | 撤销一次 |
+| 三者同时 | +1 | 撤销一次 |
+| no-op | +0 | 保留，且 `updated_at` 不变 |
+
+**no-op 根本不执行 UPDATE**。`AdminUserChangeSet` 由前后状态比较得出，
+角色比较走 canonical 形式，所以「同样的角色换了个顺序」不算变化。
+
+`RevokeSessionsForUser` 每个逻辑 mutation **只调用一次**，原因按实际变化记录
+（`role_changed` / `account_disabled` / `account_status_changed` / `account_security_changed`）。
+它仍然是 best effort：事务已经 bump 了 auth_version，旧 Token 在下一次请求就会失效，
+清理 session 行失败不能回滚已经成功的权限变更。
+
+未知角色不再静默丢弃：`ValidateAccountRoles` 让 `["gateway_admin","god_mode"]`
+返回 `400 invalid_request`。`NormalizeAccountRoles` 仍负责去重、互斥与排序。
+
+### 8.3 审计按真实 ChangeSet（P1/P2）
+
+原来按「请求里有没有 roles 字段」判断，会把「字段存在但值没变」记成一次角色变更。
+现在按 `AdminUserChangeSet` 记录，且**多字段 PATCH 写多条语义事件**：
+
+```text
+roles + disable  →  user.role.update + user.disable
+roles + profile  →  user.role.update + user.profile.update
+三字段           →  user.role.update + user.disable/enable + user.profile.update
+no-op            →  不写任何业务审计
+```
+
+Actor 是执行操作的 super_admin，Resource 是 `/admin/users/<targetID>`。
+
+### 8.4 operator 模型连通测试（P2）
+
+operator 的允许列表里有 `GET /admin/status` 与 `POST /admin/model-test`，Dashboard 也
+展示「模型连通测试」按钮，但打开抽屉需要 `GET /admin/models`，而 operator 没有该权限
+—— 按钮点了必然 403。
+
+不能靠把 `/admin/models` 开给 operator 解决：那是完整的模型管理接口。
+新增 `GET /admin/model-test-options`，只返回 UI 真正需要的三个字段：
+
+```json
+{"data":[{"id":"...","alias":"campus-smart","status":1}]}
+```
+
+`modelTestOptionView` 是独立视图类型，不是 `json.Marshal(ModelConfig)` ——
+这样 `ModelConfig` 将来新增字段也不会自动泄漏到受限接口。前端新增
+`ModelTestOption` 类型（不再伪装成 `ModelConfig`），Dashboard 改用它取模型列表。
+
+RBAC：super_admin / gateway_admin / operator 允许；tenant_admin / auditor / member 403。
+operator 对 `/admin/models` 与 `/admin/providers` 仍然 403。
+
+### 8.5 前端只发送真正变化的字段（P2）
+
+`UserDrawer` 原来总是发送 `{roles, status, display_name}`，因此只改显示名称也会被
+当成角色变更并踢用户下线。现在构造 partial patch，只包含真正变化的字段；
+无变化时保存按钮 disabled 且不发 HTTP。
+
+角色比较用 canonical 形式（`canonicalRoles`，排序后 join），避免顺序变化被误判。
+
+Toast 按后端返回的真实 ChangeSet 区分：
+
+```text
+仅 display_name → 用户信息已更新。
+仅 roles        → 权限已更新，该用户现有登录会话已失效。
+停用            → 账号已停用，该用户现有登录会话已失效。
+启用            → 账号已启用，用户可以重新登录。
+roles + status  → 用户设置已更新；权限或状态变更已使该用户现有登录会话失效。
+```
+
+### 8.6 本轮验证
+
+```text
+go test -count=1 ./...                      228 个用例（基线 195）
+go test -race                               SKIPPED —— 本机无 C 编译器（gcc 不在 PATH），
+                                            -race 需要 cgo，如实记录未伪造
+真实 Redis 原子限流测试                      50 goroutine / 上限 5 → 恰好 5 通过 45 拒绝
+真实 PostgreSQL 并发 super_admin 测试        两行并发降级 → 1 成功 1 ErrLastSuperAdmin，
+                                            最终 enabled super_admin == 1
+真实 PostgreSQL 跨字段并发测试               roles 与 status 改不同行 → 同样 1 成功 1 拒绝
+API 级验收                                   52 / 52
+浏览器 UI 验收                               ALL PASS（0 console error）
+/v1 数据面 smoke                             models / non-stream / SSE 全 200，provider=qwen
 ```
 
 ---
@@ -343,3 +483,32 @@ test(account): cover registration, escalation and mode boundaries
 feat(admin-ui): add registration, the member home page and user management
 docs(account): document the unified account model and open registration
 ```
+
+---
+
+## 10. Known remaining items
+
+本轮明确不做，但需要在开放注册正式投产前解决：
+
+```text
+1. 用户列表分页与检索
+   ListAdminUsers 目前固定上限 500 条，够校园规模但不够生产。
+   建议：GET /admin/users?page_size=50&cursor=...&q=zhangsan
+   本轮刻意不扩大 PR #22 的范围。
+
+2. CreateUser 成功后 openSession 失败
+   账号已创建但客户端拿到 500，用户会以为注册失败并重试（然后撞用户名重复）。
+   本轮不做大型事务重构；如果以后要小成本改善，可以返回
+   account_created_login_failed 并提示「账号已创建，请直接登录」。
+
+3. CAPTCHA / Turnstile
+4. 邮箱验证 / 邀请码 / 管理员审批
+5. 忘记密码、密码自助重置
+6. 校园 SSO 自动开户（trusted-header identity 暂不写入用户表）
+7. 个人 API Key、用户计费、个人模型调用、用户充值与额度
+   （需要先设计 User -> Tenant -> Key 的归属与配额所有权）
+8. gateway_admin_user → gateway_user 表重命名
+   （技术债，见 docs/ACCOUNTS.md 第 10 节）
+```
+
+---
