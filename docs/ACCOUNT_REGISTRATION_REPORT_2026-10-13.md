@@ -3,9 +3,10 @@
 日期：2026-10-13（验收）／2026-10-14（提交与 PR）
 分支：`feature/user-account-registration`
 基线：`main` @ `18410c95`（Admin UI v3 已合并）
-HEAD：`6dbade0`（含合并前加固 6 个提交 `18f9e1f` → `6dbade0`）
+HEAD：代码状态为 `6dbade0`（加固 6 个提交 `18f9e1f` → `6dbade0`）；PR #22 上的最终提交以该分支为准
 PR：#22 `feat(auth): add public registration and user role management`
-CI：run 38603700992 PASS（Install / Check / Build Admin UI + go Test + go Build 全 success）
+CI：代码状态 `6dbade0` 对应 run 38603700992 PASS；其后仅有文档提交，CI 亦为 success
+    （Install / Check / Build Admin UI + go Test + go Build 全 success）
 合并：**未合并**，等确认
 
 ---
