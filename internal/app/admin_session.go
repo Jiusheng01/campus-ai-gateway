@@ -32,21 +32,32 @@ const (
 	adminSessionTouchInterval = 60 * time.Second
 
 	// Revocation reasons recorded in gateway_admin_session.revoke_reason.
-	revokeReasonLogout        = "logout"
-	revokeReasonPassword      = "password_changed"
-	revokeReasonReuse         = "refresh_reuse_detected"
-	revokeReasonDisabled      = "account_disabled"
-	revokeReasonStale         = "auth_version_mismatch"
-	revokeReasonAdminRevoked  = "revoked_by_admin"
+	revokeReasonLogout       = "logout"
+	revokeReasonPassword     = "password_changed"
+	revokeReasonReuse        = "refresh_reuse_detected"
+	revokeReasonDisabled     = "account_disabled"
+	revokeReasonStale        = "auth_version_mismatch"
+	revokeReasonAdminRevoked = "revoked_by_admin"
+	revokeReasonRoleChanged  = "role_changed"
+
+	// Session login methods recorded in gateway_admin_session.login_method.
+	loginMethodPassword = "password"
+	loginMethodRegister = "register"
 )
 
 // adminStore is the slice of the storage layer the auth service depends on.
 // Narrowing it here keeps the service unit-testable with an in-memory fake.
 type adminStore interface {
-	CountAdminUsers(ctx context.Context) (int64, error)
+	CountSuperAdmins(ctx context.Context) (int64, error)
+	AdminUserStats(ctx context.Context) (model.AdminUserStats, error)
 	FindAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error)
 	FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error)
+	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	UpdateAdminUserRoles(ctx context.Context, id string, roles []string) error
+	SetAdminUserStatus(ctx context.Context, id string, status int) error
+	UpdateAdminUserDisplayName(ctx context.Context, id, displayName string) error
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
@@ -73,11 +84,18 @@ type adminLoginLimiter interface {
 }
 
 // adminAuthService owns the whole credential lifecycle: password hashing,
-// session creation, access-token issuance and refresh rotation.
+// session creation, access-token issuance and refresh rotation. It also owns
+// public registration, because a registration is just an account creation
+// followed by a sign-in.
 type adminAuthService struct {
 	store   adminStore
 	limiter adminLoginLimiter
 	secret  []byte
+
+	// registration throttles public account creation. It is nil when the
+	// deployment has no registration path, and the register method tolerates
+	// that so tests can exercise the flow without a cache.
+	registration registrationLimiter
 
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
@@ -106,6 +124,14 @@ func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []b
 	}
 }
 
+// withRegistrationLimiter attaches the public-registration throttle. It is a
+// setter rather than a constructor parameter so the session layer's own tests
+// can keep building a service without one.
+func (a *adminAuthService) withRegistrationLimiter(l registrationLimiter) *adminAuthService {
+	a.registration = l
+	return a
+}
+
 // adminTokens is what a successful login or refresh hands back to the HTTP
 // layer. RefreshToken is plaintext and only ever goes into the cookie.
 type adminTokens struct {
@@ -119,9 +145,14 @@ type adminTokens struct {
 
 // --- first-run setup -------------------------------------------------------
 
-// needsSetup reports whether no administrator account exists yet.
+// needsSetup reports whether the system still has to be initialised.
+//
+// The question is "is there a super administrator", not "is the account table
+// empty". Public registration can create members at any time, and those must
+// not close the setup window: otherwise a remote visitor could register a
+// throwaway member and leave the deployment with no administrator at all.
 func (a *adminAuthService) needsSetup(ctx context.Context) (bool, error) {
-	n, err := a.store.CountAdminUsers(ctx)
+	n, err := a.store.CountSuperAdmins(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -212,7 +243,7 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 		}
 	}
 
-	tokens, err := a.openSession(ctx, user, ip, userAgent)
+	tokens, err := a.openSession(ctx, user, ip, userAgent, loginMethodPassword)
 	if err != nil {
 		return adminTokens{}, err
 	}
@@ -232,7 +263,10 @@ func (a *adminAuthService) recordLoginFailure(ctx context.Context, ip, username 
 }
 
 // openSession creates the session row and mints both tokens.
-func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser, ip, userAgent string) (adminTokens, error) {
+//
+// loginMethod is recorded on the session so the device list and the audit trail
+// can tell a sign-in from an account that was created and signed in at once.
+func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser, ip, userAgent, loginMethod string) (adminTokens, error) {
 	now := a.now()
 	expiresAt := now.Add(a.refreshTTL)
 
@@ -249,7 +283,7 @@ func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser
 		UserID:          user.ID,
 		UserAuthVersion: user.AuthVersion,
 		RefreshHash:     refreshHash,
-		LoginMethod:     "password",
+		LoginMethod:     loginMethod,
 		IP:              truncate(ip, 64),
 		UserAgent:       truncate(userAgent, 256),
 		ExpiresAt:       expiresAt,
@@ -644,18 +678,14 @@ func validateAdminPassword(username, password string) error {
 }
 
 // filterAdminRoles keeps only known roles and returns them as a set.
+//
+// An account with no recognisable role becomes a plain member, never an
+// auditor. "auditor" grants read access to request logs and audit trails, so
+// quietly promoting an unlabelled account into it would hand out visibility
+// nobody granted. The trusted-header path has its own fallback and is not
+// affected: a campus proxy that sends no group still means "auditor" there.
 func filterAdminRoles(roles []string) map[string]bool {
-	out := make(map[string]bool, len(roles))
-	for _, r := range roles {
-		switch strings.TrimSpace(r) {
-		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":
-			out[strings.TrimSpace(r)] = true
-		}
-	}
-	if len(out) == 0 {
-		out["auditor"] = true
-	}
-	return out
+	return roleSet(roles)
 }
 
 func truncate(s string, max int) string {

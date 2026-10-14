@@ -114,13 +114,15 @@ func bearerValue(r *http.Request) string {
 	return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 }
 
+// parseAdminRoles parses the role list a campus proxy injected. Unknown groups
+// are ignored, and "member" is accepted so a proxy that models plain users
+// explicitly does not have them silently promoted.
 func parseAdminRoles(raw string) map[string]bool {
 	out := map[string]bool{}
 	raw = strings.NewReplacer(";", ",", " ", ",").Replace(raw)
 	for _, item := range strings.Split(raw, ",") {
 		role := strings.TrimSpace(item)
-		switch role {
-		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":
+		if isKnownRole(role) {
 			out[role] = true
 		}
 	}
@@ -129,21 +131,26 @@ func parseAdminRoles(raw string) map[string]bool {
 
 // can reports whether the principal may perform the request. super_admin is
 // unrestricted; every other role is granted an explicit list of paths.
+//
+// This is an allow-list, and that is what keeps the user management API safe:
+// /admin/users is reachable only through the super_admin branch above, so no
+// other role — in particular not gateway_admin — can grant itself a role.
 func (p adminPrincipal) can(r *http.Request) bool {
-	if p.Roles["super_admin"] {
+	if p.Roles[RoleSuperAdmin] {
 		return true
 	}
 	path := r.URL.Path
 	method := r.Method
 
 	// Self-service endpoints are always available to any signed-in account:
-	// reading your own identity and rotating your own password must not depend
-	// on RBAC.
+	// reading your own identity, rotating your own password and managing your
+	// own devices must not depend on RBAC. This is also the whole of what a
+	// plain member may do — everything below is an explicit management grant.
 	if p.canSelfService(path, method) {
 		return true
 	}
 
-	if p.Roles["auditor"] && method == http.MethodGet {
+	if p.Roles[RoleAuditor] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
 			strings.HasPrefix(path, "/admin/request-logs"),
@@ -152,7 +159,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	if p.Roles["operator"] {
+	if p.Roles[RoleOperator] {
 		if method == http.MethodGet && path == "/admin/status" {
 			return true
 		}
@@ -160,7 +167,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	if p.Roles["gateway_admin"] {
+	if p.Roles[RoleGatewayAdmin] {
 		switch {
 		case strings.HasPrefix(path, "/admin/providers"),
 			strings.HasPrefix(path, "/admin/models"),
@@ -171,7 +178,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	if p.Roles["tenant_admin"] {
+	if p.Roles[RoleTenantAdmin] {
 		switch {
 		case strings.HasPrefix(path, "/admin/tenants"),
 			strings.HasPrefix(path, "/admin/api-keys"),

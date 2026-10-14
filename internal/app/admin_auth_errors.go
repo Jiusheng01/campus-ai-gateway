@@ -79,6 +79,33 @@ var (
 	// ErrAdminBadRequest means the request body was missing or malformed.
 	ErrAdminBadRequest = errors.New("request body is invalid")
 
+	// ErrAdminRegistrationDisabled means public registration is switched off
+	// for this deployment.
+	ErrAdminRegistrationDisabled = errors.New("public registration is disabled")
+
+	// ErrAdminRegistrationBeforeSetup means registration was attempted before
+	// the first super administrator exists. Setup owns that window; letting a
+	// registration through first would leave the system without an
+	// administrator and close the setup path.
+	ErrAdminRegistrationBeforeSetup = errors.New("the system must be initialised before accounts can be registered")
+
+	// ErrAdminRegistrationRateLimited means one source address has consumed its
+	// registration budget for the current window.
+	ErrAdminRegistrationRateLimited = errors.New("too many registration attempts, try again later")
+
+	// ErrAdminRegistrationUnavailable means the abuse counter could not be
+	// consulted. Registration fails closed: accepting unlimited signups during
+	// a cache outage is worse than briefly refusing them.
+	ErrAdminRegistrationUnavailable = errors.New("registration is temporarily unavailable")
+
+	// ErrAdminUsernameTaken means the requested username already exists. The
+	// comparison is case-insensitive.
+	ErrAdminUsernameTaken = errors.New("username is already taken")
+
+	// ErrAdminLastSuperAdmin means a change would leave the system without any
+	// enabled super administrator.
+	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
+
 	// ErrAdminInternal is the catch-all for unexpected storage failures. The
 	// underlying error is logged, never returned to the client.
 	ErrAdminInternal = errors.New("administrator authentication failed")
@@ -121,6 +148,18 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusForbidden, "csrf_rejected"
 	case errors.Is(err, ErrAdminRateLimited):
 		return http.StatusTooManyRequests, "too_many_attempts"
+	case errors.Is(err, ErrAdminRegistrationDisabled):
+		return http.StatusForbidden, "registration_disabled"
+	case errors.Is(err, ErrAdminRegistrationBeforeSetup):
+		return http.StatusConflict, "setup_required"
+	case errors.Is(err, ErrAdminRegistrationRateLimited):
+		return http.StatusTooManyRequests, "registration_rate_limited"
+	case errors.Is(err, ErrAdminRegistrationUnavailable):
+		return http.StatusServiceUnavailable, "registration_unavailable"
+	case errors.Is(err, ErrAdminUsernameTaken):
+		return http.StatusConflict, "username_taken"
+	case errors.Is(err, ErrAdminLastSuperAdmin):
+		return http.StatusConflict, "last_super_admin"
 	case errors.Is(err, ErrAdminPasswordWeak):
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):

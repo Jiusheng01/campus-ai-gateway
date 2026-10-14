@@ -127,12 +127,20 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
 			WithPolicy(cfg.AdminLoginMaxAttempts, cfg.AdminLoginWindow)
+		registerLimiter := ratelimit.NewRegistrationLimiter(rd.Client).
+			WithPolicy(cfg.PublicRegisterMaxAttempts, cfg.PublicRegisterWindow)
 		sessionKey, derived := cfg.AdminSessionKey()
 		if derived {
 			log.Printf("ADMIN_SESSION_SECRET is not configured; derived development key is being used. " +
 				"Set ADMIN_SESSION_SECRET (>= 32 bytes, e.g. `openssl rand -base64 48`) in production.")
 		}
-		s.adminAuth = newAdminAuthService(pg, loginLimiter, sessionKey, cfg)
+		s.adminAuth = newAdminAuthService(pg, loginLimiter, sessionKey, cfg).
+			withRegistrationLimiter(registerLimiter)
+		if cfg.PublicRegistrationOpen() {
+			log.Printf("public registration is enabled (%s)", registerLimiter.Describe())
+		} else {
+			log.Printf("public registration is disabled")
+		}
 	}
 	s.routes()
 	s.bootstrapAdminUser(ctx)
@@ -206,10 +214,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/admin/auth/refresh", s.handleAdminRefresh)
 	s.mux.HandleFunc("/admin/auth/logout", s.handleAdminLogout)
 	s.mux.HandleFunc("/admin/logout", s.handleAdminLogout)
+	s.mux.HandleFunc("/auth/register", s.handleAccountRegister)
 
 	s.mux.Handle("/admin/password", s.adminMiddleware(http.HandlerFunc(s.handleAdminPasswordChange)))
 	s.mux.Handle("/admin/sessions", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessions)))
 	s.mux.Handle("/admin/sessions/", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessionByID)))
+	s.mux.Handle("/admin/users", s.adminMiddleware(http.HandlerFunc(s.handleAdminUsers)))
+	s.mux.Handle("/admin/users/", s.adminMiddleware(http.HandlerFunc(s.handleAdminUserByID)))
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
@@ -620,6 +631,9 @@ func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
 }
 
 func (s *Server) recordSecurityEvent(r *http.Request, event model.SecurityEvent) {
+	if s.pg == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = s.pg.InsertSecurityEvent(ctx, event)

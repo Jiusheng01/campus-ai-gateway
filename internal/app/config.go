@@ -65,6 +65,18 @@ type Config struct {
 	// accepted as a benign concurrent refresh (two browser tabs racing). Reuse
 	// beyond this window is treated as replay and revokes the session family.
 	AdminRefreshReplayGrace time.Duration
+
+	// PublicRegistrationEnabled opens POST /auth/register to anyone who can
+	// reach the login screen. It defaults to true because the product goal is
+	// an open campus account, but a production deployment can switch it off
+	// without touching the rest of the account system.
+	PublicRegistrationEnabled bool
+	// PublicRegisterMaxAttempts and PublicRegisterWindow bound how many
+	// registration attempts one source address may make. Every attempt counts,
+	// including ones that fail on a duplicate username, because the counter
+	// exists to stop automated account creation rather than to punish typos.
+	PublicRegisterMaxAttempts int64
+	PublicRegisterWindow      time.Duration
 }
 
 func LoadConfig() (Config, error) {
@@ -98,6 +110,10 @@ func LoadConfig() (Config, error) {
 
 		AdminSessionSecret:      os.Getenv("ADMIN_SESSION_SECRET"),
 		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", 30*time.Second),
+
+		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", true),
+		PublicRegisterMaxAttempts: getenvInt64("PUBLIC_REGISTER_MAX_ATTEMPTS", 5),
+		PublicRegisterWindow:      getenvDuration("PUBLIC_REGISTER_WINDOW", time.Hour),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -130,6 +146,12 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.AdminLoginWindow <= 0 {
 		return Config{}, errors.New("ADMIN_LOGIN_WINDOW must be positive")
+	}
+	if cfg.PublicRegisterMaxAttempts < 0 {
+		return Config{}, errors.New("PUBLIC_REGISTER_MAX_ATTEMPTS cannot be negative")
+	}
+	if cfg.PublicRegisterWindow <= 0 {
+		return Config{}, errors.New("PUBLIC_REGISTER_WINDOW must be positive")
 	}
 	for _, cidr := range cfg.TrustedProxyCIDRs {
 		if _, _, err := parseCIDROrIP(cidr); err != nil {
@@ -166,6 +188,17 @@ func parseCIDROrIP(raw string) (*net.IPNet, net.IP, error) {
 // for existing deployments and are treated as opt-in legacy paths.
 func (c Config) SessionAuthEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "session")
+}
+
+// PublicRegistrationOpen reports whether local account registration is served
+// at all.
+//
+// Registration belongs to the local account system, so the two other modes
+// never offer it: trusted-header deployments get their accounts from the campus
+// identity platform, and the token mode is a break-glass path with no accounts
+// behind it.
+func (c Config) PublicRegistrationOpen() bool {
+	return c.SessionAuthEnabled() && c.PublicRegistrationEnabled
 }
 
 // AdminSessionKey returns the key material for administrator session

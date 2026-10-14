@@ -31,6 +31,11 @@ type adminAuthConfigResponse struct {
 	SetupAllowedHere  bool   `json:"setup_allowed_here"`
 	MinPasswordLength int    `json:"min_password_length"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
+	// RegistrationEnabled is false while the system still needs initialising,
+	// even when public registration is configured on: the first super
+	// administrator must come from the local setup flow, so offering a
+	// registration form would lead straight into a 409.
+	RegistrationEnabled bool `json:"registration_enabled"`
 }
 
 // adminAccountView is the safe projection of an account. The password hash is
@@ -96,6 +101,7 @@ func (s *Server) handleAdminAuthConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.NeedsSetup = needsSetup
+		out.RegistrationEnabled = s.cfg.PublicRegistrationEnabled && !needsSetup
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -405,8 +411,6 @@ func (s *Server) handleAdminSessionByID(w http.ResponseWriter, r *http.Request) 
 // --- shared helpers --------------------------------------------------------
 
 func loginResponseFrom(t adminTokens) adminLoginResponse {
-	roles := make([]string, 0, len(t.User.Roles))
-	roles = append(roles, t.User.Roles...)
 	return adminLoginResponse{
 		AccessToken: t.AccessToken,
 		ExpiresAt:   t.AccessExpiresAt.UTC().Format(time.RFC3339),
@@ -414,7 +418,9 @@ func loginResponseFrom(t adminTokens) adminLoginResponse {
 			ID:          t.User.ID,
 			Username:    t.User.Username,
 			DisplayName: t.User.DisplayName,
-			Roles:       roles,
+			// Normalised so the client never has to reason about whether
+			// "member" sits alongside a management role.
+			Roles: NormalizeAccountRoles(t.User.Roles),
 		},
 	}
 }

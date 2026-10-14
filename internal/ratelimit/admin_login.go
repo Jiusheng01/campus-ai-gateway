@@ -56,21 +56,6 @@ func (l *AdminLoginLimiter) WithPolicy(maxAttempts int64, window time.Duration) 
 
 const defaultAdminLoginWindow = 15 * time.Minute
 
-// adminLoginIncrScript increments a counter and guarantees it has a TTL, even
-// when the key already existed without one.
-var adminLoginIncrScript = redis.NewScript(`
-local current = redis.call('INCR', KEYS[1])
-if current == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-local ttl = redis.call('TTL', KEYS[1])
-if ttl < 0 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-  ttl = ARGV[1]
-end
-return {current, ttl}
-`)
-
 // adminLoginCounter is one throttle dimension: a Redis key and its budget.
 type adminLoginCounter struct {
 	key   string
@@ -179,7 +164,7 @@ func (l *AdminLoginLimiter) RecordAdminLoginFailure(ctx context.Context, ip, use
 	}
 	window := l.windowSeconds()
 	for _, counter := range l.counters(ip, username) {
-		if err := adminLoginIncrScript.Run(ctx, l.rdb, []string{counter.key}, window).Err(); err != nil {
+		if err := incrWithTTLScript.Run(ctx, l.rdb, []string{counter.key}, window).Err(); err != nil {
 			return err
 		}
 	}
