@@ -107,6 +107,26 @@ func NormalizeAccountRoles(roles []string) []string {
 	return out
 }
 
+// ValidateAccountRoles rejects a role list that contains anything outside the
+// vocabulary.
+//
+// NormalizeAccountRoles drops what it does not recognise, which is the right
+// behaviour when reading a stored list or a value from a trusted proxy — there
+// is nothing useful to do with an unknown string at that point. It is the wrong
+// behaviour for an explicit administrator request: silently turning
+// ["gateway_admin","god_mode"] into ["gateway_admin"] tells the operator their
+// input was accepted when part of it was discarded, and it hides a typo or a
+// client bug behind an apparent success. The API refuses it instead.
+func ValidateAccountRoles(roles []string) error {
+	for _, raw := range roles {
+		role := strings.TrimSpace(raw)
+		if role == "" || !isKnownRole(role) {
+			return ErrAdminBadRequest
+		}
+	}
+	return nil
+}
+
 // roleSet converts a role list into the membership set used for authorisation
 // checks, normalising on the way in.
 func roleSet(roles []string) map[string]bool {
@@ -142,3 +162,9 @@ func hasSuperAdmin(roles []string) bool {
 // It is a package-level constant rather than a parameter so no code path can be
 // talked into producing something else.
 var publicRegistrationRoles = []string{RoleMember}
+
+// maxDisplayNameRunes bounds the display name on every write path. The database
+// column is VARCHAR(128); validating here as well means an over-long value is
+// refused with a 400 rather than failing as a storage error, and it keeps the
+// client from being the only place the rule exists.
+const maxDisplayNameRunes = 128

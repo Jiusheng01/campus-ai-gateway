@@ -256,6 +256,8 @@ func TestRegisterRejectsRoleFieldsInBody(t *testing.T) {
 		`{"username":"attacker","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","status":1}`,
 		`{"username":"attacker","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","is_admin":true}`,
 		`{"username":"attacker","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","auth_version":99}`,
+		`{"username":"attacker","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","permission":"super_admin"}`,
+		`{"username":"attacker","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","permissions":["super_admin"]}`,
 	}
 	for _, body := range bodies {
 		rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register", body, nil)
@@ -510,6 +512,7 @@ func TestMemberSessionIsRejectedByTheMiddleware(t *testing.T) {
 		{http.MethodGet, "/admin/users"},
 		{http.MethodPost, "/admin/thinkwatch/sync"},
 		{http.MethodPost, "/admin/model-test"},
+		{http.MethodGet, "/admin/model-test-options"},
 	}
 	for _, tc := range denied {
 		rec := callThroughAdminMiddleware(t, s, token, tc.method, tc.path, "")
@@ -600,7 +603,7 @@ func TestPromotionBumpsAuthVersionAndRevokesSessions(t *testing.T) {
 	}
 
 	roles := []string{RoleGatewayAdmin}
-	updated, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles})
+	updated, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles})
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -621,7 +624,7 @@ func TestPromotedUserSignsInWithTheNewRole(t *testing.T) {
 	member := seedMember(t, store, "zhangsan", "Campus#2026Gate")
 
 	roles := []string{RoleGatewayAdmin}
-	if _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 
@@ -646,13 +649,13 @@ func TestDemotionReturnsTheAccountToMember(t *testing.T) {
 	adminToken := accessTokenFor(t, s, "campus-admin", "Campus#2026Gate")
 
 	roles := []string{RoleGatewayAdmin}
-	if _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 	accessTokenFor(t, s, "zhangsan", "Campus#2026Gate")
 
 	back := []string{RoleMember}
-	updated, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &back})
+	updated, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &back})
 	if err != nil {
 		t.Fatalf("demote: %v", err)
 	}
@@ -678,7 +681,7 @@ func TestRoleChangeNormalisesMemberAway(t *testing.T) {
 	member := seedMember(t, store, "zhangsan", "Campus#2026Gate")
 
 	roles := []string{RoleMember, RoleGatewayAdmin}
-	updated, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles})
+	updated, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Roles: &roles})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -694,7 +697,7 @@ func TestDisplayNameChangeKeepsSessions(t *testing.T) {
 	accessTokenFor(t, s, "zhangsan", "Campus#2026Gate")
 
 	name := "张三"
-	updated, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{DisplayName: &name})
+	updated, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{DisplayName: &name})
 	if err != nil {
 		t.Fatalf("rename: %v", err)
 	}
@@ -719,7 +722,7 @@ func TestLoneSuperAdminCannotStepDown(t *testing.T) {
 	admin := seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
 
 	roles := []string{RoleMember}
-	if _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Roles: &roles}); !errors.Is(err, ErrAdminLastSuperAdmin) {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Roles: &roles}); !errors.Is(err, ErrAdminLastSuperAdmin) {
 		t.Fatalf("expected ErrAdminLastSuperAdmin, got %v", err)
 	}
 	if u, _ := store.FindAdminUserByID(context.Background(), admin.ID); !hasSuperAdmin(u.Roles) {
@@ -732,7 +735,7 @@ func TestLoneSuperAdminCannotBeDisabled(t *testing.T) {
 	admin := seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
 
 	disabled := model.AdminStatusDisabled
-	if _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Status: &disabled}); !errors.Is(err, ErrAdminLastSuperAdmin) {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Status: &disabled}); !errors.Is(err, ErrAdminLastSuperAdmin) {
 		t.Fatalf("expected ErrAdminLastSuperAdmin, got %v", err)
 	}
 	if u, _ := store.FindAdminUserByID(context.Background(), admin.ID); u.Status != model.AdminStatusEnabled {
@@ -748,7 +751,7 @@ func TestSecondSuperAdminAllowsOneToStepDown(t *testing.T) {
 	second := seedSetupAdminViaStore(t, store, "second-admin")
 
 	roles := []string{RoleGatewayAdmin}
-	updated, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Roles: &roles})
+	updated, _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Roles: &roles})
 	if err != nil {
 		t.Fatalf("demote with a second super admin present: %v", err)
 	}
@@ -758,7 +761,7 @@ func TestSecondSuperAdminAllowsOneToStepDown(t *testing.T) {
 
 	// Only one remains now, and it can no longer remove itself.
 	back := []string{RoleMember}
-	if _, err := s.adminAuth.updateUser(context.Background(), second.ID, userUpdate{Roles: &back}); !errors.Is(err, ErrAdminLastSuperAdmin) {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), second.ID, userUpdate{Roles: &back}); !errors.Is(err, ErrAdminLastSuperAdmin) {
 		t.Fatalf("expected ErrAdminLastSuperAdmin once only one remains, got %v", err)
 	}
 }
@@ -771,11 +774,11 @@ func TestDisabledSuperAdminDoesNotSatisfyTheInvariant(t *testing.T) {
 	second := seedSetupAdminViaStore(t, store, "second-admin")
 
 	disabled := model.AdminStatusDisabled
-	if _, err := s.adminAuth.updateUser(context.Background(), second.ID, userUpdate{Status: &disabled}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), second.ID, userUpdate{Status: &disabled}); err != nil {
 		t.Fatalf("disabling a second super admin must be allowed: %v", err)
 	}
 	// The disabled account may not be re-counted to justify stepping down.
-	if _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Status: &disabled}); !errors.Is(err, ErrAdminLastSuperAdmin) {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), admin.ID, userUpdate{Status: &disabled}); !errors.Is(err, ErrAdminLastSuperAdmin) {
 		t.Fatalf("expected ErrAdminLastSuperAdmin, got %v", err)
 	}
 }
@@ -814,7 +817,7 @@ func TestDisableRevokesSessionsAndBlocksLogin(t *testing.T) {
 	token := accessTokenFor(t, s, "zhangsan", "Campus#2026Gate")
 
 	disabled := model.AdminStatusDisabled
-	if _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &disabled}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &disabled}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if store.liveSessions() != 1 {
@@ -841,11 +844,11 @@ func TestReEnableRestoresLogin(t *testing.T) {
 	member := seedMember(t, store, "zhangsan", "Campus#2026Gate")
 
 	disabled := model.AdminStatusDisabled
-	if _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &disabled}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &disabled}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	enabled := model.AdminStatusEnabled
-	if _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &enabled}); err != nil {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), member.ID, userUpdate{Status: &enabled}); err != nil {
 		t.Fatalf("re-enable: %v", err)
 	}
 	if _, err := s.adminAuth.login(context.Background(), "zhangsan", "Campus#2026Gate", "10.0.0.9", "ua"); err != nil {
@@ -858,7 +861,7 @@ func TestUpdateUnknownUserIsNotFound(t *testing.T) {
 	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
 
 	roles := []string{RoleMember}
-	if _, err := s.adminAuth.updateUser(context.Background(), "00000000-0000-0000-0000-000000000000", userUpdate{Roles: &roles}); !errors.Is(err, ErrAdminUserNotFound) {
+	if _, _, err := s.adminAuth.updateUser(context.Background(), "00000000-0000-0000-0000-000000000000", userUpdate{Roles: &roles}); !errors.Is(err, ErrAdminUserNotFound) {
 		t.Fatalf("expected ErrAdminUserNotFound, got %v", err)
 	}
 }

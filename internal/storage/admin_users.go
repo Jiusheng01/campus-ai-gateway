@@ -215,64 +215,185 @@ RETURNING ` + adminUserColumns
 	return user, nil
 }
 
-// guardedUserChange describes a mutation that may remove the last enabled super
-// administrator. nextKeepsSuperAdminEnabled is evaluated against the row as it
-// currently stands, inside the transaction.
-type guardedUserChange struct {
-	nextKeepsSuperAdminEnabled func(currentRoles []string, currentStatus int) bool
-	apply                      func(tx pgx.Tx) error
+// AdminUserMutation is a partial change to an account. A nil field means
+// "leave it alone", which is what lets the console send only the fields the
+// operator actually touched.
+type AdminUserMutation struct {
+	DisplayName *string
+	Roles       *[]string
+	Status      *int
 }
 
-// mutateAdminUserGuarded runs a change under the super-administrator guard.
+// AdminUserChangeSet reports what a mutation actually changed.
 //
-// The invariant is "at least one enabled super_admin always exists". It is
-// checked and enforced inside the same transaction as the write, under an
-// advisory lock, because two concurrent demotions would otherwise each see the
-// other's super administrator and both proceed — leaving a gateway nobody can
-// administer. Doing it in the service layer would be a check-then-act race.
-func (p *Postgres) mutateAdminUserGuarded(ctx context.Context, id string, change guardedUserChange) error {
+// It exists because "the request contained a roles field" and "the roles
+// changed" are different facts. A no-op PATCH — the console resending the
+// current values — must not bump auth_version, must not sign the user out and
+// must not write an audit row claiming something happened. Only a comparison of
+// the before and after states can tell those apart.
+type AdminUserChangeSet struct {
+	RolesChanged       bool
+	StatusChanged      bool
+	DisplayNameChanged bool
+
+	OldRoles []string
+	NewRoles []string
+
+	OldStatus int
+	NewStatus int
+
+	OldDisplayName string
+	NewDisplayName string
+}
+
+// AuthenticationChanged reports whether the change invalidates credentials.
+//
+// Role and status are what the access token's authority is derived from, so
+// either one moving means every token issued before it must stop working.
+// A display name is a label and has no bearing on authentication.
+func (c AdminUserChangeSet) AuthenticationChanged() bool {
+	return c.RolesChanged || c.StatusChanged
+}
+
+// AnythingChanged reports whether the row needs writing at all.
+func (c AdminUserChangeSet) AnythingChanged() bool {
+	return c.AuthenticationChanged() || c.DisplayNameChanged
+}
+
+// UpdateAdminUserAccount applies a partial account change in one transaction
+// and reports what actually changed.
+//
+// Everything the change depends on is read and written inside a single
+// transaction:
+//
+//   - the advisory lock serialises every mutation that could affect the
+//     super-administrator invariant. A row lock is not enough on its own,
+//     because two demotions can target two *different* rows: locking super1 and
+//     super2 separately, each transaction would see the other still enabled and
+//     both would commit, leaving no administrator at all.
+//   - SELECT ... FOR UPDATE pins the target row so the before-state the
+//     comparison is based on cannot move underneath it.
+//   - the invariant is judged once, against the final state, rather than once
+//     per field. A patch that demotes and disables in the same request is
+//     evaluated as the single outcome it is.
+//   - one UPDATE writes every field, bumps auth_version at most once and
+//     leaves updated_at alone when nothing changed. A failure anywhere rolls
+//     back all of it, so a rejected patch cannot leave the display name
+//     updated while the role change was refused.
+func (p *Postgres) UpdateAdminUserAccount(ctx context.Context, id string, mutation AdminUserMutation) (model.AdminUser, AdminUserChangeSet, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, adminUserGuardLockKey); err != nil {
-		return err
+		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 
-	var rawRoles []byte
-	var currentStatus int
-	err = tx.QueryRow(ctx, `SELECT roles, status FROM gateway_admin_user WHERE id=$1 FOR UPDATE`, id).Scan(&rawRoles, &currentStatus)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrAdminUserNotFound
-	}
+	current, err := scanAdminUser(tx.QueryRow(ctx,
+		`SELECT `+adminUserColumns+` FROM gateway_admin_user WHERE id=$1 FOR UPDATE`, id))
 	if err != nil {
-		return err
+		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 
-	var currentRoles []string
-	_ = json.Unmarshal(rawRoles, &currentRoles)
+	next := current
+	if mutation.Roles != nil {
+		next.Roles = *mutation.Roles
+	}
+	if mutation.Status != nil {
+		next.Status = *mutation.Status
+	}
+	if mutation.DisplayName != nil {
+		next.DisplayName = *mutation.DisplayName
+	}
 
-	currentKeepsSuperAdmin := currentStatus == model.AdminStatusEnabled && containsRole(currentRoles, "super_admin")
-	nextKeepsSuperAdmin := change.nextKeepsSuperAdminEnabled(currentRoles, currentStatus)
+	changes := AdminUserChangeSet{
+		OldRoles:       current.Roles,
+		NewRoles:       next.Roles,
+		OldStatus:      current.Status,
+		NewStatus:      next.Status,
+		OldDisplayName: current.DisplayName,
+		NewDisplayName: next.DisplayName,
+	}
+	changes.RolesChanged = !sameRoleSet(current.Roles, next.Roles)
+	changes.StatusChanged = current.Status != next.Status
+	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
 
-	if currentKeepsSuperAdmin && !nextKeepsSuperAdmin {
+	// The invariant is judged on the outcome, not on the fields that were sent.
+	if keepsEnabledSuperAdmin(current) && !keepsEnabledSuperAdmin(next) {
 		var others int64
 		if err := tx.QueryRow(ctx, `
 SELECT COUNT(*) FROM gateway_admin_user
 WHERE id <> $1 AND status = $2 AND `+superAdminPredicate, id, model.AdminStatusEnabled).Scan(&others); err != nil {
-			return err
+			return model.AdminUser{}, AdminUserChangeSet{}, err
 		}
 		if others == 0 {
-			return ErrLastSuperAdmin
+			return model.AdminUser{}, AdminUserChangeSet{}, ErrLastSuperAdmin
 		}
 	}
 
-	if err := change.apply(tx); err != nil {
-		return err
+	// A no-op is not a write. Touching updated_at would make the row look
+	// edited when nothing was asked of it.
+	if !changes.AnythingChanged() {
+		if err := tx.Commit(ctx); err != nil {
+			return model.AdminUser{}, AdminUserChangeSet{}, err
+		}
+		return current, changes, nil
 	}
-	return tx.Commit(ctx)
+
+	encoded, err := json.Marshal(next.Roles)
+	if err != nil {
+		return model.AdminUser{}, AdminUserChangeSet{}, err
+	}
+
+	// One statement, so auth_version moves by exactly one however many fields
+	// changed: a patch that alters roles, status and the display name together
+	// is one logical change, not three.
+	updated, err := scanAdminUser(tx.QueryRow(ctx, `
+UPDATE gateway_admin_user
+SET roles = $2::jsonb,
+    status = $3,
+    display_name = $4,
+    auth_version = CASE WHEN $5 THEN auth_version + 1 ELSE auth_version END,
+    updated_at = CASE WHEN $6 THEN NOW() ELSE updated_at END
+WHERE id = $1
+RETURNING `+adminUserColumns,
+		id, encoded, next.Status, next.DisplayName, changes.AuthenticationChanged(), changes.AnythingChanged()))
+	if err != nil {
+		return model.AdminUser{}, AdminUserChangeSet{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.AdminUser{}, AdminUserChangeSet{}, err
+	}
+	return updated, changes, nil
+}
+
+// keepsEnabledSuperAdmin reports whether an account is currently a usable super
+// administrator. A disabled one does not count: it could not sign in to
+// administer anything.
+func keepsEnabledSuperAdmin(u model.AdminUser) bool {
+	return u.Status == model.AdminStatusEnabled && containsRole(u.Roles, "super_admin")
+}
+
+// sameRoleSet compares role lists as sets, so a reordered list is not mistaken
+// for a change. The comparison is over the canonical form because the stored
+// order is not part of the meaning of a role list.
+func sameRoleSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, r := range a {
+		set[r] = true
+	}
+	for _, r := range b {
+		if !set[r] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsRole(roles []string, want string) bool {
@@ -282,73 +403,6 @@ func containsRole(roles []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// UpdateAdminUserRoles replaces the role list and bumps auth_version.
-//
-// The version bump is what makes a role change take effect immediately: every
-// access token and session issued before the change carries the old version and
-// stops being accepted, so a demoted administrator cannot keep using the
-// authority they had a moment ago.
-func (p *Postgres) UpdateAdminUserRoles(ctx context.Context, id string, roles []string) error {
-	encoded, err := json.Marshal(roles)
-	if err != nil {
-		return err
-	}
-	return p.mutateAdminUserGuarded(ctx, id, guardedUserChange{
-		nextKeepsSuperAdminEnabled: func(_ []string, currentStatus int) bool {
-			return currentStatus == model.AdminStatusEnabled && containsRole(roles, "super_admin")
-		},
-		apply: func(tx pgx.Tx) error {
-			tag, err := tx.Exec(ctx,
-				`UPDATE gateway_admin_user SET roles=$2::jsonb, auth_version=auth_version+1, updated_at=NOW() WHERE id=$1`,
-				id, encoded)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 0 {
-				return ErrAdminUserNotFound
-			}
-			return nil
-		},
-	})
-}
-
-// SetAdminUserStatus enables or disables an account and bumps auth_version, so
-// disabling signs the user out everywhere at once.
-func (p *Postgres) SetAdminUserStatus(ctx context.Context, id string, status int) error {
-	return p.mutateAdminUserGuarded(ctx, id, guardedUserChange{
-		nextKeepsSuperAdminEnabled: func(currentRoles []string, _ int) bool {
-			return status == model.AdminStatusEnabled && containsRole(currentRoles, "super_admin")
-		},
-		apply: func(tx pgx.Tx) error {
-			tag, err := tx.Exec(ctx,
-				`UPDATE gateway_admin_user SET status=$2, auth_version=auth_version+1, updated_at=NOW() WHERE id=$1`,
-				id, status)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 0 {
-				return ErrAdminUserNotFound
-			}
-			return nil
-		},
-	})
-}
-
-// UpdateAdminUserDisplayName changes the label only. It deliberately does not
-// bump auth_version: a cosmetic edit must not sign anyone out.
-func (p *Postgres) UpdateAdminUserDisplayName(ctx context.Context, id, displayName string) error {
-	tag, err := p.Pool.Exec(ctx,
-		`UPDATE gateway_admin_user SET display_name=$2, updated_at=NOW() WHERE id=$1`,
-		id, displayName)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrAdminUserNotFound
-	}
-	return nil
 }
 
 // UpdateAdminUserPassword rotates the hash and bumps auth_version in the same

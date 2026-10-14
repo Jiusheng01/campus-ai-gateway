@@ -40,6 +40,16 @@ type fakeAdminStore struct {
 	// instead of the stored row, then cleared. It reproduces the interleaving
 	// where a second request read the session before the first rotation landed.
 	staleRead *model.AdminSession
+
+	// revokes records every RevokeSessionsForUser call, so a test can assert
+	// that one logical mutation revoked once and not once per field.
+	revokes []revokeCall
+}
+
+// revokeCall is one recorded family revocation.
+type revokeCall struct {
+	UserID string
+	Reason string
 }
 
 func newFakeAdminStore() *fakeAdminStore {
@@ -157,46 +167,67 @@ func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, ha
 	return u, nil
 }
 
-func (f *fakeAdminStore) UpdateAdminUserRoles(_ context.Context, id string, roles []string) error {
-	u, ok := f.users[id]
+// UpdateAdminUserAccount mirrors the real transaction: compute the final state,
+// judge the super-administrator invariant once against that outcome, bump
+// auth_version at most once, and leave the row completely untouched when nothing
+// changed.
+func (f *fakeAdminStore) UpdateAdminUserAccount(_ context.Context, id string, m storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error) {
+	current, ok := f.users[id]
 	if !ok {
-		return storage.ErrAdminUserNotFound
+		return model.AdminUser{}, storage.AdminUserChangeSet{}, storage.ErrAdminUserNotFound
 	}
-	// The invariant is checked against the state after the change, exactly as
-	// the guarded storage transaction does.
-	if u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles) && !hasSuperAdmin(roles) && f.enabledSuperAdmins() <= 1 {
-		return storage.ErrLastSuperAdmin
+
+	next := current
+	if m.Roles != nil {
+		next.Roles = *m.Roles
 	}
-	u.Roles = roles
-	u.AuthVersion++
-	f.users[id] = u
-	return nil
+	if m.Status != nil {
+		next.Status = *m.Status
+	}
+	if m.DisplayName != nil {
+		next.DisplayName = *m.DisplayName
+	}
+
+	changes := storage.AdminUserChangeSet{
+		OldRoles:       current.Roles,
+		NewRoles:       next.Roles,
+		OldStatus:      current.Status,
+		NewStatus:      next.Status,
+		OldDisplayName: current.DisplayName,
+		NewDisplayName: next.DisplayName,
+	}
+	changes.RolesChanged = canonicalRoles(current.Roles) != canonicalRoles(next.Roles)
+	changes.StatusChanged = current.Status != next.Status
+	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
+
+	// The real store evaluates this against the final state, inside the same
+	// transaction as the write; the fake must not be more permissive than that
+	// or the service tests would pass against behaviour that does not exist.
+	if isEnabledSuperAdmin(current) && !isEnabledSuperAdmin(next) && f.enabledSuperAdmins() <= 1 {
+		return model.AdminUser{}, storage.AdminUserChangeSet{}, storage.ErrLastSuperAdmin
+	}
+
+	// A no-op is not a write.
+	if !changes.AnythingChanged() {
+		return current, changes, nil
+	}
+
+	if changes.AuthenticationChanged() {
+		next.AuthVersion++
+	}
+	next.UpdatedAt = time.Now().UTC()
+	f.users[id] = next
+	return next, changes, nil
 }
 
-func (f *fakeAdminStore) SetAdminUserStatus(_ context.Context, id string, status int) error {
-	u, ok := f.users[id]
-	if !ok {
-		return storage.ErrAdminUserNotFound
-	}
-	if status != model.AdminStatusEnabled && hasSuperAdmin(u.Roles) && u.Status == model.AdminStatusEnabled && f.enabledSuperAdmins() <= 1 {
-		return storage.ErrLastSuperAdmin
-	}
-	u.Status = status
-	u.AuthVersion++
-	f.users[id] = u
-	return nil
+// canonicalRoles gives a role list a comparable form so a reordered list is not
+// mistaken for a change.
+func canonicalRoles(roles []string) string {
+	return strings.Join(NormalizeAccountRoles(roles), ",")
 }
 
-func (f *fakeAdminStore) UpdateAdminUserDisplayName(_ context.Context, id, displayName string) error {
-	u, ok := f.users[id]
-	if !ok {
-		return storage.ErrAdminUserNotFound
-	}
-	u.DisplayName = displayName
-	// Deliberately does not bump AuthVersion: a label change must not sign
-	// anyone out.
-	f.users[id] = u
-	return nil
+func isEnabledSuperAdmin(u model.AdminUser) bool {
+	return u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles)
 }
 
 func (f *fakeAdminStore) UpdateAdminUserPassword(_ context.Context, id, hash string) error {
@@ -301,6 +332,7 @@ func (f *fakeAdminStore) RevokeAdminSession(_ context.Context, sid, reason strin
 }
 
 func (f *fakeAdminStore) RevokeSessionsForUser(_ context.Context, userID, reason string) error {
+	f.revokes = append(f.revokes, revokeCall{UserID: userID, Reason: reason})
 	for sid, s := range f.sessions {
 		if s.UserID != userID || s.RevokedAt != nil {
 			continue
@@ -322,6 +354,29 @@ func (f *fakeAdminStore) ListAdminSessions(_ context.Context, userID string) ([]
 		}
 	}
 	return out, nil
+}
+
+// revokeCallsFor counts how many times an account's sessions were revoked.
+func (f *fakeAdminStore) revokeCallsFor(userID string) int {
+	n := 0
+	for _, r := range f.revokes {
+		if r.UserID == userID {
+			n++
+		}
+	}
+	return n
+}
+
+// lastRevokeReason is the reason recorded by the most recent revocation of an
+// account's sessions.
+func (f *fakeAdminStore) lastRevokeReason(userID string) string {
+	reason := ""
+	for _, r := range f.revokes {
+		if r.UserID == userID {
+			reason = r.Reason
+		}
+	}
+	return reason
 }
 
 // liveSessions counts non-revoked sessions, used by assertions.

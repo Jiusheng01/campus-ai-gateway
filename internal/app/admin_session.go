@@ -32,13 +32,19 @@ const (
 	adminSessionTouchInterval = 60 * time.Second
 
 	// Revocation reasons recorded in gateway_admin_session.revoke_reason.
-	revokeReasonLogout       = "logout"
-	revokeReasonPassword     = "password_changed"
-	revokeReasonReuse        = "refresh_reuse_detected"
-	revokeReasonDisabled     = "account_disabled"
-	revokeReasonStale        = "auth_version_mismatch"
-	revokeReasonAdminRevoked = "revoked_by_admin"
-	revokeReasonRoleChanged  = "role_changed"
+	//
+	// They are distinct so the device list and the audit trail say what
+	// happened. One PATCH produces one reason even when it changed several
+	// fields, because it was one logical change.
+	revokeReasonLogout          = "logout"
+	revokeReasonPassword        = "password_changed"
+	revokeReasonReuse           = "refresh_reuse_detected"
+	revokeReasonDisabled        = "account_disabled"
+	revokeReasonStale           = "auth_version_mismatch"
+	revokeReasonAdminRevoked    = "revoked_by_admin"
+	revokeReasonRoleChanged     = "role_changed"
+	revokeReasonStatusChanged   = "account_status_changed"
+	revokeReasonSecurityChanged = "account_security_changed"
 
 	// Session login methods recorded in gateway_admin_session.login_method.
 	loginMethodPassword = "password"
@@ -55,9 +61,10 @@ type adminStore interface {
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
 	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
-	UpdateAdminUserRoles(ctx context.Context, id string, roles []string) error
-	SetAdminUserStatus(ctx context.Context, id string, status int) error
-	UpdateAdminUserDisplayName(ctx context.Context, id, displayName string) error
+	// UpdateAdminUserAccount is the only way an existing account is changed.
+	// Roles, status and display name go through one transaction so a rejected
+	// patch cannot half-apply, and so auth_version moves at most once.
+	UpdateAdminUserAccount(ctx context.Context, id string, mutation storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error)
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)

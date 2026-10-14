@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -71,80 +72,100 @@ func (a *adminAuthService) listUsers(ctx context.Context) ([]model.AdminUser, mo
 }
 
 // updateUser applies a role, status or display-name change on behalf of a super
-// administrator.
+// administrator, and reports what actually changed.
 //
-// The one rule that matters here is enforced in storage rather than in this
-// function: the system always keeps at least one enabled super administrator.
-// It has to live inside the writing transaction, because two concurrent
-// demotions would each see the other's administrator and both proceed, leaving
-// a gateway nobody can administer. A check here would be a check-then-act race.
+// The change is one storage call, and therefore one transaction. Applying roles,
+// status and display name as three separate mutations meant a patch that was
+// rejected for the super-administrator invariant could still leave the display
+// name written, and a patch that touched roles and status together bumped
+// auth_version twice for what is one logical change.
 //
-// Changing your own account is allowed. The invariant above already prevents
-// the only genuinely dangerous case, and an operator who deliberately steps
-// down from super_admin should be able to: their own sessions are revoked by
-// the same change, so the console signs them out immediately afterwards.
-func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in userUpdate) (model.AdminUser, error) {
-	// Roles are normalised on the way in: unknown roles are dropped and
-	// "member" is removed as soon as a management role is present, so
-	// ["member","gateway_admin"] cannot be stored and later misread.
+// Validation happens here rather than in storage because it produces an HTTP
+// 400, and storage should not be deciding request semantics. Normalisation is
+// idempotent, so running it on this side of the boundary changes nothing about
+// what is stored.
+//
+// Changing your own account is allowed. The invariant already prevents the only
+// genuinely dangerous case, and an operator who deliberately steps down from
+// super_admin should be able to: their own sessions are revoked by the same
+// change, so the console signs them out immediately afterwards.
+func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in userUpdate) (model.AdminUser, storage.AdminUserChangeSet, error) {
+	mutation := storage.AdminUserMutation{}
+
 	if in.Roles != nil {
-		roles := NormalizeAccountRoles(*in.Roles)
-		if err := a.store.UpdateAdminUserRoles(ctx, targetID, roles); err != nil {
-			switch {
-			case errors.Is(err, storage.ErrLastSuperAdmin):
-				return model.AdminUser{}, ErrAdminLastSuperAdmin
-			case errors.Is(err, storage.ErrAdminUserNotFound):
-				return model.AdminUser{}, ErrAdminUserNotFound
-			default:
-				return model.AdminUser{}, ErrAdminInternal
-			}
+		// Unknown roles are refused rather than dropped: an operator who sends
+		// ["gateway_admin","god_mode"] should be told the request was not
+		// understood, not handed an apparent success that quietly discarded
+		// half of it.
+		if err := ValidateAccountRoles(*in.Roles); err != nil {
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, err
 		}
+		roles := NormalizeAccountRoles(*in.Roles)
+		mutation.Roles = &roles
 	}
 
 	if in.Status != nil {
-		if err := a.store.SetAdminUserStatus(ctx, targetID, *in.Status); err != nil {
-			switch {
-			case errors.Is(err, storage.ErrLastSuperAdmin):
-				return model.AdminUser{}, ErrAdminLastSuperAdmin
-			case errors.Is(err, storage.ErrAdminUserNotFound):
-				return model.AdminUser{}, ErrAdminUserNotFound
-			default:
-				return model.AdminUser{}, ErrAdminInternal
-			}
+		if *in.Status != model.AdminStatusEnabled && *in.Status != model.AdminStatusDisabled {
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminBadRequest
 		}
+		status := *in.Status
+		mutation.Status = &status
 	}
 
 	if in.DisplayName != nil {
-		// A label change must not sign anyone out, so this does not touch
-		// auth_version.
-		if err := a.store.UpdateAdminUserDisplayName(ctx, targetID, *in.DisplayName); err != nil {
-			if errors.Is(err, storage.ErrAdminUserNotFound) {
-				return model.AdminUser{}, ErrAdminUserNotFound
-			}
-			return model.AdminUser{}, ErrAdminInternal
+		name := strings.TrimSpace(*in.DisplayName)
+		if utf8.RuneCountInString(name) > maxDisplayNameRunes {
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminBadRequest
 		}
+		mutation.DisplayName = &name
 	}
 
-	// Role and status changes already bumped auth_version, which is what
-	// actually rejects the old tokens. Revoking the sessions as well is what
-	// makes the change visible in the user's own device list instead of
-	// leaving rows that look live but no longer work. It is best effort: the
-	// version bump has already taken effect, so a failure here must not turn a
-	// completed change into an error.
-	if in.Roles != nil || in.Status != nil {
-		if err := a.store.RevokeSessionsForUser(ctx, targetID, revokeReasonRoleChanged); err != nil {
-			log.Printf("user management: role or status changed for %s but its sessions could not be revoked: %v", targetID, err)
-		}
-	}
-
-	updated, err := a.store.FindAdminUserByID(ctx, targetID)
+	updated, changes, err := a.store.UpdateAdminUserAccount(ctx, targetID, mutation)
 	if err != nil {
-		if errors.Is(err, storage.ErrAdminUserNotFound) {
-			return model.AdminUser{}, ErrAdminUserNotFound
+		switch {
+		case errors.Is(err, storage.ErrLastSuperAdmin):
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminLastSuperAdmin
+		case errors.Is(err, storage.ErrAdminUserNotFound):
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminUserNotFound
+		default:
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminInternal
 		}
-		return model.AdminUser{}, ErrAdminInternal
 	}
-	return updated, nil
+
+	// A display-name-only edit is not an authentication event: nobody is signed
+	// out and no token is invalidated.
+	if !changes.AuthenticationChanged() {
+		return updated, changes, nil
+	}
+
+	// Exactly one revocation per logical mutation. Revoking after each field
+	// would do the same work twice for a combined patch and would leave the
+	// second reason in the audit trail as though it were a separate event.
+	//
+	// This is best effort: the transaction has already bumped auth_version, so
+	// every token issued before the change is rejected on its next use whether
+	// or not the session rows were tidied up. Failing here must not undo a
+	// permission change that has already committed.
+	if err := a.store.RevokeSessionsForUser(ctx, targetID, revokeReasonForChange(changes)); err != nil {
+		log.Printf("user management: account %s changed but its sessions could not be revoked: %v", targetID, err)
+	}
+	return updated, changes, nil
+}
+
+// revokeReasonForChange names the reason recorded on the revoked sessions, so
+// the device list and the audit trail say what actually happened rather than
+// lumping every kind of change under one label.
+func revokeReasonForChange(c storage.AdminUserChangeSet) string {
+	switch {
+	case c.RolesChanged && c.StatusChanged:
+		return revokeReasonSecurityChanged
+	case c.RolesChanged:
+		return revokeReasonRoleChanged
+	case c.NewStatus == model.AdminStatusDisabled:
+		return revokeReasonDisabled
+	default:
+		return revokeReasonStatusChanged
+	}
 }
 
 // --- handlers --------------------------------------------------------------
@@ -229,12 +250,8 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}
-	if in.Status != nil && *in.Status != model.AdminStatusEnabled && *in.Status != model.AdminStatusDisabled {
-		writeAdminError(w, reqID, ErrAdminBadRequest)
-		return
-	}
 
-	updated, err := s.adminAuth.updateUser(r.Context(), targetID, userUpdate{
+	updated, changes, err := s.adminAuth.updateUser(r.Context(), targetID, userUpdate{
 		DisplayName: in.DisplayName,
 		Roles:       in.Roles,
 		Status:      in.Status,
@@ -245,20 +262,52 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One semantic audit row per change rather than one per HTTP request: the
-	// operator reading the trail wants to see "role updated", not "PATCH".
-	// The admin middleware only records POST/PUT/DELETE, so PATCH would
-	// otherwise leave no trace at all.
-	switch {
-	case in.Roles != nil:
-		s.auditAdminAuth(r, "user.role.update", http.StatusOK, principal.Username)
-	case in.Status != nil && *in.Status == model.AdminStatusDisabled:
-		s.auditAdminAuth(r, "user.disable", http.StatusOK, principal.Username)
-	case in.Status != nil:
-		s.auditAdminAuth(r, "user.enable", http.StatusOK, principal.Username)
-	default:
-		s.auditAdminAuth(r, "user.profile.update", http.StatusOK, principal.Username)
+	// The audit trail follows what changed, not which fields were present in the
+	// request. "The client sent a roles field" and "the roles changed" are
+	// different facts: a console that resends the current values would otherwise
+	// fill the trail with events that never happened.
+	for _, action := range accountAuditActions(changes) {
+		s.auditAdminAuth(r, action, http.StatusOK, principal.Username)
 	}
 
-	writeJSON(w, http.StatusOK, adminUserViewFrom(updated))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": adminUserViewFrom(updated),
+		// The client is told which fields actually moved so it can describe the
+		// outcome accurately instead of guessing from what it sent.
+		"changes": map[string]bool{
+			"roles":          changes.RolesChanged,
+			"status":         changes.StatusChanged,
+			"display_name":   changes.DisplayNameChanged,
+			"authentication": changes.AuthenticationChanged(),
+		},
+	})
+}
+
+// accountAuditActions lists the semantic events a change set produced, in a
+// stable order.
+//
+// It returns a list rather than a single action because one request can be
+// several events an operator later wants to find independently: a patch that
+// demotes an account and disables it is both a role update and a disable, and
+// collapsing that into one row would hide half of what happened.
+//
+// A no-op returns nothing at all. Recording "role updated" because the request
+// happened to contain a roles field would put events in the trail that never
+// took place.
+func accountAuditActions(changes storage.AdminUserChangeSet) []string {
+	actions := make([]string, 0, 3)
+	if changes.RolesChanged {
+		actions = append(actions, "user.role.update")
+	}
+	if changes.StatusChanged {
+		if changes.NewStatus == model.AdminStatusDisabled {
+			actions = append(actions, "user.disable")
+		} else {
+			actions = append(actions, "user.enable")
+		}
+	}
+	if changes.DisplayNameChanged {
+		actions = append(actions, "user.profile.update")
+	}
+	return actions
 }
