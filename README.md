@@ -4,7 +4,7 @@
 
 Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-13）：核心网关、Admin UI v2、管理员会话认证 v2、多 Provider 控制面、配额与审计已经进入 `main`。
+> 当前状态（2026-10-13）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
 >
 > 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
 >
@@ -32,6 +32,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成；最终 Provider / attempts 取决于 ThinkWatch 实际 telemetry |
 | Admin UI v2 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
 | 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
+| 统一账户与开放注册 | ✅ | 公开注册创建 member、super_admin 授予管理角色、用户与权限管理 |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
 | trusted-header / 校园 SSO 边界 | ✅* | Gateway 侧完成；学校真实 IdP 待验收 |
 | 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
@@ -90,13 +91,14 @@ http://127.0.0.1:8080/admin-ui
 主要页面包括：
 
 - 总览与系统健康状态
-- Provider 管理
-- 虚拟模型与 Route 管理
-- ThinkWatch 同步与模型测试
-- Tenant / API Key 管理
+- 供应商管理
+- 模型与路由（线路 / 故障切换）
+- ThinkWatch 同步与模型连通测试
+- 租户 / API Key 管理
+- 用户与权限（super_admin）
 - 请求日志筛选、分页、CSV 与详情
 - 管理审计与安全事件
-- 当前身份、修改密码、登录设备与退出登录
+- 我的账号、修改密码、登录设备与退出登录
 
 默认：
 
@@ -110,9 +112,46 @@ ADMIN_AUTH_MODE=session
 
 首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。
 
-创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。
+创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。守卫条件是“是否已存在 super_admin”，而不是“账号表是否为空”。
 
-数据库已经存在管理员后，不再提供公开“注册”入口。当前也没有面向管理员的自助“忘记密码”流程。
+### 统一用户账户体系与开放注册
+
+网关只有一种账号，管理员是拥有管理角色的普通账号：
+
+```text
+User
+├── member          公开注册创建，无管理权限
+├── auditor
+├── operator
+├── tenant_admin
+├── gateway_admin
+└── super_admin      只能通过首次 Setup 创建，或由现有 super_admin 授予
+```
+
+- 首次部署没有 super_admin 时，**只**显示“创建管理员账号”，此时公开注册接口拒绝请求
+  （`409 setup_required`），避免远程用户抢先注册导致系统无人可管理
+- 首个 super_admin 创建后，`POST /auth/register` 对任何能访问登录页的人开放，且**只能**
+  创建 `member`（后端固定，请求体携带 `roles` 等字段会被直接拒绝）
+- 管理员角色只能由 super_admin 在「用户与权限」中授予；`/admin/users` 不在任何其它角色的
+  允许列表里，gateway_admin 无法给自己提权
+- 角色与 `member` 互斥：拥有任一管理角色时 `member` 自动移除，由后端 normalize
+- 注册成功后自动登录（复用同一套 Access + Refresh Session），不需要再输一次密码
+- 注册限流按来源 IP 计算（默认 5 次 / 小时），Redis 不可用时**拒绝**注册而不是放行
+- 系统始终保留至少一个启用的 super_admin：停用或降级最后一个会被拒绝（`409 last_super_admin`）
+
+注册与用户管理相关配置：
+
+```text
+PUBLIC_REGISTRATION_ENABLED=true
+PUBLIC_REGISTER_MAX_ATTEMPTS=5
+PUBLIC_REGISTER_WINDOW=1h
+```
+
+生产环境如需关闭公开注册，设置 `PUBLIC_REGISTRATION_ENABLED=false` 即可，账号体系其余部分不受影响。
+
+公开注册目前**不提供**邮箱验证、忘记密码、邀请码或管理员审批。
+
+完整说明见 `docs/ACCOUNTS.md`。
 
 ### 会话模型
 
@@ -175,6 +214,7 @@ Campus AI Gateway RBAC
 详见：
 
 - `docs/ADMIN_UI.md`
+- `docs/ACCOUNTS.md`
 - `docs/SSO_RBAC.md`
 - `docs/PRODUCTION.md`
 
