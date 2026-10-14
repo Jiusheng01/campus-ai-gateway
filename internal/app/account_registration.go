@@ -19,9 +19,13 @@ import (
 // interface from adminLoginLimiter because the two have opposite semantics:
 // login counters advance on failure, registration counters advance on every
 // attempt.
+//
+// It is a single Consume call rather than a "may I?" / "record that I did"
+// pair. Two calls would leave a window between them in which any number of
+// concurrent requests could all be told yes; see the limiter for the full
+// reasoning.
 type registrationLimiter interface {
-	AllowRegistration(ctx context.Context, ip string) (bool, time.Duration, error)
-	RecordRegistration(ctx context.Context, ip string) error
+	ConsumeRegistration(ctx context.Context, ip string) (allowed bool, retryAfter time.Duration, err error)
 }
 
 // register creates a public member account and signs it in.
@@ -92,6 +96,13 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 
 // consumeRegistrationBudget charges one attempt against the caller's address.
 //
+// It is called once per attempt, after the cheap validation (username shape,
+// display name length, password policy) and after the setup and
+// registration-enabled gates, and before the account is created. That ordering
+// is what makes a duplicate username cost budget: the request is otherwise
+// well-formed, so an attacker cannot use a name they know is taken to probe the
+// endpoint for free.
+//
 // Unlike login throttling this fails closed. The counter is the only thing
 // standing between the internet and unlimited account creation, so treating a
 // cache outage as "allow everything" would remove the protection exactly when
@@ -101,17 +112,14 @@ func (a *adminAuthService) consumeRegistrationBudget(ctx context.Context, ip str
 	if a.registration == nil {
 		return nil
 	}
-	allowed, _, err := a.registration.AllowRegistration(ctx, ip)
+	allowed, retryAfter, err := a.registration.ConsumeRegistration(ctx, ip)
 	if err != nil {
 		log.Printf("registration: abuse counter unavailable, refusing the attempt: %v", err)
 		return ErrAdminRegistrationUnavailable
 	}
 	if !allowed {
+		log.Printf("registration: rate limited, retry after %s", retryAfter)
 		return ErrAdminRegistrationRateLimited
-	}
-	if err := a.registration.RecordRegistration(ctx, ip); err != nil {
-		log.Printf("registration: could not record the attempt, refusing it: %v", err)
-		return ErrAdminRegistrationUnavailable
 	}
 	return nil
 }

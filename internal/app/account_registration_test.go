@@ -435,6 +435,81 @@ func TestRegisterFailsClosedWhenCounterUnavailable(t *testing.T) {
 	}
 }
 
+// A refused attempt must not hand the caller a fresh window. If a denial reset
+// the counter, an attacker could keep an address permanently at the limit and
+// still register on every other attempt.
+func TestRepeatedDeniedAttemptsDoNotResetTheWindow(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublicRegisterMaxAttempts = 2
+	s, _, _ := newTestServerWithRegistration(t, cfg)
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	for i, name := range []string{"user-one", "user-two"} {
+		if rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+			registerBody(name, name, "Campus#2026Gate"), nil); rec.Code != http.StatusCreated {
+			t.Fatalf("attempt %d: expected 201, got %d: %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Every further attempt stays refused, however many of them there are.
+	for i := 0; i < 5; i++ {
+		rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+			registerBody("user-extra", "user-extra", "Campus#2026Gate"), nil)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("denied attempt %d returned %d, want 429: %s", i+1, rec.Code, rec.Body.String())
+		}
+		if code := errorCode(t, rec); code != "registration_rate_limited" {
+			t.Fatalf("expected registration_rate_limited, got %q", code)
+		}
+	}
+}
+
+// The budget is charged after the cheap validation and before the account is
+// created, which is what makes these four cases free and the duplicate-username
+// case expensive.
+func TestMalformedRequestsDoNotConsumeBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublicRegisterMaxAttempts = 2
+	s, store, reg := newTestServerWithRegistration(t, cfg)
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"malformed json", `{"username":`},
+		{"weak password", `{"username":"a1","password":"aaaaaaaaaaaa","confirm_password":"aaaaaaaaaaaa"}`},
+		{"mismatched confirmation", `{"username":"a2","password":"Campus#2026Gate","confirm_password":"Campus#2027Gate"}`},
+		{"over-long username", `{"username":"` + strings.Repeat("u", 65) + `","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate"}`},
+		{"unknown security field", `{"username":"a3","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate","roles":["super_admin"]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register", tc.body, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if got := reg.consumed(); got != 0 {
+		t.Fatalf("%d units of budget charged for requests that never reached account creation", got)
+	}
+	if len(store.users) != 1 {
+		t.Fatalf("expected only the setup administrator, got %d accounts", len(store.users))
+	}
+
+	// A duplicate username, by contrast, is a well-formed attempt: it must cost
+	// budget, or the endpoint could be used to enumerate existing names for free.
+	seedMember(t, store, "taken", "Campus#2026Gate")
+	if rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("taken", "taken", "Campus#2026Gate"), nil); rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+	if got := reg.consumed(); got != 1 {
+		t.Fatalf("a duplicate username charged %d units of budget, want 1", got)
+	}
+}
+
 // --- 6. member RBAC --------------------------------------------------------
 
 func TestMemberSelfServiceEndpointsAreAllowed(t *testing.T) {

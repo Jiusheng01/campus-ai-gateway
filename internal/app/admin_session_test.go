@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -424,40 +425,48 @@ func (l *fakeLimiter) ResetAdminLogin(_ context.Context, ip, username string) er
 	return nil
 }
 
-// fakeRegistrationLimiter is an in-memory registrationLimiter. broken models a
-// Redis outage, which registration must fail closed on.
+// fakeRegistrationLimiter is an in-memory registrationLimiter.
+//
+// It mirrors the real limiter's shape: one call increments and decides, and the
+// count is compared after the increment, so a limit of five admits exactly five.
+// broken models a Redis outage, which registration must fail closed on.
 type fakeRegistrationLimiter struct {
-	max     int64
-	window  time.Duration
-	counts  map[string]int64
-	broken  bool
-	records int64
+	mu     sync.Mutex
+	max    int64
+	window time.Duration
+	counts map[string]int64
+	// attempts counts every consumed unit of budget, which is what the tests
+	// assert on when they check that a failed attempt still costs.
+	attempts int64
+	broken   bool
 }
 
 func newFakeRegistrationLimiter(max int64) *fakeRegistrationLimiter {
 	return &fakeRegistrationLimiter{max: max, window: time.Hour, counts: map[string]int64{}}
 }
 
-func (l *fakeRegistrationLimiter) AllowRegistration(_ context.Context, ip string) (bool, time.Duration, error) {
+func (l *fakeRegistrationLimiter) ConsumeRegistration(_ context.Context, ip string) (bool, time.Duration, error) {
 	if l.broken {
 		return false, 0, errors.New("limiter unavailable")
 	}
 	if l.max <= 0 {
 		return true, 0, nil
 	}
-	if l.counts[ip] >= l.max {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.counts[ip]++
+	l.attempts++
+	if l.counts[ip] > l.max {
 		return false, l.window, nil
 	}
 	return true, 0, nil
 }
 
-func (l *fakeRegistrationLimiter) RecordRegistration(_ context.Context, ip string) error {
-	if l.broken {
-		return errors.New("limiter unavailable")
-	}
-	l.counts[ip]++
-	l.records++
-	return nil
+// consumed reports how many units of budget have been charged.
+func (l *fakeRegistrationLimiter) consumed() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.attempts
 }
 
 // --- helpers ---------------------------------------------------------------

@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -29,7 +30,7 @@ func NewRegistrationLimiter(rdb *redis.Client) *RegistrationLimiter {
 }
 
 // WithPolicy overrides the default limits. A maxAttempts of 0 disables
-// throttling entirely.
+// throttling entirely, and in that case Redis is never contacted.
 func (l *RegistrationLimiter) WithPolicy(maxAttempts int64, window time.Duration) *RegistrationLimiter {
 	l.maxAttempts = maxAttempts
 	if window > 0 {
@@ -52,43 +53,71 @@ func (l *RegistrationLimiter) windowSeconds() int64 {
 	return window
 }
 
-// AllowRegistration reports whether another attempt is permitted from this
-// address, and when it is not, how long the caller should wait.
-func (l *RegistrationLimiter) AllowRegistration(ctx context.Context, ip string) (bool, time.Duration, error) {
+// ConsumeRegistration charges one attempt and reports whether it is allowed.
+//
+// The decision and the increment are a single Redis operation, and that is the
+// whole point of this method existing in this shape. Splitting it into "may I?"
+// followed by "record that I did" is a time-of-check-to-time-of-use race: with
+// a limit of five, fifty callers that arrive together can all read a count of
+// four, all conclude they are within budget, and all proceed — so a single
+// burst admits far more than the policy allows, which defeats the entire
+// purpose of an anti-abuse counter on an endpoint anyone on the internet can
+// reach.
+//
+// The Lua script increments first and answers afterwards, so the fifth caller
+// takes the last slot and the sixth is refused no matter how many arrive at
+// once. It returns the post-increment count, so the comparison is
+// `current <= maxAttempts`: a limit of five lets exactly five through.
+//
+// The window starts at the first request and is never extended. The script only
+// sets the expiry when it creates the key, so a caller who keeps retrying
+// cannot push the reset further away and hold an address locked indefinitely;
+// the repair branch exists only for a key that somehow lost its TTL.
+func (l *RegistrationLimiter) ConsumeRegistration(ctx context.Context, ip string) (bool, time.Duration, error) {
 	if l == nil || l.rdb == nil || l.maxAttempts <= 0 {
 		return true, 0, nil
 	}
-	pipe := l.rdb.Pipeline()
-	get := pipe.Get(ctx, registrationKey(ip))
-	ttl := pipe.TTL(ctx, registrationKey(ip))
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return false, 0, err
-	}
-	raw, err := get.Result()
+
+	raw, err := incrWithTTLScript.Run(ctx, l.rdb, []string{registrationKey(ip)}, l.windowSeconds()).Result()
 	if err != nil {
-		if err == redis.Nil {
-			return true, 0, nil
-		}
 		return false, 0, err
 	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n < l.maxAttempts {
+	current, ttlSeconds, err := parseCounterReply(raw)
+	if err != nil {
+		return false, 0, err
+	}
+
+	if current <= l.maxAttempts {
 		return true, 0, nil
 	}
-	remaining, err := ttl.Result()
-	if err != nil || remaining < 0 {
-		remaining = time.Duration(l.windowSeconds()) * time.Second
+
+	retryAfter := time.Duration(ttlSeconds) * time.Second
+	if retryAfter <= 0 {
+		retryAfter = time.Duration(l.windowSeconds()) * time.Second
 	}
-	return false, remaining, nil
+	return false, retryAfter, nil
 }
 
-// RecordRegistration consumes one unit of budget. It is called for every
-// attempt that reaches the service, before the account is created.
-func (l *RegistrationLimiter) RecordRegistration(ctx context.Context, ip string) error {
-	if l == nil || l.rdb == nil || l.maxAttempts <= 0 {
-		return nil
+// parseCounterReply unpacks the {current, ttl} array the script returns.
+//
+// A malformed reply is reported as an error rather than treated as "allowed":
+// this counter is the only thing standing between the internet and unlimited
+// account creation, so an unreadable answer has to fail closed like any other
+// limiter outage.
+func parseCounterReply(raw any) (int64, int64, error) {
+	values, ok := raw.([]any)
+	if !ok || len(values) != 2 {
+		return 0, 0, fmt.Errorf("registration limiter: unexpected reply %T", raw)
 	}
-	return incrWithTTLScript.Run(ctx, l.rdb, []string{registrationKey(ip)}, l.windowSeconds()).Err()
+	current, ok := values[0].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("registration limiter: counter is %T, want int64", values[0])
+	}
+	ttlSeconds, ok := values[1].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("registration limiter: ttl is %T, want int64", values[1])
+	}
+	return current, ttlSeconds, nil
 }
 
 // Describe returns a human-readable summary of the policy, used in logs.
