@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +50,55 @@ func newFakeAdminStore() *fakeAdminStore {
 	}
 }
 
-func (f *fakeAdminStore) CountAdminUsers(context.Context) (int64, error) {
-	return int64(len(f.users)), nil
+func (f *fakeAdminStore) CountSuperAdmins(context.Context) (int64, error) {
+	var n int64
+	for _, u := range f.users {
+		if hasSuperAdmin(u.Roles) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// enabledSuperAdmins counts the accounts that keep the console administrable.
+// The real store enforces the same invariant inside a transaction; the fake
+// mirrors it so the service-level tests exercise the same rule.
+func (f *fakeAdminStore) enabledSuperAdmins() int64 {
+	var n int64
+	for _, u := range f.users {
+		if u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles) {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeAdminStore) AdminUserStats(context.Context) (model.AdminUserStats, error) {
+	var out model.AdminUserStats
+	for _, u := range f.users {
+		out.Total++
+		if hasManagementRole(u.Roles) {
+			out.Admins++
+		} else {
+			out.Members++
+		}
+		if u.Status != model.AdminStatusEnabled {
+			out.Disabled++
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAdminStore) ListAdminUsers(_ context.Context, limit int) ([]model.AdminUser, error) {
+	out := make([]model.AdminUser, 0, len(f.users))
+	for _, u := range f.users {
+		out = append(out, u)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
 func (f *fakeAdminStore) FindAdminUserByUsername(_ context.Context, username string) (model.AdminUser, error) {
@@ -70,8 +118,14 @@ func (f *fakeAdminStore) FindAdminUserByID(_ context.Context, id string) (model.
 }
 
 func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
-	if len(f.users) > 0 {
+	// Mirrors the storage guard: setup is closed by an existing super
+	// administrator, not by any account at all. A registered member must not
+	// be able to close the setup window.
+	if n, _ := f.CountSuperAdmins(context.Background()); n > 0 {
 		return model.AdminUser{}, storage.ErrAdminUserNotFound
+	}
+	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
 	}
 	f.seq++
 	id := uuid.NewString()
@@ -84,6 +138,65 @@ func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displ
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id
 	return u, nil
+}
+
+func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
+	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
+	}
+	f.seq++
+	id := uuid.NewString()
+	now := time.Now().UTC()
+	u := model.AdminUser{
+		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
+		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	f.users[id] = u
+	f.names[strings.ToLower(username)] = id
+	return u, nil
+}
+
+func (f *fakeAdminStore) UpdateAdminUserRoles(_ context.Context, id string, roles []string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	// The invariant is checked against the state after the change, exactly as
+	// the guarded storage transaction does.
+	if u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles) && !hasSuperAdmin(roles) && f.enabledSuperAdmins() <= 1 {
+		return storage.ErrLastSuperAdmin
+	}
+	u.Roles = roles
+	u.AuthVersion++
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeAdminStore) SetAdminUserStatus(_ context.Context, id string, status int) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	if status != model.AdminStatusEnabled && hasSuperAdmin(u.Roles) && u.Status == model.AdminStatusEnabled && f.enabledSuperAdmins() <= 1 {
+		return storage.ErrLastSuperAdmin
+	}
+	u.Status = status
+	u.AuthVersion++
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeAdminStore) UpdateAdminUserDisplayName(_ context.Context, id, displayName string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	u.DisplayName = displayName
+	// Deliberately does not bump AuthVersion: a label change must not sign
+	// anyone out.
+	f.users[id] = u
+	return nil
 }
 
 func (f *fakeAdminStore) UpdateAdminUserPassword(_ context.Context, id, hash string) error {
@@ -256,17 +369,56 @@ func (l *fakeLimiter) ResetAdminLogin(_ context.Context, ip, username string) er
 	return nil
 }
 
+// fakeRegistrationLimiter is an in-memory registrationLimiter. broken models a
+// Redis outage, which registration must fail closed on.
+type fakeRegistrationLimiter struct {
+	max     int64
+	window  time.Duration
+	counts  map[string]int64
+	broken  bool
+	records int64
+}
+
+func newFakeRegistrationLimiter(max int64) *fakeRegistrationLimiter {
+	return &fakeRegistrationLimiter{max: max, window: time.Hour, counts: map[string]int64{}}
+}
+
+func (l *fakeRegistrationLimiter) AllowRegistration(_ context.Context, ip string) (bool, time.Duration, error) {
+	if l.broken {
+		return false, 0, errors.New("limiter unavailable")
+	}
+	if l.max <= 0 {
+		return true, 0, nil
+	}
+	if l.counts[ip] >= l.max {
+		return false, l.window, nil
+	}
+	return true, 0, nil
+}
+
+func (l *fakeRegistrationLimiter) RecordRegistration(_ context.Context, ip string) error {
+	if l.broken {
+		return errors.New("limiter unavailable")
+	}
+	l.counts[ip]++
+	l.records++
+	return nil
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func testConfig() Config {
 	return Config{
-		AdminAuthMode:           "session",
-		AdminAccessTTL:          15 * time.Minute,
-		AdminRefreshTTL:         30 * 24 * time.Hour,
-		AdminLoginMaxAttempts:   8,
-		AdminLoginWindow:        15 * time.Minute,
-		AdminSetupLocalOnly:     true,
-		AdminRefreshReplayGrace: 30 * time.Second,
+		AdminAuthMode:             "session",
+		AdminAccessTTL:            15 * time.Minute,
+		AdminRefreshTTL:           30 * 24 * time.Hour,
+		AdminLoginMaxAttempts:     8,
+		AdminLoginWindow:          15 * time.Minute,
+		AdminSetupLocalOnly:       true,
+		AdminRefreshReplayGrace:   30 * time.Second,
+		PublicRegistrationEnabled: true,
+		PublicRegisterMaxAttempts: 5,
+		PublicRegisterWindow:      time.Hour,
 	}
 }
 
@@ -274,7 +426,8 @@ func newTestService(t *testing.T) (*adminAuthService, *fakeAdminStore, *fakeLimi
 	t.Helper()
 	store := newFakeAdminStore()
 	limiter := newFakeLimiter(8)
-	svc := newAdminAuthService(store, limiter, []byte("unit-test-signing-secret"), testConfig())
+	svc := newAdminAuthService(store, limiter, []byte("unit-test-signing-secret"), testConfig()).
+		withRegistrationLimiter(newFakeRegistrationLimiter(5))
 	return svc, store, limiter
 }
 
@@ -1032,8 +1185,50 @@ func TestFilterAdminRoles(t *testing.T) {
 	if !got["super_admin"] || !got["auditor"] || len(got) != 2 {
 		t.Fatalf("unexpected roles: %v", got)
 	}
-	if fallback := filterAdminRoles(nil); !fallback["auditor"] || len(fallback) != 1 {
-		t.Fatalf("an account with no known role must fall back to auditor, got %v", fallback)
+	// An account with no recognisable role is a plain member. Falling back to
+	// auditor would hand out read access to request logs and audit trails.
+	if fallback := filterAdminRoles(nil); !fallback[RoleMember] || len(fallback) != 1 {
+		t.Fatalf("an account with no known role must fall back to member, got %v", fallback)
+	}
+	if fallback := filterAdminRoles([]string{"nonsense"}); !fallback[RoleMember] || len(fallback) != 1 {
+		t.Fatalf("an account with only unknown roles must be a member, got %v", fallback)
+	}
+	// member and a management role must never coexist: whichever check ran
+	// first would otherwise decide whether the account is an administrator.
+	mixed := filterAdminRoles([]string{"member", "gateway_admin"})
+	if mixed[RoleMember] || !mixed[RoleGatewayAdmin] || len(mixed) != 1 {
+		t.Fatalf("member must be dropped once a management role is present, got %v", mixed)
+	}
+	if only := filterAdminRoles([]string{"member"}); !only[RoleMember] || len(only) != 1 {
+		t.Fatalf("a registered member must stay a member, got %v", only)
+	}
+}
+
+func TestNormalizeAccountRolesIsDeterministicAndLeastPrivilege(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty becomes member", nil, []string{RoleMember}},
+		{"unknown dropped", []string{"root", "member"}, []string{RoleMember}},
+		{"member removed with management role", []string{"member", "auditor"}, []string{RoleAuditor}},
+		{"duplicates collapse", []string{"operator", "operator"}, []string{RoleOperator}},
+		{"canonical order", []string{"auditor", "super_admin", "operator"}, []string{RoleSuperAdmin, RoleOperator, RoleAuditor}},
+		{"trimmed", []string{"  gateway_admin  "}, []string{RoleGatewayAdmin}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeAccountRoles(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 

@@ -18,7 +18,8 @@ import (
 func newTestServer(t *testing.T, cfg Config) (*Server, *fakeAdminStore) {
 	t.Helper()
 	store := newFakeAdminStore()
-	svc := newAdminAuthService(store, newFakeLimiter(8), []byte("unit-test-signing-secret"), cfg)
+	svc := newAdminAuthService(store, newFakeLimiter(8), []byte("unit-test-signing-secret"), cfg).
+		withRegistrationLimiter(newFakeRegistrationLimiter(cfg.PublicRegisterMaxAttempts))
 	return &Server{cfg: cfg, adminAuth: svc, mux: http.NewServeMux()}, store
 }
 
