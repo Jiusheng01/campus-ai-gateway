@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {Pencil, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
-import {listUsers, updateUser, type AccountUser} from '../api'
+import {listUsers, updateUser, type AccountChangeSet, type AccountUser, type UserPatch} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge } from '../components/ui/Badge'
@@ -12,7 +12,7 @@ import {Detail} from '../components/ui/Detail'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {useResource} from '../lib/useResource'
-import {ASSIGNABLE_ROLES, roleLabel} from '../lib/roles'
+import {ASSIGNABLE_ROLES, canonicalRoles, roleLabel} from '../lib/roles'
 import {ago, num, when} from '../lib/format'
 
 /**
@@ -110,6 +110,28 @@ export function UsersPage() {
   )
 }
 
+// managementRolesOf is the assignable subset of an account's roles. "member" is
+// not one of them: it is what an account is when it holds nothing else.
+function managementRolesOf(user: AccountUser): string[] {
+  return (user.roles || []).filter(r => r !== 'member' && ASSIGNABLE_ROLES.includes(r))
+}
+
+/**
+ * changeSummary describes what a save actually did.
+ *
+ * It is built from the gateway's change set rather than from what the form
+ * submitted, so editing a display name never reports that the account was
+ * signed out — because it was not.
+ */
+function changeSummary(changes: AccountChangeSet, status: number): string {
+  if (!changes.roles && !changes.status) return '用户信息已更新。'
+  if (changes.roles && changes.status) {
+    return '用户设置已更新；权限或状态变更已使该用户现有登录会话失效。'
+  }
+  if (changes.roles) return '权限已更新，该用户现有登录会话已失效。'
+  return status === 1 ? '账号已启用，用户可以重新登录。' : '账号已停用，该用户现有登录会话已失效。'
+}
+
 function Stat({label, value, icon, tone}: {label: string; value: number; icon: React.ReactNode; tone?: 'danger'}) {
   return (
     <div className={`kpi ${tone || ''}`.trim()}>
@@ -149,10 +171,17 @@ function UserDrawer({
   const [displayName, setDisplayName] = useState(user.display_name || '')
   const [busy, setBusy] = useState(false)
 
+  // Comparisons are over the canonical form, so reordering the same roles is
+  // not mistaken for an edit — otherwise merely opening the drawer and saving
+  // would look like a role change and sign the account out.
+  const initialRoles = canonicalRoles(managementRolesOf(user))
+  const rolesChanged = canonicalRoles(selected) !== initialRoles
+  const statusChanged = status !== user.status
+  const displayNameChanged = displayName.trim() !== (user.display_name || '')
+  const dirty = rolesChanged || statusChanged || displayNameChanged
+
   const grantsSuperAdmin = selected.includes('super_admin')
   const disabling = status !== 1
-  const dirty = selected.join() !== (user.roles || []).filter(r => r !== 'member' && ASSIGNABLE_ROLES.includes(r)).join() ||
-    status !== user.status || displayName !== (user.display_name || '')
 
   const save = async () => {
     if (!dirty) {
@@ -185,13 +214,23 @@ function UserDrawer({
       if (!ok) return
     }
 
+    // Only the fields that actually changed are sent. The gateway leaves an
+    // absent field alone, so omitting the untouched ones is exactly what keeps
+    // a display-name edit from being treated as a role change — and from
+    // signing the account out.
+    //
+    // An empty selection means the account is an ordinary member: the server
+    // applies that rule itself, and the UI never sends "member" explicitly so
+    // it cannot end up alongside a management role.
+    const patch: UserPatch = {}
+    if (rolesChanged) patch.roles = selected
+    if (statusChanged) patch.status = status
+    if (displayNameChanged) patch.display_name = displayName.trim()
+
     setBusy(true)
     try {
-      // An empty selection means the account is an ordinary member: the server
-      // applies that rule itself, and the UI never sends "member" explicitly so
-      // it cannot end up alongside a management role.
-      await updateUser(user.id, {roles: selected, status, display_name: displayName.trim()})
-      toast.success('权限已更新，该用户现有登录会话已失效。')
+      const {changes} = await updateUser(user.id, patch)
+      toast.success(changeSummary(changes, status))
       onSaved()
     } catch (err) {
       const code = (err as {code?: string})?.code

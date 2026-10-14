@@ -44,3 +44,14 @@ export function hasAnyRole(roles: string[] | undefined, wanted: string[]): boole
   if (!roles || !roles.length) return wanted.includes('member')
   return roles.some(r => wanted.includes(r))
 }
+
+/**
+ * A comparable form of a role list.
+ *
+ * The stored order carries no meaning, so comparing raw arrays or a plain join
+ * would report a change when the same roles simply arrived in a different
+ * order — and a role change is what signs an account out.
+ */
+export function canonicalRoles(roles: string[]): string {
+  return [...roles].sort().join(',')
+}

@@ -62,6 +62,15 @@ export type AccountUserStats={
 }
 
 export type LoginResult={access_token:string;expires_at:string;user:AdminUserView}
+
+/**
+ * The narrow model projection the connectivity test needs.
+ *
+ * It is not a ModelConfig: an operator may run a diagnostic without being
+ * allowed to read or edit the model configuration, so the gateway answers this
+ * from a dedicated endpoint that carries only what the picker renders.
+ */
+export type ModelTestOption={id:string;alias:string;status:number}
 export type AdminSessionView={
   id:string;current:boolean;login_method:string;ip:string;user_agent:string
   created_at:string;last_active_at:string;expires_at:string
@@ -274,16 +283,40 @@ export type UserPatch={
 }
 
 /**
- * updateUser changes an account's roles or status.
+ * AccountChangeSet reports which fields a patch actually moved.
  *
- * The server bumps auth_version and revokes that account's sessions, so the
- * target has to sign in again before the change applies to them — which is the
- * point: authority taken away must not keep working on the strength of a token
- * issued before it was taken.
+ * It is computed by the gateway from the before and after states, not from the
+ * request body, so a patch that resent the current values reports no change and
+ * the console can avoid claiming otherwise.
+ */
+export type AccountChangeSet={
+  roles:boolean
+  status:boolean
+  display_name:boolean
+  authentication:boolean
+}
+
+/**
+ * updateUser sends only the fields that actually changed.
+ *
+ * A field that is absent from the patch is left alone by the gateway, so
+ * omitting the ones the operator did not touch is what keeps a display-name
+ * edit from signing the account out: sending all three fields would make every
+ * save look like a role change.
  */
 export async function updateUser(id:string,patch:UserPatch){
-  return api<AccountUser>(`/admin/users/${encodeURIComponent(id)}`,{
+  const d=await api<{data:AccountUser;changes:AccountChangeSet}>(`/admin/users/${encodeURIComponent(id)}`,{
     method:'PATCH',
     body:JSON.stringify(patch),
   })
+  return {user:d.data,changes:d.changes}
+}
+
+/**
+ * listModelTestOptions reads the model picker for the connectivity test. It is
+ * available to super_admin, gateway_admin and operator, unlike /admin/models.
+ */
+export async function listModelTestOptions(){
+  const d=await api<{data:ModelTestOption[]}>('/admin/model-test-options')
+  return d.data||[]
 }
