@@ -163,6 +163,12 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		if method == http.MethodGet && path == "/admin/status" {
 			return true
 		}
+		// The connectivity test is a diagnostic, not an edit: an operator may
+		// run it and pick a model from the narrowed option list, but may not
+		// read or change the model configuration itself.
+		if method == http.MethodGet && path == "/admin/model-test-options" {
+			return true
+		}
 		if method == http.MethodPost && path == "/admin/model-test" {
 			return true
 		}
@@ -174,6 +180,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			strings.HasPrefix(path, "/admin/model-routes"),
 			path == "/admin/thinkwatch/sync",
 			path == "/admin/model-test",
+			path == "/admin/model-test-options",
 			path == "/admin/status":
 			return true
 		}
