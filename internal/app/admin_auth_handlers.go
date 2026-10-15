@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -265,6 +266,21 @@ func (s *Server) handleAdminRefresh(w http.ResponseWriter, r *http.Request) {
 
 // --- POST /admin/logout and POST /admin/auth/logout ------------------------
 
+// logoutAuditAction names the audit row a logout request writes.
+//
+// The HTTP response is a 200 either way — the browser always gets its cookie
+// cleared, because it has to be able to leave — but the trail must be able to
+// tell a device that signed out from a request that presented a token the
+// session did not own. The latter revokes nothing, and recording it as a
+// successful logout would hide exactly the signal an operator investigating
+// session tampering looks for.
+func logoutAuditAction(revoked bool) string {
+	if revoked {
+		return "admin_logout"
+	}
+	return "admin_logout_rejected"
+}
+
 // handleAdminLogout revokes the session behind the refresh cookie.
 //
 // The cookie Path is scoped to /admin/auth, so a browser only attaches it to
@@ -285,10 +301,11 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if raw, err := readAdminRefreshCookie(r); err == nil && s.adminAuth != nil {
-		if err := s.adminAuth.logout(r.Context(), raw); err != nil {
+		revoked, err := s.adminAuth.logout(r.Context(), raw)
+		if err != nil {
 			log.Printf("admin logout: %v", err)
 		}
-		s.auditAdminAuth(r, "admin_logout", http.StatusOK, "")
+		s.auditAdminAuth(r, logoutAuditAction(revoked), http.StatusOK, "")
 	}
 	s.clearAdminRefreshCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -425,15 +442,64 @@ func loginResponseFrom(t adminTokens) adminLoginResponse {
 	}
 }
 
+// decodeAdminAuthBody decodes exactly one JSON value from the request body.
+//
+// Three boundaries are enforced together, because each on its own is
+// insufficient:
+//
+//   - DisallowUnknownFields refuses a body carrying "roles" or "status" where
+//     none is expected, so a privilege-injection attempt is a loud 400 instead
+//     of a silently ignored field.
+//   - The body is read at most adminAuthBodyLimit+1 bytes, so an oversized
+//     body is refused whole rather than truncated and decoded from its first
+//     fragment.
+//   - The second Decode accepts nothing but io.EOF. A valid object followed by
+//     a second JSON value is the canonical request-smuggling shape — an
+//     interceptor can hide a second instruction in one envelope, and a proxy
+//     in front of the gateway can end up disagreeing with the gateway about
+//     how many requests arrived. Only whitespace may trail the value.
+//
+// The body is never drained. A body within the cap was consumed in full by the
+// bounded read, so there is nothing left; a body beyond the cap is being
+// refused, and the server closes the connection when the handler returns with
+// the request unread — the correct outcome for an oversized or double-value
+// body. An unbounded drain used to let a client stream an endless request and
+// hold the handler open indefinitely, one goroutine and one connection per
+// request; reusing a connection for a request we reject is worth less than
+// never being held open.
+//
+// The helper returns the decoding error itself; every caller maps any failure
+// to ErrAdminBadRequest, so the distinct shapes collapse to one stable
+// 400 invalid_request.
 func decodeAdminAuthBody(r *http.Request, dst any) error {
-	defer func() { _, _ = io.Copy(io.Discard, r.Body); _ = r.Body.Close() }()
-	dec := json.NewDecoder(io.LimitReader(r.Body, adminAuthBodyLimit))
+	// One byte past the cap is enough to tell "exactly at the cap" from "past
+	// the cap", so an oversized body is refused outright instead of being
+	// truncated and quietly decoded from its first fragment.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, adminAuthBodyLimit+1))
+	_ = r.Body.Close()
+	if err != nil {
+		return err
+	}
+	if len(raw) > adminAuthBodyLimit {
+		return errAdminAuthBodyTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return errTrailingJSONValue
+	}
 	return nil
 }
+
+// errAdminAuthBodyTooLarge is returned when the body exceeds the cap. The cap
+// is small — a few short strings — so anything larger is an attack or a bug.
+var (
+	errAdminAuthBodyTooLarge = errors.New("request body too large")
+	errTrailingJSONValue     = errors.New("request body must contain exactly one JSON value")
+)
 
 func statusForAdminError(err error) int {
 	status, _ := adminErrorStatus(err)

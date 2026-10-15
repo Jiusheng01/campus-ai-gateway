@@ -14,10 +14,14 @@ User
 ├── member           公开注册创建，无网关管理权限
 ├── auditor          只读观测：请求日志、管理审计、安全事件
 ├── operator         总览 + 模型连通测试
-├── tenant_admin     租户与 API Key
+├── tenant_admin     Phase 1 起不授予任何权限（未作用域化的全局形态已撤回，持有者等同 member）
 ├── gateway_admin    供应商、模型与线路、ThinkWatch 同步
 └── super_admin      全部权限，含用户与权限管理
 ```
+
+`tenant_admin` 的全局形态可以触达全部租户与全部 API Key，没有资源范围，与已确认的
+「租户内 tenant_admin」设计矛盾。Phase 1 收回其全局授权：名字仍作为存量数据被识别、
+显示、由 super_admin 显式替换，但不出现在可授予列表，持有者不具备任何管理权限。
 
 角色语义与 `ADMIN_AUTH_MODE=trusted-header` 接收的校园 SSO 角色一致，这样将来
 IdP 接入时不需要重新映射。
@@ -41,8 +45,13 @@ IdP 接入时不需要重新映射。
 | 系统状态 | `/admin/setup` | `POST /auth/register` |
 |---|---|---|
 | 没有任何 super_admin | 允许（并受本机 / 可信代理限制） | 拒绝，`409 setup_required` |
-| 已存在 super_admin | 拒绝，`403 setup_not_allowed` | 允许，创建 `member` |
-| `PUBLIC_REGISTRATION_ENABLED=false` | 正常 | 拒绝，`403 registration_disabled` |
+| 已存在 super_admin，`PUBLIC_REGISTRATION_ENABLED=false`（默认） | 拒绝，`403 setup_not_allowed` | 拒绝，`403 registration_disabled` |
+| 已存在 super_admin，且显式设置 `PUBLIC_REGISTRATION_ENABLED=true` | 拒绝，`403 setup_not_allowed` | 允许，创建 `member` |
+
+关键点在于：**公开注册默认关闭**。生产入口是校园 SSO，`member` 暂时也没有数据面能力，
+默认开放匿名密码注册只会扩大滥用面；只有显式把 `PUBLIC_REGISTRATION_ENABLED` 设为 `true`
+的部署才接受本地账号注册。关闭时接口返回 `403 registration_disabled`，不创建用户、不创建
+Session，也不消耗注册限流额度。
 
 关键在于**首个管理员的判定条件是“是否存在 super_admin”，不是“账号表是否为空”**。
 在此之前公开注册如果抢先创建了一个 member，部署就会停在“没有任何人能管理它，而
@@ -57,6 +66,10 @@ setup 又因为已经有账号而被拒绝”的状态。
 ---
 
 ## 3. 注册接口
+
+本接口**默认不存在可用性**：`PUBLIC_REGISTRATION_ENABLED` 未设置或为 `false` 时，
+session 模式下返回 `403 registration_disabled`；token 与 trusted-header 模式下返回
+`404`（这些部署没有本地账号体系，端点本身不暴露）。显式设为 `true` 后契约如下：
 
 ```http
 POST /auth/register
@@ -83,9 +96,24 @@ Content-Type: application/json
 - 注册成功写入一条 `account_registered` 安全事件，内容包含 user_id、username 与
   来源 IP；**不记录**密码、密码哈希或任何 Token。
 
+### 账号已创建但自动登录失败
+
+账号创建与 Session 创建是两次写入，第二次可能单独失败（例如 Session 存储在两次写入
+之间变得不可达）。此时的契约是：
+
+- HTTP `503 account_created_login_failed`，响应明确提示账号已创建、可直接登录；
+  不返回密码、哈希、Token 或任何数据库错误细节。
+- **账号保留**，不补偿删除。用户下一步是用刚设置的密码直接登录，无需重新注册；
+  客户端不会自动重发注册请求。
+- 审计动作是 `account_created_login_failed`，与普通失败（`account_register_failed`）
+  和完整成功（`account_registered`）三方可区分；同时写入一条同名安全事件，
+  不把这种情况记录成完整注册成功。
+- 前端收到该错误码后切回登录视图、**保留用户名、丢弃密码**，并在登录页提示直接登录。
+
 ### 注册限流
 
 ```text
+PUBLIC_REGISTRATION_ENABLED=false   # 总开关，默认关闭
 PUBLIC_REGISTER_MAX_ATTEMPTS=5
 PUBLIC_REGISTER_WINDOW=1h
 ```

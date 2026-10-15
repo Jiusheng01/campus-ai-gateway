@@ -60,6 +60,21 @@ func (p *Postgres) CountSuperAdmins(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// managementRolePredicate matches accounts holding at least one role that
+// grants control-plane access.
+//
+// The role list mirrors managementRoles in internal/app/account_roles.go,
+// which is the source of truth the gateway's allow-list is built from. It is
+// duplicated here because storage cannot import app (the dependency runs the
+// other way), so the comment is the contract: a change to the role semantics
+// must change both. tenant_admin is deliberately absent — Phase 1 withdrew its
+// global grant, so an account holding only that role grants nothing and is
+// counted as a member, exactly as the gateway treats it.
+const managementRolePredicate = `EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(roles) AS r
+    WHERE r IN ('auditor','operator','gateway_admin','super_admin')
+  )`
+
 // AdminUserStats returns the counts shown on the user management page. They are
 // computed in one statement so they cannot disagree with each other.
 func (p *Postgres) AdminUserStats(ctx context.Context) (model.AdminUserStats, error) {
@@ -67,14 +82,8 @@ func (p *Postgres) AdminUserStats(ctx context.Context) (model.AdminUserStats, er
 	err := p.Pool.QueryRow(ctx, `
 SELECT
   COUNT(*),
-  COUNT(*) FILTER (WHERE NOT EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(roles) AS r
-    WHERE r IN ('auditor','operator','tenant_admin','gateway_admin','super_admin')
-  )),
-  COUNT(*) FILTER (WHERE EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(roles) AS r
-    WHERE r IN ('auditor','operator','tenant_admin','gateway_admin','super_admin')
-  )),
+  COUNT(*) FILTER (WHERE NOT `+managementRolePredicate+`),
+  COUNT(*) FILTER (WHERE `+managementRolePredicate+`),
   COUNT(*) FILTER (WHERE status <> 1)
 FROM gateway_admin_user
 `).Scan(&out.Total, &out.Members, &out.Admins, &out.Disabled)

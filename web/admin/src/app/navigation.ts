@@ -40,7 +40,11 @@ export type NavItem = {
 
 export type NavGroup = {id: string; label: string; items: NavItem[]}
 
-const MANAGEMENT = ['super_admin', 'gateway_admin', 'tenant_admin', 'auditor', 'operator']
+// MANAGEMENT mirrors the gateway's allow-list for the pages every
+// administrator may reach. tenant_admin is deliberately absent: it is inert
+// until the scoped tenant membership exists, so offering it here would only
+// lead to a 403.
+const MANAGEMENT = ['super_admin', 'gateway_admin', 'auditor', 'operator']
 
 // Entries are grouped by what the operator is trying to do. A group disappears
 // when none of its items survive filtering, so a member does not end up staring
@@ -63,8 +67,8 @@ export const navGroups: NavGroup[] = [
     id: 'access',
     label: '访问管理',
     items: [
-      {id: 'tenants', label: '租户', icon: Users, roles: ['super_admin', 'tenant_admin']},
-      {id: 'keys', label: 'API Key', icon: KeyRound, roles: ['super_admin', 'tenant_admin']},
+      {id: 'tenants', label: '租户', icon: Users, roles: ['super_admin']},
+      {id: 'keys', label: 'API Key', icon: KeyRound, roles: ['super_admin']},
     ],
   },
   {

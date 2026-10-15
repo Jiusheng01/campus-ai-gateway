@@ -9,6 +9,21 @@ CI：代码状态 `6dbade0` 对应 run 38603700992 PASS；其后仅有文档提�
     （Install / Check / Build Admin UI + go Test + go Build 全 success）
 合并：**未合并**，等确认
 
+> **后续修订（2026-10-15，Phase 1 安全加固）**：本报告记录的是其日期的验收状态，
+> 其中以下行为已被 Phase 1 有意的修订取代，本文不作改写以免混淆历史记录：
+>
+> - `PUBLIC_REGISTRATION_ENABLED` 默认由 `true` 改为 `false`，需显式开启
+>   （见 `docs/ACCOUNTS.md` 与 `docs/CODEX_HANDOFF_PHASE1.md` P1-03）。
+> - `trusted-header` 未映射 / 未知角色不再兜底为 `auditor`，改为 `member`
+>   （P1-01）。
+> - 全局 `tenant_admin` 不再授予租户 / API Key 管理权限，持有者等同 `member`
+>   （P1-02）。
+> - 注册成功但自动登录失败返回 `503 account_created_login_failed`，账号保留
+>   可直接登录（P1-07）。
+> - Schema 迁移改由 `cmd/migrate` 统一管理（P1-08）。
+>
+> Phase 1 的最终交付以 `docs/PHASE1_COMPLETION_REPORT_2026-10-15.md` 为准。
+
 ---
 
 ## 1. 结论

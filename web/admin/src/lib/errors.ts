@@ -22,6 +22,7 @@ const AUTH_ERRORS: Record<string, string> = {
   registration_unavailable: '注册服务暂时不可用，请稍后重试。',
   setup_required: '系统尚未完成初始化，请先创建管理员。',
   username_taken: '该用户名已被使用，请换一个。',
+  account_created_login_failed: '账号已创建成功，但自动登录失败。请直接使用刚设置的密码登录。',
   last_super_admin: '系统至少需要保留一个启用的超级管理员。',
   csrf_rejected: '请求被安全策略拒绝，请刷新页面后重试。',
   admin_api_disabled: '管理接口未启用',

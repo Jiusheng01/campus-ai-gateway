@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
@@ -175,6 +176,32 @@ func TestAuthConfigHidesRegistrationUntilSetupIsDone(t *testing.T) {
 	}
 }
 
+// P1-03. With the switch off, auth-config never advertises registration — not
+// before setup and not after it. The login page has no other source of truth
+// for the register tab, so this is what keeps a ghost entry off the screen
+// after the default flipped to false.
+func TestAuthConfigHidesRegistrationWhenDisabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublicRegistrationEnabled = false
+	s, _, _ := newTestServerWithRegistration(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/auth-config", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+
+	rec := httptest.NewRecorder()
+	s.handleAdminAuthConfig(rec, req)
+	if body := decodeBody(t, rec); body["registration_enabled"] != false {
+		t.Fatalf("registration must be hidden before setup, got %v", body["registration_enabled"])
+	}
+
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	rec = httptest.NewRecorder()
+	s.handleAdminAuthConfig(rec, req)
+	if body := decodeBody(t, rec); body["registration_enabled"] != false {
+		t.Fatalf("registration must stay hidden after setup when the switch is off, got %v", body["registration_enabled"])
+	}
+}
+
 // --- 2. registration creates a member and signs it in -----------------------
 
 func TestRegisterCreatesMemberAndSession(t *testing.T) {
@@ -334,10 +361,14 @@ func TestRegisterRejectsWeakAndMismatchedPasswords(t *testing.T) {
 
 // --- 5. availability and throttling ---------------------------------------
 
+// P1-03. A refused registration must cost nothing: no account, no session and
+// no unit of the abuse budget. Charging the limiter before the switch is
+// consulted would let anyone drain another visitor's quota by posting to a
+// closed endpoint.
 func TestRegisterRefusedWhenDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublicRegistrationEnabled = false
-	s, _, _ := newTestServerWithRegistration(t, cfg)
+	s, store, reg := newTestServerWithRegistration(t, cfg)
 	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
 
 	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
@@ -348,6 +379,15 @@ func TestRegisterRefusedWhenDisabled(t *testing.T) {
 	}
 	if code := errorCode(t, rec); code != "registration_disabled" {
 		t.Fatalf("expected registration_disabled, got %q", code)
+	}
+	if len(store.users) != 1 {
+		t.Fatalf("a refused registration must not create an account, got %d users", len(store.users))
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("a refused registration must not open a session, got %d", store.liveSessions())
+	}
+	if reg.consumed() != 0 {
+		t.Fatalf("a refused registration must not consume the abuse budget, got %d", reg.consumed())
 	}
 }
 
@@ -1003,18 +1043,164 @@ func TestMemberRefreshRotationStillWorks(t *testing.T) {
 	}
 }
 
-func TestTrustedHeaderStillFallsBackToAuditor(t *testing.T) {
+// Phase 1 removed the auditor fallback for the trusted-header path.
+//
+// This test used to pin the opposite behaviour — an empty or unmappable proxy
+// group list resolved to auditor, which reads request logs, the management
+// audit trail and security events. That handed an authenticated but unmapped
+// identity visibility nobody granted, so the handoff revokes it: a group list
+// that maps to no global role now resolves to member, the least privilege. The
+// test now pins the confirmed behaviour so the regression cannot come back.
+func TestTrustedHeaderRolelessFallbackIsMember(t *testing.T) {
 	roles := parseAdminRoles("")
-	if len(roles) != 0 {
-		t.Fatalf("an empty group list parses to no roles, got %v", roles)
+	if len(roles) != 1 || !roles[RoleMember] {
+		t.Fatalf("an empty group list must resolve to member, got %v", roles)
 	}
-	// The campus proxy has no "member" concept, so its fallback stays auditor;
-	// only locally stored accounts fall back to member.
-	if r := parseAdminRoles("member"); !r[RoleMember] {
+	if roles[RoleAuditor] {
+		t.Fatalf("an unmapped identity must never become an auditor, got %v", roles)
+	}
+	// The campus proxy has no "member" concept, but it may send the word; the
+	// parser understands it either way.
+	if r := parseAdminRoles("member"); len(r) != 1 || !r[RoleMember] {
 		t.Fatalf("the parser must understand member, got %v", r)
 	}
-	if r := parseAdminRoles("gateway_admin, member"); !r[RoleGatewayAdmin] || !r[RoleMember] {
-		t.Fatalf("the parser reports what it was given; normalisation happens later, got %v", r)
+	// The whole header is normalised as one list: a management role makes the
+	// account an administrator, so member is dropped rather than kept beside it.
+	if r := parseAdminRoles("gateway_admin, member"); !r[RoleGatewayAdmin] || r[RoleMember] {
+		t.Fatalf("a management role beside member must drop member, got %v", r)
+	}
+}
+
+// P1-07. The account is created first and the session second, so the second
+// write can fail on its own — the store was reachable a millisecond ago and is
+// not now. The old implementation returned a generic internal error, which
+// told the user their registration had failed; their retry was answered
+// "username taken" with nothing to explain it, and the account they had
+// successfully created was unreachable for them.
+//
+// The contract now is: 503 account_created_login_failed, the account stays,
+// and the user proceeds straight to login. This test fails on the old
+// implementation, which answered 500 admin_internal_error.
+func TestRegisterAccountCreatedButSessionFailed(t *testing.T) {
+	s, store, _ := newTestServerWithRegistration(t, testConfig())
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	store.createSessionErr = errors.New("session store unavailable")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "account_created_login_failed" {
+		t.Fatalf("expected account_created_login_failed, got %q", code)
+	}
+
+	// The account must exist exactly once — a retry is never issued, and a
+	// compensating delete is not part of the contract.
+	if len(store.users) != 2 {
+		t.Fatalf("the account must be kept, got %d users", len(store.users))
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("no session may be opened, got %d", store.liveSessions())
+	}
+
+	// The response is a recovery instruction, not a credential echo.
+	raw := rec.Body.String()
+	if strings.Contains(raw, "Campus#2026Gate") || strings.Contains(raw, "access_token") {
+		t.Fatalf("the response leaked credential material: %s", raw)
+	}
+
+	// The user can immediately log in with the password they chose.
+	login := postJSON(t, http.HandlerFunc(s.handleAdminLogin), http.MethodPost, "/admin/login",
+		`{"username":"zhangsan","password":"Campus#2026Gate"}`, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("the new account must be usable straight away, got %d: %s", login.Code, login.Body.String())
+	}
+}
+
+// The audit trail must be able to tell the three outcomes apart: a plain
+// failure, the partial success, and the complete success (audited by the
+// handler as account_registered). The mapping lives in one pure function so
+// this holds without a database.
+func TestRegistrationPartialFailureIsAuditedDistinctly(t *testing.T) {
+	if got := registrationAuditAction(ErrAdminAccountCreatedLoginFailed); got != "account_created_login_failed" {
+		t.Fatalf("partial success audit action = %q, want account_created_login_failed", got)
+	}
+	for _, err := range []error{ErrAdminInternal, errors.New("anything unexpected")} {
+		if got := registrationAuditAction(err); got != "account_register_failed" {
+			t.Fatalf("unexpected error %v audited as %q, want account_register_failed", err, got)
+		}
+	}
+	if got := registrationAuditAction(ErrAdminUsernameTaken); got == "account_created_login_failed" {
+		t.Fatal("a username conflict must not be reported as a partial success")
+	}
+	// The status mapping is what the client sees; it must stay a 503 with the
+	// stable code the frontend switches on.
+	if status, code := adminErrorStatus(ErrAdminAccountCreatedLoginFailed); status != http.StatusServiceUnavailable || code != "account_created_login_failed" {
+		t.Fatalf("adminErrorStatus = %d/%q, want 503/account_created_login_failed", status, code)
+	}
+}
+
+// P2-4 (review). The account is created first and the session second, so a
+// failure between them is possible — and the minting that follows the session
+// insert is the one step whose failure would leave a committed session nobody
+// holds a token for. The old code left it live: the account's device list
+// showed a device that never existed, until the refresh TTL expired.
+//
+// This injects the exact interleaving — session committed, mint fails — and
+// asserts the row is retired with its own reason while the account survives.
+func TestRegisterDoesNotLeaveAnOrphanedSession(t *testing.T) {
+	s, store, _ := newTestServerWithRegistration(t, testConfig())
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	s.adminAuth.mint = func(model.AdminUser, model.AdminSession) (string, time.Time, error) {
+		return "", time.Time{}, errors.New("token minting unavailable")
+	}
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "account_created_login_failed" {
+		t.Fatalf("expected account_created_login_failed, got %q", code)
+	}
+	if store.liveSessions() != 0 {
+		t.Fatal("a failed automatic sign-in must not leave a live session nobody holds a token for")
+	}
+	for _, sess := range store.sessions {
+		if sess.RevokeReason != revokeReasonSignInFailed {
+			t.Fatalf("the stranded session must be retired as %q, got %q", revokeReasonSignInFailed, sess.RevokeReason)
+		}
+	}
+	// The account survives: the user's next step is to log in with the
+	// password they chose, which is exactly what the 503 tells them.
+	if _, err := store.FindAdminUserByUsername(context.Background(), "zhangsan"); err != nil {
+		t.Fatalf("the account must survive: %v", err)
+	}
+}
+
+// The refresh path must NOT retire the session when minting fails there: the
+// rotation has committed, the client still holds the superseded token, and a
+// retry inside the grace window succeeds. Revoking would turn a recoverable
+// race into a forced re-login.
+func TestRefreshMintFailureKeepsTheSession(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	tokens, err := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	svc.mint = func(model.AdminUser, model.AdminSession) (string, time.Time, error) {
+		return "", time.Time{}, errors.New("token minting unavailable")
+	}
+	if _, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminInternal) {
+		t.Fatalf("expected ErrAdminInternal, got %v", err)
+	}
+	if store.sessions[tokens.Session.SID].RevokedAt != nil {
+		t.Fatal("a mint failure after rotation must not revoke the session: the client retries inside the grace window")
 	}
 }
 

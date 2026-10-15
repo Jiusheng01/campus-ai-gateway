@@ -172,6 +172,47 @@ func enabledSuperAdmins(t *testing.T, pg *Postgres) int64 {
 
 func ptr[T any](v T) *T { return &v }
 
+// --- account statistics -----------------------------------------------------
+
+// P2-1 (review). The counts on the user management page must agree with the
+// role semantics the gateway enforces. Phase 1 withdrew the global
+// tenant_admin grant, so an account holding only that role is a member in
+// every API decision — and must be counted as one, not advertised as an
+// administrator on the console.
+//
+// This fails on the old SQL, whose predicate still listed tenant_admin among
+// the management roles: the legacy account was counted as an administrator.
+func TestAdminUserStatsCountsRolesTheWayTheGatewayDoes(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+
+	insertAccount(t, pg, "plain-member", []string{"member"}, model.AdminStatusEnabled)
+	insertAccount(t, pg, "legacy-tenant-admin", []string{"tenant_admin"}, model.AdminStatusEnabled)
+	insertAccount(t, pg, "reader", []string{"auditor"}, model.AdminStatusEnabled)
+	insertAccount(t, pg, "boss", []string{"super_admin"}, model.AdminStatusEnabled)
+	insertAccount(t, pg, "off", []string{"operator"}, model.AdminStatusDisabled)
+
+	stats, err := pg.AdminUserStats(context.Background())
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.Total != 5 {
+		t.Fatalf("total = %d, want 5", stats.Total)
+	}
+	// plain member plus the legacy tenant_admin, which now grants nothing.
+	if stats.Members != 2 {
+		t.Fatalf("members = %d, want 2: a legacy tenant_admin must count as a member", stats.Members)
+	}
+	// auditor, super_admin and the (disabled) operator: the count is about the
+	// roles held, not about the accounts being enabled.
+	if stats.Admins != 3 {
+		t.Fatalf("admins = %d, want 3", stats.Admins)
+	}
+	if stats.Disabled != 1 {
+		t.Fatalf("disabled = %d, want 1", stats.Disabled)
+	}
+}
+
 // --- concurrent super-administrator invariant ------------------------------
 
 func TestConcurrentDemotionOfTwoSuperAdminsKeepsOne(t *testing.T) {

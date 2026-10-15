@@ -88,7 +88,15 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 
 	tokens, err := a.openSession(ctx, user, ip, userAgent, loginMethodRegister)
 	if err != nil {
-		return model.AdminUser{}, adminTokens{}, err
+		// The account exists; only the automatic sign-in failed. A generic
+		// internal error here would tell the user their registration failed,
+		// and their retry would answer "username taken" with nothing to
+		// explain it. The dedicated sentinel keeps the partial success
+		// recoverable: the user logs in with the password they just chose.
+		// Deleting the account instead would be the wrong trade — the
+		// credentials are verified and the failure is transient.
+		log.Printf("registration: account %s created but the session could not be opened: %v", user.Username, err)
+		return model.AdminUser{}, adminTokens{}, ErrAdminAccountCreatedLoginFailed
 	}
 	a.store.TouchAdminUserLogin(ctx, user.ID)
 	return user, tokens, nil
@@ -125,6 +133,27 @@ func (a *adminAuthService) consumeRegistrationBudget(ctx context.Context, ip str
 }
 
 // --- POST /auth/register ---------------------------------------------------
+
+// registrationAuditAction names the audit row a failed registration writes.
+//
+// The partial success — account created, automatic sign-in not — has its own
+// action, so the trail can tell three outcomes apart: nothing happened, the
+// account exists but nobody is signed in, and the full success that is audited
+// by the caller as account_registered.
+func registrationAuditAction(err error) string {
+	switch {
+	case errors.Is(err, ErrAdminRegistrationRateLimited):
+		return "registration_rate_limited"
+	case errors.Is(err, ErrAdminRegistrationBeforeSetup):
+		return "account_register_before_setup"
+	case errors.Is(err, ErrAdminUsernameTaken):
+		return "account_register_username_taken"
+	case errors.Is(err, ErrAdminAccountCreatedLoginFailed):
+		return "account_created_login_failed"
+	default:
+		return "account_register_failed"
+	}
+}
 
 type accountRegisterRequest struct {
 	Username        string `json:"username"`
@@ -174,16 +203,16 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIPFrom(r)
 	user, tokens, err := s.adminAuth.register(r.Context(), in.Username, in.DisplayName, in.Password, ip, r.UserAgent())
 	if err != nil {
-		action := "account_register_failed"
-		switch {
-		case errors.Is(err, ErrAdminRegistrationRateLimited):
-			action = "registration_rate_limited"
-		case errors.Is(err, ErrAdminRegistrationBeforeSetup):
-			action = "account_register_before_setup"
-		case errors.Is(err, ErrAdminUsernameTaken):
-			action = "account_register_username_taken"
-		}
+		action := registrationAuditAction(err)
 		s.auditAdminAuth(r, action, statusForAdminError(err), strings.TrimSpace(in.Username))
+		if errors.Is(err, ErrAdminAccountCreatedLoginFailed) {
+			s.recordSecurityEvent(r, model.SecurityEvent{
+				RequestID: reqID,
+				EventType: "account_created_login_failed",
+				ClientIP:  ip,
+				Detail:    "username=" + strings.TrimSpace(in.Username) + " account_created=true session_created=false",
+			})
+		}
 		writeAdminError(w, reqID, err)
 		return
 	}

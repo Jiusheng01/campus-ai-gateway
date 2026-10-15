@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log"
 	"strings"
@@ -45,6 +46,11 @@ const (
 	revokeReasonRoleChanged     = "role_changed"
 	revokeReasonStatusChanged   = "account_status_changed"
 	revokeReasonSecurityChanged = "account_security_changed"
+	// revokeReasonSignInFailed retires a session whose sign-in could not be
+	// completed — the row was committed, but the token never reached the
+	// client. It is distinct from every other reason so a device list can say
+	// "this was never a usable session" rather than "this was logged out".
+	revokeReasonSignInFailed = "signin_failed"
 
 	// Session login methods recorded in gateway_admin_session.login_method.
 	loginMethodPassword = "password"
@@ -113,12 +119,18 @@ type adminAuthService struct {
 	// benign concurrent refresh. See refresh() for the full rationale.
 	grace time.Duration
 
+	// mint signs access tokens. It is a field rather than a direct call so a
+	// test can make minting fail after the session row is committed — the one
+	// interleaving that would otherwise leave a session nobody holds a token
+	// for.
+	mint func(user model.AdminUser, session model.AdminSession) (string, time.Time, error)
+
 	// now is injectable so tests can control expiry without sleeping.
 	now func() time.Time
 }
 
 func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []byte, cfg Config) *adminAuthService {
-	return &adminAuthService{
+	a := &adminAuthService{
 		store:       store,
 		limiter:     limiter,
 		secret:      secret,
@@ -129,6 +141,8 @@ func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []b
 		grace:       cfg.AdminRefreshReplayGrace,
 		now:         time.Now,
 	}
+	a.mint = a.mintAccessToken
+	return a
 }
 
 // withRegistrationLimiter attaches the public-registration throttle. It is a
@@ -299,8 +313,19 @@ func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser
 		return adminTokens{}, ErrAdminInternal
 	}
 
-	access, accessExp, err := a.mintAccessToken(user, created)
+	access, accessExp, err := a.mint(user, created)
 	if err != nil {
+		// The session row is already committed, but the token that would have
+		// gone with it never existed. Leaving the row live would strand a
+		// session nobody can use: the account's device list would show a
+		// device that never existed, and the row would sit there until its
+		// refresh TTL expires. Retiring it here is what keeps the session list
+		// explainable — the account survives, and the user's next step is to
+		// log in, which the caller reports as a partial success.
+		//
+		// The revocation is best-effort: if the store is the thing that is
+		// broken, the error the caller sees is still the internal one.
+		_ = a.store.RevokeAdminSession(ctx, created.SID, revokeReasonSignInFailed)
 		return adminTokens{}, ErrAdminInternal
 	}
 	return adminTokens{
@@ -397,7 +422,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 	presented := security.HashAdminRefreshToken(strings.TrimSpace(refreshToken))
 
 	switch {
-	case presented == session.RefreshHash:
+	case adminRefreshDigestEqual(presented, session.RefreshHash):
 		rotated, err := a.store.RotateAdminSessionRefresh(ctx, session.SID, presented, nextHash, now.Add(a.grace))
 		if err != nil {
 			return adminTokens{}, ErrAdminInternal
@@ -431,10 +456,29 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 	}
 }
 
+// adminRefreshDigestEqual compares two refresh-token digests in constant time.
+//
+// The digest is not a secret in the cryptographic sense — it is a SHA-256 over
+// 256 bits of CSPRNG output — but it is exactly the value an attacker has to
+// match to rotate or revoke a session, so the comparison must not leak how
+// many leading bytes were right. Go's == short-circuits at the first differing
+// byte; this does not. One definition serves both the current and the
+// superseded generation, so there is exactly one comparison to audit.
+//
+// The constant-time property is a property of the implementation, not of a
+// test: a unit test can assert the verdicts below, but it cannot observe
+// timing. The guarantee comes from crypto/subtle.ConstantTimeCompare itself
+// and from there being no other Go-side digest comparison in the service — the
+// other comparison (rotation's compare-and-set) happens inside PostgreSQL's
+// WHERE clause, which is not a Go timing surface.
+func adminRefreshDigestEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // isBenignRace reports whether a presented hash is the session's just-superseded
 // refresh hash and still inside the grace window.
 func (a *adminAuthService) isBenignRace(session model.AdminSession, presented string, now time.Time) bool {
-	if session.PreviousRefreshHash == "" || presented != session.PreviousRefreshHash {
+	if session.PreviousRefreshHash == "" || !adminRefreshDigestEqual(presented, session.PreviousRefreshHash) {
 		return false
 	}
 	if session.PreviousRefreshValidUntil == nil {
@@ -444,8 +488,14 @@ func (a *adminAuthService) isBenignRace(session model.AdminSession, presented st
 }
 
 // finishRefresh mints the access token that accompanies a successful rotation.
+//
+// A failure here is not the same as a failure in openSession: the rotation has
+// already committed, and the client still holds the superseded token, so a
+// retry lands inside the grace window and succeeds. Revoking on a mint failure
+// would turn a recoverable race into a forced re-login, so the session is left
+// alone and the caller sees the internal error.
 func (a *adminAuthService) finishRefresh(session model.AdminSession, user model.AdminUser, nextPlain string, now time.Time) (adminTokens, error) {
-	access, accessExp, err := a.mintAccessToken(user, session)
+	access, accessExp, err := a.mint(user, session)
 	if err != nil {
 		return adminTokens{}, ErrAdminInternal
 	}
@@ -551,18 +601,68 @@ func tokenErrorToSentinel(err error) error {
 
 // --- logout and session management ----------------------------------------
 
-// logout revokes the session behind a refresh token. It is idempotent: an
-// unknown or already-revoked token still returns success so a client can always
-// clear its state.
-func (a *adminAuthService) logout(ctx context.Context, refreshToken string) error {
-	sid, _, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
+// logout revokes the session behind a refresh token and reports whether it
+// actually revoked one. It is idempotent: an unknown, malformed, already-revoked
+// or expired token still returns success so a client can always clear its
+// state.
+//
+// The session id is not authority. The token's own digest must match the
+// session's current refresh hash — or its grace-window predecessor, because two
+// browser tabs can race a rotation and the loser must still be able to sign its
+// device out. Without that check, anyone who learned a sid from a claim, a
+// device list or a log line could build "<sid>.anything" and log that operator
+// out, which is a denial of service against another account.
+//
+// A token that fails the check gets the same client-visible success and the
+// same cookie clearing as a valid one; it simply revokes nothing, so an
+// attacker probing with forged sids cannot tell a hit from a miss. The bool is
+// what keeps the audit trail honest: the browser always exits, but a request
+// whose token did not own the session must never be recorded as a logout that
+// happened.
+func (a *adminAuthService) logout(ctx context.Context, refreshToken string) (bool, error) {
+	raw := strings.TrimSpace(refreshToken)
+	sid, _, err := security.SplitAdminRefreshToken(raw)
 	if err != nil {
-		return nil
+		// The token identifies no session at all, so there is nothing to
+		// revoke and nothing to refuse.
+		return false, nil
 	}
-	if err := a.store.RevokeAdminSession(ctx, sid, revokeReasonLogout); err != nil {
-		return ErrAdminInternal
+
+	session, err := a.store.FindAdminSessionByID(ctx, sid)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminSessionNotFound) {
+			// Never issued, or long gone: still a clean exit for the client.
+			return false, nil
+		}
+		// The store is unreachable. The client still gets to exit — the
+		// handler clears the cookie either way — but an unverified sid is
+		// never turned into a revocation on the way out.
+		log.Printf("admin logout: session lookup failed: %v", err)
+		return false, ErrAdminInternal
 	}
-	return nil
+
+	if !a.logoutTokenOwnsSession(session, raw) {
+		log.Printf("admin logout: the presented refresh token does not match the session it claims; nothing revoked")
+		return false, nil
+	}
+
+	if err := a.store.RevokeAdminSession(ctx, session.SID, revokeReasonLogout); err != nil {
+		return false, ErrAdminInternal
+	}
+	return true, nil
+}
+
+// logoutTokenOwnsSession reports whether the presented token is the session's
+// own refresh token: either the current generation, or the superseded one still
+// inside the concurrent-refresh grace window. The comparison is constant-time
+// and runs on digests, so neither the stored material nor the comparison
+// itself leaks the token.
+func (a *adminAuthService) logoutTokenOwnsSession(session model.AdminSession, raw string) bool {
+	presented := security.HashAdminRefreshToken(raw)
+	if adminRefreshDigestEqual(presented, session.RefreshHash) {
+		return true
+	}
+	return a.isBenignRace(session, presented, a.now())
 }
 
 // listSessions returns the caller's live sessions.

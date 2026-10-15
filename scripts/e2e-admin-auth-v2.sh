@@ -296,7 +296,10 @@ rbac super_admin    /admin/status        GET  200
 rbac super_admin    /admin/thinkwatch/sync POST 200
 rbac gateway_admin  /admin/thinkwatch/sync POST 200
 rbac gateway_admin  /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
-rbac tenant_admin   /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 400
+# Phase 1 (P1-02): the global tenant_admin grant was withdrawn. The role now
+# fails closed at the RBAC layer — 403 before the handler — instead of reaching
+# the handler and being refused for its body (the old 400).
+rbac tenant_admin   /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
 rbac tenant_admin   /admin/thinkwatch/sync POST 403
 rbac auditor        /admin/security-events GET 200
 rbac auditor        /admin/thinkwatch/sync POST 403

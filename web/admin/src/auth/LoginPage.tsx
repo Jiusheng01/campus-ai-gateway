@@ -28,12 +28,16 @@ export function LoginPage({
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'login' | 'register'>('login')
+  // Set when a registration created the account but could not sign it in: the
+  // login form is prefilled with the username and this explains why it is.
+  const [banner, setBanner] = useState('')
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (busy) return
     setBusy(true)
     setError('')
+    setBanner('')
     try {
       await login(username.trim(), password)
       onDone()
@@ -42,6 +46,17 @@ export function LoginPage({
     } finally {
       setBusy(false)
     }
+  }
+
+  // A registration that created the account but failed to sign it in hands the
+  // username over here: the form is prefilled, the register tab is left, and
+  // the passwords were already dropped by the register page.
+  const accountCreated = (username: string) => {
+    setUsername(username)
+    setPassword('')
+    setError('')
+    setBanner('账号已创建成功，请使用刚设置的密码登录。')
+    setTab('login')
   }
 
   return (
@@ -57,10 +72,10 @@ export function LoginPage({
           </div>
         </div>
 
-        {notice && (
+        {(notice || banner) && (
           <div className="authNotice">
             <ShieldCheck aria-hidden />
-            {notice}
+            {notice || banner}
           </div>
         )}
 
@@ -91,7 +106,15 @@ export function LoginPage({
         )}
 
         {tab === 'register' ? (
-          <RegisterPage config={config} onDone={onDone} onSwitchToLogin={() => setTab('login')} />
+          <RegisterPage
+            config={config}
+            onDone={onDone}
+            onSwitchToLogin={() => {
+              setTab('login')
+              setBanner('')
+            }}
+            onAccountCreated={accountCreated}
+          />
         ) : (
           <form className="authForm" onSubmit={submit}>
             <label className="field">

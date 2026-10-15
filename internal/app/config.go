@@ -21,6 +21,27 @@ const AdminSessionSecretMinBytes = 32
 // every other HMAC the gateway computes with that secret.
 const adminSessionDerivationLabel = "campus-admin-session-v1"
 
+// adminRefreshReplayGraceDefault is how long a just-superseded refresh token
+// remains acceptable as a benign concurrent refresh when
+// ADMIN_REFRESH_REPLAY_GRACE is not set.
+//
+// Five seconds, not thirty. The window buys exactly one thing: two refreshes
+// that genuinely race — two tabs, two requests in flight, a retried refresh —
+// converge on the same successor instead of one of them being mistaken for a
+// stolen token. Every additional second only extends how long a *stolen
+// superseded* token keeps being accepted, which is not a trade worth making.
+//
+// What this value does not do, stated plainly so no one has to guess: it does
+// not protect a stolen *current* refresh token, which is usable regardless of
+// this setting, and it does not replace HttpOnly, Secure, SameSite,
+// rotation, replay detection or session-family revocation — those remain the
+// controls. Shortening the window reduces the previous-generation silent reuse
+// window; it does not eliminate refresh-token theft risk.
+//
+// A deployment behind an unusually slow proxy may raise the value
+// deliberately; zero would turn ordinary races into account-wide lockouts.
+const adminRefreshReplayGraceDefault = 5 * time.Second
+
 type Config struct {
 	HTTPAddr             string
 	DatabaseURL          string
@@ -64,12 +85,20 @@ type Config struct {
 	// AdminRefreshReplayGrace is how long a just-rotated refresh token is still
 	// accepted as a benign concurrent refresh (two browser tabs racing). Reuse
 	// beyond this window is treated as replay and revokes the session family.
+	// The default lives in adminRefreshReplayGraceDefault; the environment
+	// variable ADMIN_REFRESH_REPLAY_GRACE still overrides it.
 	AdminRefreshReplayGrace time.Duration
 
 	// PublicRegistrationEnabled opens POST /auth/register to anyone who can
-	// reach the login screen. It defaults to true because the product goal is
-	// an open campus account, but a production deployment can switch it off
-	// without touching the rest of the account system.
+	// reach the login screen.
+	//
+	// It defaults to false. The confirmed architecture puts campus SSO in
+	// front of the gateway, and a "member" has no data-plane capability yet,
+	// so an open anonymous password signup adds abuse surface without adding
+	// anything an account can do. An operator who wants it — for a controlled
+	// trial, or because the deployment genuinely wants local accounts — turns
+	// it on explicitly; the rest of the account system is unaffected either
+	// way.
 	PublicRegistrationEnabled bool
 	// PublicRegisterMaxAttempts and PublicRegisterWindow bound how many
 	// registration attempts one source address may make. Every attempt counts,
@@ -109,9 +138,9 @@ func LoadConfig() (Config, error) {
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
 
 		AdminSessionSecret:      os.Getenv("ADMIN_SESSION_SECRET"),
-		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", 30*time.Second),
+		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", adminRefreshReplayGraceDefault),
 
-		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", true),
+		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", false),
 		PublicRegisterMaxAttempts: getenvInt64("PUBLIC_REGISTER_MAX_ATTEMPTS", 5),
 		PublicRegisterWindow:      getenvDuration("PUBLIC_REGISTER_WINDOW", time.Hour),
 	}

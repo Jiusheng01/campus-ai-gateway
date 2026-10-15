@@ -28,17 +28,44 @@ const (
 // managementRoles are the roles that grant control-plane access. Holding any of
 // them makes the account an administrator, which is what removes the need for
 // "member".
+//
+// tenant_admin is deliberately absent. Its global form reached every tenant and
+// every API key with no resource scope at all, which contradicts the confirmed
+// design where tenant_admin is a role *inside* a tenant. Phase 1 withdraws the
+// global grant instead of inventing a scope the data model cannot express yet.
+// The name stays in the vocabulary so an existing stored value can still be
+// read, displayed and explicitly replaced — it simply carries no authority, and
+// IsManagementRole says so.
 var managementRoles = []string{
 	RoleAuditor,
 	RoleOperator,
-	RoleTenantAdmin,
 	RoleGatewayAdmin,
 	RoleSuperAdmin,
 }
 
+// managementRoleSet is managementRoles as a lookup, so "does this role grant
+// control-plane access" has exactly one definition.
+var managementRoleSet = func() map[string]bool {
+	m := make(map[string]bool, len(managementRoles))
+	for _, r := range managementRoles {
+		m[r] = true
+	}
+	return m
+}()
+
+// unassignableRoles are recognised but may not be handed out through the user
+// management API. A super administrator must not be able to grant a role that
+// reads like authority while granting none: the account would look privileged
+// in the console and behave as a member everywhere else.
+var unassignableRoles = map[string]bool{
+	RoleTenantAdmin: true,
+}
+
 // rolePrecedence fixes the order roles are listed in, most privileged first.
 // Sorting by it keeps API responses and the UI stable instead of leaking Go's
-// map iteration order.
+// map iteration order. It covers every recognised name, including the ones that
+// no longer grant anything, because it is about display order rather than
+// authority.
 var rolePrecedence = map[string]int{
 	RoleSuperAdmin:   0,
 	RoleGatewayAdmin: 1,
@@ -50,11 +77,7 @@ var rolePrecedence = map[string]int{
 
 // IsManagementRole reports whether a role grants control-plane access.
 func IsManagementRole(role string) bool {
-	r := strings.TrimSpace(role)
-	if r == "" || r == RoleMember {
-		return false
-	}
-	return isKnownRole(r)
+	return managementRoleSet[strings.TrimSpace(role)]
 }
 
 // isKnownRole reports whether the role is part of the vocabulary. Anything else
@@ -107,8 +130,8 @@ func NormalizeAccountRoles(roles []string) []string {
 	return out
 }
 
-// ValidateAccountRoles rejects a role list that contains anything outside the
-// vocabulary.
+// ValidateAccountRoles rejects a role list that cannot be granted through the
+// user management API.
 //
 // NormalizeAccountRoles drops what it does not recognise, which is the right
 // behaviour when reading a stored list or a value from a trusted proxy — there
@@ -117,10 +140,17 @@ func NormalizeAccountRoles(roles []string) []string {
 // ["gateway_admin","god_mode"] into ["gateway_admin"] tells the operator their
 // input was accepted when part of it was discarded, and it hides a typo or a
 // client bug behind an apparent success. The API refuses it instead.
+//
+// The same reasoning applies to a recognised role that Phase 1 has withdrawn.
+// Returning 400 rather than quietly writing it keeps the operator informed and
+// keeps the console from showing a grant that does nothing.
 func ValidateAccountRoles(roles []string) error {
 	for _, raw := range roles {
 		role := strings.TrimSpace(raw)
 		if role == "" || !isKnownRole(role) {
+			return ErrAdminBadRequest
+		}
+		if unassignableRoles[role] {
 			return ErrAdminBadRequest
 		}
 	}

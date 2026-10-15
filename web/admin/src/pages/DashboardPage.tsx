@@ -37,8 +37,8 @@ export function DashboardPage({roles}: {roles: string[]}) {
 
   // Quick actions are gated by the same allow-list the gateway uses, so the
   // dashboard never offers a button whose only possible result is a 403. A
-  // tenant_admin may read the status the page reports; they may not change the
-  // routing that produced it.
+  // gateway_admin may read the status the page reports and the operator may
+  // read it too; neither may change the routing that produced it.
   const canSync = roles.includes('super_admin') || roles.includes('gateway_admin')
   const canTestModel = canSync || roles.includes('operator')
 

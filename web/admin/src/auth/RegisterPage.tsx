@@ -1,6 +1,6 @@
 import {useState, type FormEvent} from 'react'
 import {AlertTriangle, Loader2, UserPlus} from 'lucide-react'
-import {register, type AuthConfig} from '../api'
+import {ApiError, register, type AuthConfig} from '../api'
 import {PasswordInput} from '../components/ui/PasswordInput'
 import {friendlyError} from '../lib/errors'
 
@@ -20,10 +20,12 @@ export function RegisterPage({
   config,
   onDone,
   onSwitchToLogin,
+  onAccountCreated,
 }: {
   config: AuthConfig | null
   onDone: () => void
   onSwitchToLogin: () => void
+  onAccountCreated: (username: string) => void
 }) {
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -47,6 +49,19 @@ export function RegisterPage({
       await register({username: username.trim(), display_name: displayName.trim(), password, confirm_password: confirmPassword})
       onDone()
     } catch (err) {
+      // The account exists even though the automatic sign-in did not happen.
+      // Retrying the registration would only be answered "username taken",
+      // which told the old user nothing about the account they had just
+      // successfully created — so the page drops the passwords and hands the
+      // username to the login form. The next step is to sign in, not to
+      // register again, and the client never re-sends the request by itself.
+      if (err instanceof ApiError && err.code === 'account_created_login_failed') {
+        const created = username.trim()
+        setPassword('')
+        setConfirmPassword('')
+        onAccountCreated(created)
+        return
+      }
       setError(friendlyError(err, '创建账号失败，请稍后重试。'))
     } finally {
       setBusy(false)

@@ -102,6 +102,19 @@ var (
 	// comparison is case-insensitive.
 	ErrAdminUsernameTaken = errors.New("username is already taken")
 
+	// ErrAdminAccountCreatedLoginFailed means the account was created but the
+	// automatic sign-in that follows a registration could not be completed —
+	// typically the session store was unreachable for the second write.
+	//
+	// It is deliberately not ErrAdminInternal. A generic failure here would
+	// tell the user their registration failed, they would retry, and the retry
+	// would answer "username taken" with nothing to explain why — while the
+	// account they just created sat there usable and unreachable for them.
+	// This sentinel maps to 503 with a message that says the account exists
+	// and can be logged into directly, and it keeps the event distinguishable
+	// in the audit trail from a complete failure and from a full success.
+	ErrAdminAccountCreatedLoginFailed = errors.New("the account was created but signing in failed; please log in with the password you chose")
+
 	// ErrAdminLastSuperAdmin means a change would leave the system without any
 	// enabled super administrator.
 	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
@@ -114,8 +127,11 @@ var (
 // adminErrorStatus maps a sentinel to an HTTP status and a stable machine code.
 //
 // The mapping is intentionally conservative: anything we cannot classify is a
-// 500, never a 503. Reporting "service unavailable" for an authentication
-// problem would tell clients to retry something that will never succeed.
+// 500, never a 503. A 503 is only used where the caller has a real alternative
+// — another auth mode is configured, the counter that gates registration is
+// reachable again after an outage, or the account already exists and can be
+// logged into directly — never to suggest retrying something that cannot
+// succeed.
 func adminErrorStatus(err error) (int, string) {
 	switch {
 	case err == nil:
@@ -158,6 +174,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "registration_unavailable"
 	case errors.Is(err, ErrAdminUsernameTaken):
 		return http.StatusConflict, "username_taken"
+	case errors.Is(err, ErrAdminAccountCreatedLoginFailed):
+		return http.StatusServiceUnavailable, "account_created_login_failed"
 	case errors.Is(err, ErrAdminLastSuperAdmin):
 		return http.StatusConflict, "last_super_admin"
 	case errors.Is(err, ErrAdminPasswordWeak):

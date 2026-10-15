@@ -16,14 +16,22 @@ export const roleLabel = (role: string) => ROLE_LABELS[role] || role
  * The roles a super administrator may grant, in display order. "member" is not
  * in the list because it is what an account is when it holds nothing else: a
  * checkbox row for it would be two ways of saying the same thing.
+ *
+ * "tenant_admin" is deliberately absent too. Its global form reached every
+ * tenant and every API key with no resource scope, so Phase 1 withdrew it: the
+ * name survives as a stored, displayed, inert value that a super administrator
+ * can replace, but the console must not offer to hand it out.
  */
-export const ASSIGNABLE_ROLES = ['auditor', 'operator', 'tenant_admin', 'gateway_admin', 'super_admin']
+export const ASSIGNABLE_ROLES = ['auditor', 'operator', 'gateway_admin', 'super_admin']
 
 /**
- * isManagement reports whether a role grants control-plane access. A member is
- * the only role that does not.
+ * isManagement reports whether a role grants control-plane access. "member" is
+ * the account that holds nothing else, and the withdrawn global form of
+ * "tenant_admin" is the role that grants nothing — both are therefore not
+ * management, matching the gateway's own definition.
  */
-export const isManagementRole = (role: string) => role !== 'member' && role in ROLE_LABELS
+export const isManagementRole = (role: string) =>
+  role !== 'member' && role !== 'tenant_admin' && role in ROLE_LABELS
 
 /** All six roles, most privileged first, for the identity tooltip. */
 export const ALL_ROLES = ['super_admin', 'gateway_admin', 'tenant_admin', 'operator', 'auditor', 'member']
