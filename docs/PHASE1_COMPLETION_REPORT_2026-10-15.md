@@ -373,3 +373,98 @@ git diff：31 个已跟踪文件（+1919 / -144）= Phase 1 交付的 29 个 + �
 `gofmt -w`，把 10 个未参与本轮修改的文件的对齐也重排了（admin.go、server.go 等）。
 已用 `git checkout HEAD --` 完整恢复，恢复后重新跑过 `go vet` 与全量测试确认无影响。
 教训：`gofmt -w` 只允许作用于本轮显式列出的文件。
+
+---
+
+# 附二：Codex 独立审查第二轮 P1 阻塞项修复（2026-10-15 晚）
+
+本轮修复 Codex 第二轮独立审查提出的四个 P1 Blocking Finding。范围严格限定在四个
+发现本身，未引入任何范围外改动（未动用户分页、未加验证码/邮件/密码重置、未改
+`PUBLIC_REGISTRATION_ENABLED` 默认值、未改 `tenant_admin` 语义、未改 trusted-header 兜底、
+未重命名表、未重构 ThinkWatch 或配额、未改前端、未新增角色）。
+
+## 1. P1-01 旧库可能被误判为已迁移 → 终态契约（fail closed）
+
+**问题**：原基线校验只看「表/列是否存在」，`gateway_api_key` 只含 `id`/`tenant_id`、
+缺 `key_digest` 的残缺旧库也能在 `CREATE ... IF NOT EXISTS` 的静默 no-op 下被放行并
+写成「已迁移」，后续运行再也不会补上缺失对象。
+
+**修复**：新增 `internal/migrate/schema_contract.go`，由 migrations 0001–0009 推导出
+**终态契约**（10 张表 × 列 × 类型 × 可空性 × 主键 × UNIQUE × 函数式唯一索引
+`lower((username)::text)` × 外键 × 命名索引），用 PostgreSQL 目录
+（`information_schema.columns` / `pg_constraint` / `pg_indexes`）逐项核对；
+任一不符即报错并**点名每一个缺失/漂移对象**，且不写入 `schema_migrations`。
+删除旧的弱基线 `internal/migrate/baseline.go`。
+
+**分阶段策略说明**：bootstrap 采用「先应用 → 再校验 → 最后记账」三阶段，而非单事务。
+原因是 pgx 简单协议下无法在同一事务内混跑多语句 DDL 脚本与目录查询后再 COMMIT
+（实测 `tx is closed`）。由于 `schema_migrations` 只在契约通过后才写入，失败时数据库
+零记账行、下次运行会重试，**仍然 fail closed**。
+
+**测试**（`internal/migrate/schema_contract_test.go`）：缺失 `gateway_tenant.code`、
+Codex 原始复现的残缺 `gateway_api_key`、10 张表逐一打桩、列类型错、可空性错、
+缺失 UNIQUE、完整旧库 bootstrap、删索引、删外键、错误信息可诊断性。
+
+## 2. P1-02 命名不规范的迁移文件被静默忽略 → 严格命名并报错
+
+**问题**：`migrationFilePattern` 过宽，且匹配失败即 `continue`，`0001-Init.SQL`、
+`0001 init.sql` 之类会被静默跳过，历史被改写而无人察觉。
+
+**修复**：正则收紧为 `^\d{4}_[a-z0-9][a-z0-9_]*\.sql$`；`.sql` 命名不合法时**报错**
+而非跳过（扩展名判断改为大小写不敏感，以覆盖 Windows 大小写不敏感文件系统）；
+非 `.sql` 文件继续忽略；按数字版本号排序；延续原有的断号 / 重复版本 / 校验和检测。
+
+## 3. P1-03 认证请求体仅有内存上限，挡不住 Slowloris → 真实 TCP 读超时
+
+**问题**：`io.ReadAll(io.LimitReader(...))` 只限制读到的字节数，判断发生在读完之后；
+一个逐字节滴送的连接可以长期占住 goroutine 与连接。
+
+**修复**：`decodeAdminAuthBody(w, r, dst)` 增加 `http.MaxBytesReader`（硬上限）与
+`http.NewResponseController(w).SetReadDeadline`（约 5s 读超时）；当
+`SetReadDeadline` 返回 `http.ErrNotSupported`（如 `httptest.ResponseRecorder`）时
+降级为仅字节上限，不影响单元测试。保留原有的单 JSON 值 / 未知字段严格解码语义。
+**未**使用全局 `ReadTimeout`/`WriteTimeout`，以免破坏 SSE 数据面。
+
+**测试**（`internal/app/admin_auth_slowloris_test.go`，真实 TCP）：超上限被拒、
+慢速滴送在约 5s 内被切断且 goroutine 释放、正常快速请求不受影响。
+
+## 4. P1-04 知道 sid 即可伪造 Token 触发全家桶撤销 → 签名 v2 Refresh Token
+
+**问题**：refresh 走「既非当前 hash 又非宽限期内前任 → 一律 replay」，攻击者只要
+拿到一个真实 sid（claim / 设备列表 / 日志）就能构造 `sid.<任意 secret>`，
+让受害者名下**所有会话**被撤销。掌握标识符即可强制他人重新登录。
+
+**修复**：refresh token 改为签名格式 `v2.<sid>.<secret>.<mac>`，
+`mac = HMAC-SHA256(admin secret, "refresh-token-mac-v2" || sid || secret)`，
+标签与轮换派生标签（`refresh-rotation-v1`）**域隔离**；MAC 比对用 `hmac.Equal`
+（恒定时间）。保留 legacy `<sid>.<secret>` 兼容：它只能靠数据库 hash 自证，
+首次轮换即透明升级为 v2。裁决点收敛到唯一函数 `replayOrReject`：
+
+- v2 且 MAC 有效 → 证明持有签名密钥；既非当前 hash 又非宽限期内前任 ⇒ **真 replay**，撤销全家桶；
+- legacy 或 MAC 无效 → **伪造**，返回 401 `ErrAdminUnauthenticated`，**不撤销任何会话**；
+- 撤销失败 → 记录日志并返回 `ErrAdminInternal`，**不谎报 replay**（避免把未发生的事写成安全事件）。
+
+保持：后继 token 确定性派生、5s 宽限（生产默认 `adminRefreshReplayGraceDefault`）、
+并发双 tab 收敛、登出同样不被伪造 token 利用。
+
+**测试**（`internal/app/admin_refresh_mac_test.go`）：伪造 legacy / 伪造 v2 MAC 均不撤销、
+重复伪造 25×2 次仍不撤销且真 token 仍可用、真 v2 replay 仍撤销全家桶、
+legacy 透明升级为带 MAC 的 v2、撤销失败诚实上报、MAC 域隔离、登出不被伪造 token 利用。
+
+## 5. 本轮执行证据
+
+```text
+go build ./...                    → 通过
+go vet ./...                      → 通过
+go test ./... -count=1            → 全绿（app / migrate / proxy / ratelimit / security / storage）
+npm --prefix web/admin run check   → 通过
+
+新增：internal/migrate/schema_contract.go、internal/migrate/schema_contract_test.go
+      internal/app/admin_auth_slowloris_test.go、internal/app/admin_refresh_mac_test.go
+删除：internal/migrate/baseline.go（由终态契约取代）
+未纳入提交：.workbuddy-ai/
+```
+
+**状态：READY FOR CODEX ROUND 3 REVIEW** —— 未合并、未部署。
+复审重点：终态契约的完整性（是否存在 migrations 实际创建但契约未覆盖的对象）、
+迁移文件命名正则是否过严、5s 读超时对慢客户端的影响、v2 MAC 的域隔离与兼容路径。
