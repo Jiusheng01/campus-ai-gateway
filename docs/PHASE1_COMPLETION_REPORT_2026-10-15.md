@@ -458,12 +458,31 @@ go build ./...                    → 通过
 go vet ./...                      → 通过
 go test ./... -count=1            → 全绿（app / migrate / proxy / ratelimit / security / storage）
 npm --prefix web/admin run check   → 通过
+docker compose -f deploy/docker-compose.yml config → 通过
+docker compose -f deploy/docker-compose.yml build   → 通过（deploy-gateway-server / deploy-migrate 均 Built）
 
 新增：internal/migrate/schema_contract.go、internal/migrate/schema_contract_test.go
       internal/app/admin_auth_slowloris_test.go、internal/app/admin_refresh_mac_test.go
 删除：internal/migrate/baseline.go（由终态契约取代）
 未纳入提交：.workbuddy-ai/
 ```
+
+### 容器级验证（本轮首次达成，上一轮为 NOT VERIFIED）
+
+镜像构建与 migrate 入口均在本机跑通。用**全新库 / 重复运行 / 人为漂移库**三路径
+直接验证 P1-01 的终态契约在真实容器入口下的行为：
+
+```text
+[1] 全新库      → migrate: bootstrapped bookkeeping; 9 migration(s) verified up to date   exit=0
+[2] 重复运行    → migrate: database is up to date (9 migration(s) recorded)               exit=0   （幂等）
+[3] 漂移库      → migrate: final schema contract not satisfied: table gateway_tenant
+                  column code: expected type character varying, actual integer            exit=1
+```
+
+第 [3] 条把 `gateway_tenant.code` 预先声明成 `INTEGER`（而迁移要求 `VARCHAR(64)`）：
+`CREATE TABLE IF NOT EXISTS` 会静默 no-op、 replay 也无法纠正类型，正是旧基线会误判为
+「已迁移」的那类漂移。终态契约点名了漂移对象、返回非零退出码、未写入任何记账行
+（**fail closed**）。验证用的临时库已删除。
 
 **状态：READY FOR CODEX ROUND 3 REVIEW** —— 未合并、未部署。
 复审重点：终态契约的完整性（是否存在 migrations 实际创建但契约未覆盖的对象）、
