@@ -294,7 +294,7 @@ func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser
 	// The session id is generated here rather than by the database so the
 	// refresh token can be derived from it before the single INSERT.
 	sid := uuid.NewString()
-	refreshPlain, refreshHash, err := security.NewAdminRefreshToken(sid)
+	refreshPlain, refreshHash, err := security.NewAdminRefreshToken(a.secret, sid)
 	if err != nil {
 		return adminTokens{}, ErrAdminInternal
 	}
@@ -374,12 +374,18 @@ func (a *adminAuthService) mintAccessToken(user model.AdminUser, session model.A
 //     predecessor is a replay. Only then is the account's session family
 //     revoked.
 func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAgent string) (adminTokens, error) {
-	sid, secret, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
+	// Parse and, for the signed v2 form, verify the MAC in one step. A malformed
+	// token, or a v2 token whose MAC does not verify, proves nothing about the
+	// bearer — it is not a replay of a real token, so it must not revoke. Answer
+	// 401 with no side effect. This is the P1-04 fix: a forged "<sid>.<guess>"
+	// or "v2.<sid>.<guess>.<badmac>" can no longer trigger a family-wide
+	// revocation.
+	tok, err := security.ParseAdminRefreshToken(a.secret, refreshToken)
 	if err != nil {
 		return adminTokens{}, ErrAdminUnauthenticated
 	}
 
-	session, err := a.store.FindAdminSessionByID(ctx, sid)
+	session, err := a.store.FindAdminSessionByID(ctx, tok.SessionID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAdminSessionNotFound) {
 			return adminTokens{}, ErrAdminSessionNotFound
@@ -414,7 +420,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 	}
 
 	// Deterministic successor: identical for every caller presenting this token.
-	nextPlain, nextHash, err := security.DeriveNextAdminRefreshToken(a.secret, session.SID, secret)
+	nextPlain, nextHash, err := security.DeriveNextAdminRefreshToken(a.secret, session.SID, tok.Secret)
 	if err != nil {
 		return adminTokens{}, ErrAdminUnauthenticated
 	}
@@ -443,7 +449,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		if a.isBenignRace(fresh, presented, now) {
 			return a.finishRefresh(session, user, nextPlain, now)
 		}
-		return a.replayDetected(ctx, session.UserID)
+		return a.replayOrReject(ctx, tok, fresh, user.ID)
 
 	case a.isBenignRace(session, presented, now):
 		// This request read the row before the winner's rotation landed. The
@@ -452,8 +458,27 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		return a.finishRefresh(session, user, nextPlain, now)
 
 	default:
-		return a.replayDetected(ctx, session.UserID)
+		return a.replayOrReject(ctx, tok, session, user.ID)
 	}
+}
+
+// replayOrReject distinguishes a genuine replay from a forged token and is the
+// single place a family-wide revocation is decided.
+//
+// Only a signed v2 token (the bearer proved knowledge of the signing secret)
+// that is neither the current hash nor a grace-window predecessor can reach here
+// as a real replay: a genuine token was copied and replayed. That revokes the
+// account's whole session family. Anything else — a legacy "<sid>.<guess>" whose
+// hash does not match the database, or a v2 token that survived the MAC check to
+// get here — is a forgery: the attacker knew the session id but not the secret,
+// and guessing the secret is precluded by the stored hash. Forging it must never
+// revoke, so it is an unauthenticated 401 with no side effect. This is exactly
+// the P1-04 invariant.
+func (a *adminAuthService) replayOrReject(ctx context.Context, tok security.AdminRefreshToken, session model.AdminSession, userID string) (adminTokens, error) {
+	if tok.Signed {
+		return a.replayDetected(ctx, userID)
+	}
+	return adminTokens{}, ErrAdminUnauthenticated
 }
 
 // adminRefreshDigestEqual compares two refresh-token digests in constant time.
@@ -513,8 +538,16 @@ func (a *adminAuthService) finishRefresh(session model.AdminSession, user model.
 // replayDetected retires the whole session family of an account. A refresh
 // token that is neither the current hash nor a grace-window predecessor means a
 // copy leaked, so every session is revoked rather than just this one.
+//
+// The revocation failure is handled honestly: if the store cannot carry it out
+// we must not report a successful replay that never retired anything. We log the
+// gap and return ErrAdminInternal instead of ErrAdminRefreshReplay, so no
+// replay audit event is recorded for an action that did not happen.
 func (a *adminAuthService) replayDetected(ctx context.Context, userID string) (adminTokens, error) {
-	_ = a.store.RevokeSessionsForUser(ctx, userID, revokeReasonReuse)
+	if err := a.store.RevokeSessionsForUser(ctx, userID, revokeReasonReuse); err != nil {
+		log.Printf("admin refresh: replay detected for user %s but the session-family revocation failed: %v", userID, err)
+		return adminTokens{}, ErrAdminInternal
+	}
 	log.Printf("admin refresh: refresh token reuse outside the grace window for user %s; all sessions revoked", userID)
 	return adminTokens{}, ErrAdminRefreshReplay
 }
@@ -621,12 +654,14 @@ func tokenErrorToSentinel(err error) error {
 // happened.
 func (a *adminAuthService) logout(ctx context.Context, refreshToken string) (bool, error) {
 	raw := strings.TrimSpace(refreshToken)
-	sid, _, err := security.SplitAdminRefreshToken(raw)
+	// Parse the token (and, for v2, verify its MAC) to learn which session it
+	// claims. A malformed or MAC-forged token is not a logout of anything — the
+	// client still exits cleanly, but no session is touched.
+	tok, err := security.ParseAdminRefreshToken(a.secret, raw)
 	if err != nil {
-		// The token identifies no session at all, so there is nothing to
-		// revoke and nothing to refuse.
 		return false, nil
 	}
+	sid := tok.SessionID
 
 	session, err := a.store.FindAdminSessionByID(ctx, sid)
 	if err != nil {

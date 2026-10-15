@@ -293,18 +293,25 @@ func TestVerifyRejectsEmptySecret(t *testing.T) {
 
 func TestRefreshTokenRoundTrip(t *testing.T) {
 	sid := "33333333-3333-3333-3333-333333333333"
-	plain, hash, err := NewAdminRefreshToken(sid)
+	secret := []byte("unit-test-signing-secret")
+	plain, hash, err := NewAdminRefreshToken(secret, sid)
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	gotSID, secret, err := SplitAdminRefreshToken(plain)
+	if !strings.HasPrefix(plain, refreshTokenV2Prefix+sid+".") {
+		t.Fatalf("v2 token must embed the session id: %q", plain)
+	}
+	got, err := ParseAdminRefreshToken(secret, plain)
 	if err != nil {
-		t.Fatalf("split: %v", err)
+		t.Fatalf("parse: %v", err)
 	}
-	if gotSID != sid {
-		t.Fatalf("session id mismatch: %q", gotSID)
+	if !got.Signed {
+		t.Fatal("a freshly minted token must be signed")
 	}
-	if secret == "" {
+	if got.SessionID != sid {
+		t.Fatalf("session id mismatch: %q", got.SessionID)
+	}
+	if got.Secret == "" {
 		t.Fatal("secret must not be empty")
 	}
 	if hash != HashAdminRefreshToken(plain) {
@@ -316,13 +323,18 @@ func TestRefreshTokenRoundTrip(t *testing.T) {
 	if strings.Contains(hash, plain) {
 		t.Fatal("the stored hash must not contain the plaintext token")
 	}
+	// A v2 token whose MAC does not verify is rejected, not trusted.
+	if _, err := ParseAdminRefreshToken(secret, refreshTokenV2Prefix+sid+".AAAA.BBBB"); err == nil {
+		t.Fatal("a v2 token with a bad MAC must be rejected")
+	}
 }
 
 func TestRefreshTokenSecretIsUniquePerMint(t *testing.T) {
 	sid := "33333333-3333-3333-3333-333333333333"
+	secret := []byte("unit-test-signing-secret")
 	seen := map[string]bool{}
 	for i := 0; i < 32; i++ {
-		plain, _, err := NewAdminRefreshToken(sid)
+		plain, _, err := NewAdminRefreshToken(secret, sid)
 		if err != nil {
 			t.Fatalf("mint %d: %v", i, err)
 		}
@@ -334,7 +346,7 @@ func TestRefreshTokenSecretIsUniquePerMint(t *testing.T) {
 }
 
 func TestNewAdminRefreshTokenRequiresSessionID(t *testing.T) {
-	if _, _, err := NewAdminRefreshToken(""); err == nil {
+	if _, _, err := NewAdminRefreshToken([]byte("unit-test-signing-secret"), ""); err == nil {
 		t.Fatal("empty session id must be rejected")
 	}
 }

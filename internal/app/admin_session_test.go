@@ -53,6 +53,12 @@ type fakeAdminStore struct {
 	// not.
 	createSessionErr error
 
+	// revokeSessionsErr, when set, makes every RevokeSessionsForUser call fail.
+	// It models the store going away at exactly the moment a replay has to
+	// retire the session family, which is the case where the service must not
+	// report a revocation that did not happen.
+	revokeSessionsErr error
+
 	// revokes records every RevokeSessionsForUser call, so a test can assert
 	// that one logical mutation revoked once and not once per field.
 	revokes []revokeCall
@@ -352,6 +358,9 @@ func (f *fakeAdminStore) RevokeAdminSession(_ context.Context, sid, reason strin
 }
 
 func (f *fakeAdminStore) RevokeSessionsForUser(_ context.Context, userID, reason string) error {
+	if f.revokeSessionsErr != nil {
+		return f.revokeSessionsErr
+	}
 	f.revokes = append(f.revokes, revokeCall{UserID: userID, Reason: reason})
 	for sid, s := range f.sessions {
 		if s.UserID != userID || s.RevokedAt != nil {
@@ -604,7 +613,7 @@ func TestLoginSuccessIssuesTokensAndSession(t *testing.T) {
 	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		t.Fatal("login must return both tokens")
 	}
-	if !strings.HasPrefix(tokens.RefreshToken, tokens.Session.SID+".") {
+	if !strings.HasPrefix(tokens.RefreshToken, "v2."+tokens.Session.SID+".") {
 		t.Fatalf("refresh token must embed the session id: %q", tokens.RefreshToken)
 	}
 	if store.liveSessions() != 1 {
@@ -1870,10 +1879,11 @@ func TestRefreshUsesDerivedSuccessorNotRandomValue(t *testing.T) {
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
 
 	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
-	_, presentedSecret, err := security.SplitAdminRefreshToken(s1.RefreshToken)
+	parsed, err := security.ParseAdminRefreshToken(svc.secret, s1.RefreshToken)
 	if err != nil {
 		t.Fatal(err)
 	}
+	presentedSecret := parsed.Secret
 	want, _, err := security.DeriveNextAdminRefreshToken(svc.secret, s1.Session.SID, presentedSecret)
 	if err != nil {
 		t.Fatal(err)
