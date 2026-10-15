@@ -246,7 +246,7 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in adminUserUpdateRequest
-	if err := decodeAdminAuthBody(r, &in); err != nil {
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}

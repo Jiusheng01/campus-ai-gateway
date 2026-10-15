@@ -522,7 +522,7 @@ func TestDecodeAdminAuthBodyAllowsExactlyOneJSONValue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(tc.body))
 			var got payload
-			if err := decodeAdminAuthBody(req, &got); err == nil {
+			if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
 				t.Fatalf("a second JSON value must be refused, decoded %+v", got)
 			}
 		})
@@ -537,7 +537,7 @@ func TestDecodeAdminAuthBodyAllowsExactlyOneJSONValue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(tc.body))
 			var got payload
-			if err := decodeAdminAuthBody(req, &got); err != nil {
+			if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err != nil {
 				t.Fatalf("trailing whitespace must be accepted, got %v", err)
 			}
 			if got.Username != "campus-admin" {
@@ -551,7 +551,7 @@ func TestDecodeAdminAuthBodyAllowsExactlyOneJSONValue(t *testing.T) {
 	for _, body := range []string{"", "   ", `{"username":`} {
 		req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(body))
 		var got payload
-		if err := decodeAdminAuthBody(req, &got); err == nil {
+		if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
 			t.Fatalf("body %q must be refused", body)
 		}
 	}
@@ -565,7 +565,7 @@ func TestDecodeAdminAuthBodyAllowsExactlyOneJSONValue(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(oversized))
 	var got payload
-	if err := decodeAdminAuthBody(req, &got); err == nil {
+	if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
 		t.Fatal("an oversized body must be refused, not truncated and decoded")
 	}
 }
@@ -730,7 +730,7 @@ func TestDecodeAdminAuthBodyNeverReadsForever(t *testing.T) {
 				req := httptest.NewRequest(http.MethodPost, "/admin/login", nil)
 				req.Body = tc.body
 				var got payload
-				done <- decodeAdminAuthBody(req, &got)
+				done <- decodeAdminAuthBody(httptest.NewRecorder(), req, &got)
 			}()
 			select {
 			case err := <-done:
@@ -753,7 +753,7 @@ func TestDecodeAdminAuthBodyBoundsWhatItReads(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/login",
 		strings.NewReader(`{"username":"campus-admin"}`))
 	var got payload
-	if err := decodeAdminAuthBody(req, &got); err != nil {
+	if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err != nil {
 		t.Fatalf("a small body must decode: %v", err)
 	}
 	if got.Username != "campus-admin" {

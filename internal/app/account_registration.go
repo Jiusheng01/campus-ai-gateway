@@ -191,7 +191,7 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in accountRegisterRequest
-	if err := decodeAdminAuthBody(r, &in); err != nil {
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}
