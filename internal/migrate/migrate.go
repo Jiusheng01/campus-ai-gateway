@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -50,8 +51,17 @@ const schemaMigrationsTable = "schema_migrations"
 // lock, and reusing another application's key would couple two deployments.
 const migrationLockKey int64 = 0x63616d70757301 // "campus" + version tag
 
-// migrationFilePattern matches "0001_name.sql": digits, underscore, name.
-var migrationFilePattern = regexp.MustCompile(`^(\d+)_[A-Za-z0-9._-]+\.sql$`)
+// migrationFilePattern is the contract for a migration file name:
+// exactly four digits, an underscore, then a lowercase name made of letters,
+// digits and underscores, and a lowercase .sql extension.
+//
+// A file that ends in .sql but does not match this pattern is a deployment
+// error, not a silently skipped migration: a mis-named file would otherwise be
+// dropped from the history without anyone noticing, and the schema would
+// silently diverge from the binary. The four-digit width keeps the ordering
+// stable and forces every new file to be padded, so two files can never share
+// a numeric prefix by accident of formatting.
+var migrationFilePattern = regexp.MustCompile(`^\d{4}_[a-z0-9][a-z0-9_]*\.sql$`)
 
 // Migration is one file in the migrations directory.
 type Migration struct {
@@ -102,9 +112,9 @@ var (
 
 // Load reads and parses the migrations directory.
 //
-// Files are sorted by name, and the numeric prefix is the version. A file
-// whose name does not carry the prefix is an error rather than a silently
-// ordered entry: ordering is the whole safety property here.
+// Files are sorted by numeric version, and the numeric prefix is the version.
+// A file whose name does not carry the prefix is an error rather than a
+// silently ordered entry: ordering is the whole safety property here.
 func Load(dir string) ([]Migration, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -115,10 +125,22 @@ func Load(dir string) ([]Migration, error) {
 		if e.IsDir() {
 			continue
 		}
-		if !migrationFilePattern.MatchString(e.Name()) {
+		name := e.Name()
+		// A non-.sql file (a README, an editor backup, a stray dump) is not a
+		// migration. The comparison is case-insensitive on the extension so a
+		// file named with a capital .SQL is still recognised as a SQL file and
+		// then judged by the strict pattern below — never silently skipped.
+		if !strings.HasSuffix(strings.ToLower(name), ".sql") {
 			continue
 		}
-		names = append(names, e.Name())
+		// A .sql file with a name that does not match the contract is a
+		// deployment error, not a silently skipped migration: a mis-named file
+		// would otherwise be dropped from the history without anyone noticing,
+		// and the schema would silently diverge from the binary.
+		if !migrationFilePattern.MatchString(name) {
+			return nil, fmt.Errorf("migration file %q has an invalid name: expected %s", name, migrationFilePattern)
+		}
+		names = append(names, name)
 	}
 	if len(names) == 0 {
 		return nil, ErrNoMigrations
@@ -145,6 +167,9 @@ func Load(dir string) ([]Migration, error) {
 			Body:     string(body),
 		})
 	}
+	// Order by numeric version, not by raw string, so a hand-named set that is
+	// lexically unsorted still applies in the right sequence.
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	// Versions must start at 1 and be contiguous: a hole means someone
 	// deleted a historical file, and applying around it would leave the
 	// schema unable to say which state it is in.
@@ -291,17 +316,18 @@ func Apply(ctx context.Context, databaseURL, dir string) (Result, error) {
 		// First run against a database with no bookkeeping table. It is either
 		// empty — every file applies cleanly — or a legacy deployment whose
 		// schema predates this runner. The migrations are replay-safe, so the
-		// same run brings a legacy schema forward, but a legacy database may
-		// have drifted in ways replay cannot see, so nothing is recorded until
-		// the end state is verified. A drifted database is reported, never
-		// quietly marked as migrated.
-		if err := applyWithoutRecording(ctx, conn, pending); err != nil {
-			return Result{}, err
-		}
-		if err := verifyBaseline(ctx, conn); err != nil {
-			return Result{}, err
-		}
-		if err := recordAll(ctx, conn, pending); err != nil {
+		// same replay brings a legacy schema forward, but a legacy database may
+		// have drifted in ways replay cannot see: CREATE ... IF NOT EXISTS
+		// silently no-ops, ALTER ... ADD COLUMN IF NOT EXISTS skips an existing
+		// stub, and a hand-built table passes an existence check.
+		//
+		// applyBootstrap replays the DDL, verifies the end state against the
+		// contract, and only then writes the bookkeeping rows. A drifted
+		// database therefore fails closed: the contract check returns before
+		// any bookkeeping is written, so schema_migrations stays empty and the
+		// deployment never trusts a half-verified schema. The next run retries
+		// rather than recording a history the database does not have.
+		if err := applyBootstrap(ctx, conn, pending); err != nil {
 			return Result{}, err
 		}
 		names := make([]string, 0, len(pending))
@@ -399,14 +425,58 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration) error {
 	return nil
 }
 
-// applyWithoutRecording runs each migration in its own transaction without
-// writing bookkeeping.
+// applyBootstrap replays every migration, verifies the end-state contract, and
+// then records the bookkeeping rows.
 //
-// It is the bootstrap path's first half: the replay has to happen before the
-// end state can be verified, and the bookkeeping must not be written before it
-// is. A failure here leaves the database with the replayed (idempotent,
-// additive) DDL and no record — the next run repeats, rather than trusting a
-// half-verified schema.
+// The replay and the verification cannot live in a single transaction under the
+// pgx simple query protocol: a multi-statement migration body plus the catalog
+// introspection that verifyFinalSchema runs do not survive one open
+// transaction (the connection reports the transaction closed before COMMIT).
+// The bootstrap is therefore phased, and the safety property is preserved by
+// ordering rather than by atomicity:
+//
+//  1. applyWithoutRecording replays each migration in its own committed
+//     transaction. The migrations are replay-safe (CREATE ... IF NOT EXISTS,
+//     ALTER ... ADD COLUMN IF NOT EXISTS), so against a database that already
+//     has the objects this is a no-op, and against an empty one it builds the
+//     full schema.
+//  2. verifyFinalSchema reads the catalog from the bare connection and fails
+//     closed when any table, column, type, nullability, unique constraint,
+//     foreign key or index is missing or drifted — naming every gap.
+//  3. recordAll writes the bookkeeping rows for the whole set in one
+//     transaction, only after verification passed.
+//
+// Fail-closed is preserved even though step 1 commits: step 1 only replays
+// idempotent DDL, so a drifted database is left exactly as it was — the
+// existing objects no-op, verification still fails, and no bookkeeping row is
+// ever written. The deployment therefore never trusts a half-verified schema,
+// and the next run retries rather than recording a history the database does
+// not have.
+func applyBootstrap(ctx context.Context, conn *pgx.Conn, files []Migration) error {
+	if err := applyWithoutRecording(ctx, conn, files); err != nil {
+		return err
+	}
+	if err := verifyFinalSchema(ctx, conn); err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin record bootstrap: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := recordAll(ctx, tx, files); err != nil {
+		return fmt.Errorf("record bootstrap: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit bootstrap: %w", err)
+	}
+	return nil
+}
+
+// applyWithoutRecording replays every migration in its own committed
+// transaction, without writing any bookkeeping. It is the replay half of the
+// bootstrap: the migrations are replay-safe, so this is safe to run against a
+// database that already has some or all of the objects.
 func applyWithoutRecording(ctx context.Context, conn *pgx.Conn, files []Migration) error {
 	for _, m := range files {
 		tx, err := conn.Begin(ctx)
@@ -425,27 +495,19 @@ func applyWithoutRecording(ctx context.Context, conn *pgx.Conn, files []Migratio
 }
 
 // recordAll writes the bookkeeping rows for the whole bootstrap in one
-// transaction.
+// transaction. It does not commit: the caller owns the transaction so the
+// bootstrap can commit once after verification has passed.
 //
 // One transaction, not one per file, because the bootstrap is one decision:
 // after it, the database claims the full set as applied. A partial row set
 // would describe a history that never happened.
-func recordAll(ctx context.Context, conn *pgx.Conn, files []Migration) error {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin bookkeeping: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+func recordAll(ctx context.Context, tx pgx.Tx, files []Migration) error {
 	for _, m := range files {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO `+schemaMigrationsTable+` (version, filename, checksum) VALUES ($1, $2, $3)`,
 			m.Version, m.Filename, m.Checksum); err != nil {
 			return fmt.Errorf("record %s: %w", m.Filename, err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit bookkeeping: %w", err)
 	}
 	return nil
 }

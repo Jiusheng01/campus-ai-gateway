@@ -75,6 +75,89 @@ func TestLoadEmptyDirectory(t *testing.T) {
 	}
 }
 
+// P1-02: a .sql file whose name does not satisfy the strict pattern is a hard
+// error, not a silently ignored migration. Each case below would previously be
+// dropped from the history, letting the schema drift from the binary without
+// any signal.
+func TestLoadRejectsInvalidSQLFileName(t *testing.T) {
+	cases := []string{
+		"1_init.sql",        // too few digits
+		"000001_init.sql",   // too many digits
+		"0001_Init.sql",     // uppercase in name
+		"0001-init.sql",     // dash instead of underscore
+		"0001_init (1).sql", // spaces and parens
+		"0001_init.SQL",     // uppercase extension
+		"init.sql",          // no version prefix
+		"0001.sql",          // no name component
+		"0001__init.sql",    // name starts with an underscore
+	}
+	for _, bad := range cases {
+		t.Run(bad, func(t *testing.T) {
+			dir := t.TempDir()
+			// One valid file so the directory is not empty: ErrNoMigrations is
+			// a different error and not what this test exercises.
+			writeMigration(t, dir, "0001_alpha.sql", "SELECT 1;")
+			writeMigration(t, dir, bad, "SELECT 1;")
+			if _, err := Load(dir); err == nil {
+				t.Fatalf("expected an error for invalid file name %q", bad)
+			}
+		})
+	}
+}
+
+// P1-02: a name that starts with an underscore is rejected, because it is too
+// easy to mistype the separator and a silent skip is the dangerous outcome.
+func TestLoadRejectsLeadingUnderscoreName(t *testing.T) {
+	dir := t.TempDir()
+	writeMigration(t, dir, "0001_alpha.sql", "SELECT 1;")
+	writeMigration(t, dir, "0002__beta.sql", "SELECT 2;")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected an error for a name starting with an underscore")
+	}
+}
+
+// P1-02: non-.sql files are still ignored, so a README or an editor backup left
+// in the directory cannot break a deployment.
+func TestLoadIgnoresNonSQLFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeMigration(t, dir, "0001_alpha.sql", "SELECT 1;")
+	writeMigration(t, dir, "0002_beta.sql", "SELECT 2;")
+	writeMigration(t, dir, "README.md", "# not a migration")
+	writeMigration(t, dir, "notes.txt", "not a migration")
+	if err := os.Mkdir(filepath.Join(dir, "0003_gamma.sql"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(got))
+	}
+}
+
+// P1-02: ordering is by numeric version, so a directory listed out of order
+// still applies in sequence rather than in lexical order.
+func TestLoadSortsByNumericVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeMigration(t, dir, "0003_gamma.sql", "SELECT 3;")
+	writeMigration(t, dir, "0001_alpha.sql", "SELECT 1;")
+	writeMigration(t, dir, "0002_beta.sql", "SELECT 2;")
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []int{1, 2, 3}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d migrations, got %d", len(want), len(got))
+	}
+	for i, v := range want {
+		if got[i].Version != v {
+			t.Fatalf("migration %d is version %d, want %d", i, got[i].Version, v)
+		}
+	}
+}
+
 func TestCheckHistorySelectsPending(t *testing.T) {
 	dir := t.TempDir()
 	writeMigration(t, dir, "0001_a.sql", "SELECT 1;")
@@ -562,8 +645,8 @@ func TestApplyFailsClosedOnDriftedLegacyDatabase(t *testing.T) {
 	if err == nil {
 		t.Fatal("a drifted legacy database must fail closed, not record a history it does not have")
 	}
-	if !strings.Contains(err.Error(), "baseline") {
-		t.Fatalf("the failure must name the baseline check, got: %v", err)
+	if !strings.Contains(err.Error(), "contract") {
+		t.Fatalf("the failure must name the schema contract check, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "gateway_tenant.code") {
 		t.Fatalf("the failure must name the missing object, got: %v", err)
