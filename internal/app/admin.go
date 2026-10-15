@@ -23,6 +23,13 @@ type adminAuditResponseWriter struct {
 	status int
 }
 
+// Unwrap lets http.ResponseController reach the live net/http writer. Without
+// it, POST handlers wrapped for audit capture cannot install per-request read
+// deadlines and an authenticated client can hold the handler on a slow body.
+func (w *adminAuditResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *adminAuditResponseWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
@@ -580,8 +587,6 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	}
 	cw.Flush()
 }
-
-
 func validateProvider(v *model.Provider) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)

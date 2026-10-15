@@ -493,8 +493,15 @@ func decodeAdminAuthBody(w http.ResponseWriter, r *http.Request, dst any) error 
 	// byte cap below still holds, and a non-deadline-able writer is a test
 	// double, not a deployment.
 	rc := http.NewResponseController(w)
-	if err := rc.SetReadDeadline(time.Now().Add(adminAuthReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		log.Printf("admin auth: cannot set request read deadline: %v", err)
+	if err := rc.SetReadDeadline(time.Now().Add(adminAuthReadDeadline)); err != nil {
+		if !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("set admin auth request read deadline: %w", err)
+		}
+	} else {
+		// ResponseController deadlines are connection-level. net/http clears the
+		// deadline before its keep-alive loop, and clearing it here as well keeps
+		// the helper correct under custom servers and middleware.
+		defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
 	}
 
 	// http.MaxBytesReader enforces the cap at the transport layer: once the

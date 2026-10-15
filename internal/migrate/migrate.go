@@ -294,10 +294,6 @@ func Apply(ctx context.Context, databaseURL, dir string) (Result, error) {
 		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
 	}()
 
-	hadBookkeeping, err := tableExists(ctx, conn, schemaMigrationsTable)
-	if err != nil {
-		return Result{}, err
-	}
 	if err := ensureBookkeeping(ctx, conn); err != nil {
 		return Result{}, err
 	}
@@ -312,10 +308,13 @@ func Apply(ctx context.Context, databaseURL, dir string) (Result, error) {
 		return Result{}, err
 	}
 
-	if !hadBookkeeping && len(inDB) == 0 {
-		// First run against a database with no bookkeeping table. It is either
-		// empty — every file applies cleanly — or a legacy deployment whose
-		// schema predates this runner. The migrations are replay-safe, so the
+	if len(inDB) == 0 {
+		// A database with no recorded migration is either on its first run or is
+		// retrying a bootstrap whose final verification failed. The bookkeeping
+		// table itself may already exist from that failed attempt; zero rows, not
+		// table existence, is therefore the bootstrap state. The database is
+		// either empty or a legacy deployment whose schema predates this runner.
+		// The migrations are replay-safe, so the
 		// same replay brings a legacy schema forward, but a legacy database may
 		// have drifted in ways replay cannot see: CREATE ... IF NOT EXISTS
 		// silently no-ops, ALTER ... ADD COLUMN IF NOT EXISTS skips an existing
@@ -344,20 +343,17 @@ func Apply(ctx context.Context, databaseURL, dir string) (Result, error) {
 		}
 		result.Applied = append(result.Applied, m.Filename)
 	}
+	// The migration gate is also a drift gate. A database with recorded history
+	// can still be damaged or hand-edited after the records were written; only
+	// the final catalog proves the binary can safely use it. Verification on
+	// every run also means an empty bookkeeping table left by a prior failed
+	// bootstrap can never turn the next invocation into an unchecked success.
+	if err := verifyFinalSchema(ctx, conn); err != nil {
+		return Result{}, err
+	}
 
 	result.Recorded = len(files)
 	return result, nil
-}
-
-// tableExists reports whether a relation is present.
-func tableExists(ctx context.Context, conn *pgx.Conn, name string) (bool, error) {
-	var ok bool
-	if err := conn.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1)`,
-		name).Scan(&ok); err != nil {
-		return false, fmt.Errorf("check %s: %w", name, err)
-	}
-	return ok, nil
 }
 
 // ensureBookkeeping creates the record table if the database has never seen

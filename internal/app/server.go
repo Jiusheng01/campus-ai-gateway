@@ -52,6 +52,10 @@ type auditResponseWriter struct {
 	capture bytes.Buffer
 }
 
+func (w *auditResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *auditResponseWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status

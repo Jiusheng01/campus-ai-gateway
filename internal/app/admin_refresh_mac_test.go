@@ -235,6 +235,101 @@ func TestRefreshTransparentlyUpgradesLegacyToken(t *testing.T) {
 	}
 }
 
+// A legacy token in previous_refresh_hash is database-proven even though it has
+// no v2 MAC. Inside the grace window it is the ordinary concurrent-refresh
+// race; outside the window it is a genuine replay and must retire the family.
+func TestRefreshLegacyPreviousHonorsGraceAndThenRevokes(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	deviceA, err := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("login A: %v", err)
+	}
+	if _, err := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", ""); err != nil {
+		t.Fatalf("login B: %v", err)
+	}
+
+	legacySecret, err := security.NewRandomID(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := deviceA.Session.SID + "." + legacySecret
+	s := store.sessions[deviceA.Session.SID]
+	s.RefreshHash = security.HashAdminRefreshToken(legacy)
+	s.PreviousRefreshHash = ""
+	s.PreviousRefreshValidUntil = nil
+	store.sessions[s.SID] = s
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	successor, err := svc.refresh(context.Background(), legacy, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("legacy current refresh: %v", err)
+	}
+	if !strings.HasPrefix(successor.RefreshToken, "v2.") {
+		t.Fatalf("legacy successor must be v2, got %q", successor.RefreshToken)
+	}
+
+	svc.now = func() time.Time { return base.Add(svc.grace) }
+	benign, err := svc.refresh(context.Background(), legacy, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("legacy previous at grace boundary must be benign: %v", err)
+	}
+	if benign.RefreshToken != successor.RefreshToken {
+		t.Fatal("legacy previous must converge on the same v2 successor")
+	}
+	if store.liveSessions() != 2 {
+		t.Fatal("legacy previous inside grace must not revoke the family")
+	}
+
+	svc.now = func() time.Time { return base.Add(svc.grace + time.Nanosecond) }
+	if _, err := svc.refresh(context.Background(), legacy, "10.0.0.5", ""); !errors.Is(err, ErrAdminRefreshReplay) {
+		t.Fatalf("database-proven legacy previous outside grace must be replay, got %v", err)
+	}
+	if store.liveSessions() != 0 || store.revokeCallsFor(deviceA.User.ID) != 1 {
+		t.Fatalf("legacy replay must revoke the family once: live=%d revokes=%d",
+			store.liveSessions(), store.revokeCallsFor(deviceA.User.ID))
+	}
+}
+
+// Once a legacy token is older than previous_refresh_hash the database no
+// longer carries proof that it was issued. It must be rejected without a
+// family-wide side effect; only v2 generations retain authenticity through the
+// MAC after falling out of the previous slot.
+func TestRefreshLegacyOlderThanPreviousRejectsWithoutRevoke(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	device, err := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySecret, err := security.NewRandomID(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := device.Session.SID + "." + legacySecret
+	s := store.sessions[device.Session.SID]
+	s.RefreshHash = security.HashAdminRefreshToken(legacy)
+	s.PreviousRefreshHash = ""
+	s.PreviousRefreshValidUntil = nil
+	store.sessions[s.SID] = s
+
+	first, err := svc.refresh(context.Background(), legacy, "10.0.0.5", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.refresh(context.Background(), first.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.refresh(context.Background(), legacy, "10.0.0.5", ""); !errors.Is(err, ErrAdminUnauthenticated) {
+		t.Fatalf("unprovable old legacy token must be unauthenticated, got %v", err)
+	}
+	if store.revokeCallsFor(device.User.ID) != 0 || store.liveSessions() != 1 {
+		t.Fatal("unprovable old legacy token must not revoke a session")
+	}
+}
+
 // TestRefreshRevocationFailureIsReportedHonestly pins that a replay whose
 // revocation could not be carried out is not reported as a successful replay.
 // Claiming the family was retired when it was not would put a false security

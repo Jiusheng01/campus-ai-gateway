@@ -35,6 +35,23 @@ func mustFailClosed(t *testing.T, seed func(t *testing.T, conn *pgx.Conn)) {
 	}
 }
 
+// migratedDatabase returns a database with the repository migrations applied.
+// Tests can then remove bookkeeping and introduce one precise drift, which
+// models a legacy database whose business schema exists but predates this
+// runner.
+func migratedDatabase(t *testing.T) (string, *pgx.Conn) {
+	t.Helper()
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	if _, err := conn.Exec(context.Background(), `DROP TABLE schema_migrations`); err != nil {
+		t.Fatalf("drop bookkeeping: %v", err)
+	}
+	return url, conn
+}
+
 // P1-01 C: a legacy gateway_tenant missing the code column must fail.
 func TestApplyFailsClosedOnMissingTenantCode(t *testing.T) {
 	mustFailClosed(t, func(t *testing.T, conn *pgx.Conn) {
@@ -108,6 +125,39 @@ func TestApplyFailsClosedOnWrongColumnType(t *testing.T) {
 	})
 }
 
+// VARCHAR length is part of the type contract. Treating VARCHAR(1) as
+// VARCHAR(64) lets the migration gate pass a database that rejects valid tenant
+// codes at runtime.
+func TestApplyFailsClosedOnWrongVarcharLength(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(),
+		`ALTER TABLE gateway_tenant ALTER COLUMN code TYPE VARCHAR(1)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "length 64") {
+		t.Fatalf("VARCHAR(1) must be rejected with the expected length, got %v", err)
+	}
+}
+
+// Defaults that application INSERTs omit are runtime semantics, not cosmetic
+// catalog details. A status/auth_version default of zero creates an unusable
+// administrator even though every column and constraint is present.
+func TestApplyFailsClosedOnWrongDefault(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(), `
+		ALTER TABLE gateway_admin_user ALTER COLUMN status SET DEFAULT 0;
+		ALTER TABLE gateway_admin_user ALTER COLUMN auth_version SET DEFAULT 0`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "default 1") {
+		t.Fatalf("wrong administrator defaults must be rejected, got %v", err)
+	}
+}
+
 // P1-01 §12: a column that exists with the right type but the wrong
 // nullability must fail. Here gateway_tenant.code is nullable where the
 // contract requires NOT NULL.
@@ -152,6 +202,23 @@ func TestApplyFailsClosedOnMissingUnique(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// A UNIQUE constraint is not a primary key. The old contract grouped contype
+// p and u together, so replacing a primary key with UNIQUE(id) passed even
+// though foreign-key and identity semantics had changed.
+func TestFinalSchemaRejectsUniqueSubstitutedForPrimaryKey(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(), `
+		ALTER TABLE gateway_admin_audit_log DROP CONSTRAINT gateway_admin_audit_log_pkey;
+		ALTER TABLE gateway_admin_audit_log ADD CONSTRAINT round3_id_unique UNIQUE (id)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "primary key") {
+		t.Fatalf("UNIQUE(id) must not satisfy the primary-key contract, got %v", err)
+	}
 }
 
 // P1-01 B: a database carrying the complete final schema but no
@@ -222,6 +289,52 @@ func TestFinalSchemaDetectsDroppedIndex(t *testing.T) {
 	}
 }
 
+// Index names alone are not a contract. This is the exact decoy shape used in
+// the independent review: one named index is UNIQUE(username), while another
+// unrelated functional index happens to mention lower() and username. Together
+// they fooled the old two-query validator while allowing Admin/admin to coexist.
+func TestFinalSchemaRejectsWrongUsernameIndexDefinition(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(), `
+		DROP INDEX idx_gateway_admin_user_username_lower;
+		CREATE UNIQUE INDEX idx_gateway_admin_user_username_lower ON gateway_admin_user(username);
+		CREATE UNIQUE INDEX idx_round3_decoy ON gateway_admin_user(lower(display_name)) INCLUDE (username)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "lower(username::text)") {
+		t.Fatalf("decoy indexes must not satisfy lower(username), got %v", err)
+	}
+}
+
+func TestFinalSchemaDetectsEveryDeclaredRuntimeIndex(t *testing.T) {
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	defer conn.Close(context.Background())
+
+	_, _, _, indexes, _ := finalSchemaContract()
+	if len(indexes) != 18 {
+		t.Fatalf("contract covers %d named indexes, migrations declare 18", len(indexes))
+	}
+	for _, idx := range indexes {
+		t.Run(idx.Name, func(t *testing.T) {
+			if _, err := conn.Exec(context.Background(), `DROP INDEX `+quoteIdent(idx.Name)); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckFinalSchema(context.Background(), conn); err == nil {
+				t.Fatalf("dropping %s must fail the contract", idx.Name)
+			}
+			if _, err := conn.Exec(context.Background(), idx.CreateSQL); err != nil {
+				t.Fatalf("restore %s: %v", idx.Name, err)
+			}
+		})
+	}
+}
+
 // P1-01 §14: dropping a foreign key after a successful apply must be caught.
 func TestFinalSchemaDetectsDroppedForeignKey(t *testing.T) {
 	url := isolatedDatabase(t)
@@ -243,6 +356,87 @@ func TestFinalSchemaDetectsDroppedForeignKey(t *testing.T) {
 	}
 	if err := CheckFinalSchema(context.Background(), conn); err == nil {
 		t.Fatal("dropping the gateway_api_key foreign key must fail the contract check")
+	}
+}
+
+// The referenced column and delete action are part of an FK definition. An FK
+// from session.user_id to admin_user.alt_id names the expected table but makes
+// every normal session insert fail.
+func TestFinalSchemaRejectsWrongForeignKeyDefinition(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(), `
+		ALTER TABLE gateway_admin_user ADD COLUMN alt_id UUID UNIQUE DEFAULT gen_random_uuid();
+		ALTER TABLE gateway_admin_session DROP CONSTRAINT gateway_admin_session_user_id_fkey;
+		ALTER TABLE gateway_admin_session ADD CONSTRAINT gateway_admin_session_user_id_fkey
+			FOREIGN KEY(user_id) REFERENCES gateway_admin_user(alt_id)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "gateway_admin_user(id) ON DELETE CASCADE") {
+		t.Fatalf("wrong FK target/action must be rejected, got %v", err)
+	}
+}
+
+func TestFinalSchemaRejectsWrongCheckDefinition(t *testing.T) {
+	url, conn := migratedDatabase(t)
+	if _, err := conn.Exec(context.Background(), `
+		ALTER TABLE gateway_model_route DROP CONSTRAINT gateway_model_route_priority_chk;
+		ALTER TABLE gateway_model_route ADD CONSTRAINT gateway_model_route_priority_chk CHECK (priority >= 0)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil || !strings.Contains(err.Error(), "priority >= 1") {
+		t.Fatalf("wrong CHECK definition must be rejected, got %v", err)
+	}
+}
+
+// Recorded history is not proof that the schema has remained intact. The
+// deployment gate verifies the final catalog on every run, including a database
+// with all nine rows already recorded.
+func TestRecordedDatabaseStillFailsClosedOnDrift(t *testing.T) {
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	if _, err := conn.Exec(context.Background(),
+		`ALTER TABLE gateway_admin_user ALTER COLUMN status SET DEFAULT 0`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	if _, err := Apply(context.Background(), url, repoMigrations); err == nil {
+		t.Fatal("recorded migration history must not bypass final schema verification")
+	}
+}
+
+// A failed bootstrap leaves an empty schema_migrations table behind. That
+// state must remain a bootstrap on the next invocation; otherwise the ordinary
+// per-file path records all migrations without running the final contract.
+func TestFailedBootstrapCannotBypassContractOnSecondRun(t *testing.T) {
+	url := isolatedDatabase(t)
+	conn := connect(t, url)
+	if _, err := conn.Exec(context.Background(),
+		`CREATE TABLE gateway_tenant (id UUID PRIMARY KEY, code INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(context.Background())
+
+	for run := 1; run <= 2; run++ {
+		if _, err := Apply(context.Background(), url, repoMigrations); err == nil {
+			t.Fatalf("run %d accepted the drifted schema", run)
+		}
+		conn = connect(t, url)
+		var count int
+		if err := conn.QueryRow(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close(context.Background())
+		if count != 0 {
+			t.Fatalf("run %d recorded %d migrations after failed verification", run, count)
+		}
 	}
 }
 

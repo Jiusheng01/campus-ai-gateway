@@ -449,7 +449,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		if a.isBenignRace(fresh, presented, now) {
 			return a.finishRefresh(session, user, nextPlain, now)
 		}
-		return a.replayOrReject(ctx, tok, fresh, user.ID)
+		return a.replayOrReject(ctx, tok, fresh, presented, user.ID)
 
 	case a.isBenignRace(session, presented, now):
 		// This request read the row before the winner's rotation landed. The
@@ -458,24 +458,23 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		return a.finishRefresh(session, user, nextPlain, now)
 
 	default:
-		return a.replayOrReject(ctx, tok, session, user.ID)
+		return a.replayOrReject(ctx, tok, session, presented, user.ID)
 	}
 }
 
 // replayOrReject distinguishes a genuine replay from a forged token and is the
 // single place a family-wide revocation is decided.
 //
-// Only a signed v2 token (the bearer proved knowledge of the signing secret)
-// that is neither the current hash nor a grace-window predecessor can reach here
-// as a real replay: a genuine token was copied and replayed. That revokes the
-// account's whole session family. Anything else — a legacy "<sid>.<guess>" whose
-// hash does not match the database, or a v2 token that survived the MAC check to
-// get here — is a forgery: the attacker knew the session id but not the secret,
-// and guessing the secret is precluded by the stored hash. Forging it must never
-// revoke, so it is an unauthenticated 401 with no side effect. This is exactly
-// the P1-04 invariant.
-func (a *adminAuthService) replayOrReject(ctx context.Context, tok security.AdminRefreshToken, session model.AdminSession, userID string) (adminTokens, error) {
-	if tok.Signed {
+// A signed v2 token proves authenticity through its MAC. A legacy token cannot
+// do that on its own, but an exact match with previous_refresh_hash proves the
+// database issued it; once its grace has expired it is equally a genuine
+// replay. An older legacy generation no longer present in either digest slot is
+// unprovable and is rejected without revocation, as is any guessed legacy
+// secret. This keeps the family-revocation decision evidence-based.
+func (a *adminAuthService) replayOrReject(ctx context.Context, tok security.AdminRefreshToken, session model.AdminSession, presented, userID string) (adminTokens, error) {
+	legacyPrevious := !tok.Signed && session.PreviousRefreshHash != "" &&
+		adminRefreshDigestEqual(presented, session.PreviousRefreshHash)
+	if tok.Signed || legacyPrevious {
 		return a.replayDetected(ctx, userID)
 	}
 	return adminTokens{}, ErrAdminUnauthenticated
