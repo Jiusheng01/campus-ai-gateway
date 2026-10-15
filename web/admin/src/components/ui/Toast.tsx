@@ -10,6 +10,8 @@ type Api = {
   error: (text: string) => void
   warning: (text: string) => void
   info: (text: string) => void
+  /** Drops every queued message. Used when the account changes. */
+  clear: () => void
 }
 
 const ToastCtx = createContext<Api>({
@@ -17,6 +19,7 @@ const ToastCtx = createContext<Api>({
   error: () => {},
   warning: () => {},
   info: () => {},
+  clear: () => {},
 })
 
 export const useToast = () => useContext(ToastCtx)
@@ -39,14 +42,22 @@ export function ToastProvider({children}: {children: ReactNode}) {
     setItems(prev => [...prev.slice(-3), {id: Date.now() + Math.random(), tone, text}])
   }, [])
 
+  // A toast outlives the session it was shown in: the provider sits at the root,
+  // so signing out and signing in as someone else would leave the previous
+  // account's message on screen — including one about another user's
+  // permissions. Clearing on account change keeps each message attached to the
+  // action that produced it.
+  const clear = useCallback(() => setItems([]), [])
+
   const api = useMemo<Api>(
     () => ({
       success: (t: string) => push('success', t),
       error: (t: string) => push('error', t),
       warning: (t: string) => push('warning', t),
       info: (t: string) => push('info', t),
+      clear,
     }),
-    [push],
+    [push, clear],
   )
 
   return (

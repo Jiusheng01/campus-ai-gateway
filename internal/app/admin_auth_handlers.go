@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +20,15 @@ import (
 // carry a few short strings; anything larger is an attack or a bug.
 const adminAuthBodyLimit = 4 << 10
 
+// adminAuthReadDeadline bounds how long an auth request body may take to
+// arrive. It is deliberately not a Server.ReadTimeout: the data plane streams
+// SSE and long generations, so a global read timeout would cut off live
+// responses. The auth endpoints are small and interactive, and a Slowloris
+// trickles a valid prefix then stalls, so only these handlers get a tight
+// read deadline — which frees the goroutine and connection after a few seconds
+// instead of letting the handler block on a body that never finishes.
+const adminAuthReadDeadline = 5 * time.Second
+
 // --- response shapes -------------------------------------------------------
 
 // adminAuthConfigResponse describes the login system to an unauthenticated
@@ -31,6 +42,11 @@ type adminAuthConfigResponse struct {
 	SetupAllowedHere  bool   `json:"setup_allowed_here"`
 	MinPasswordLength int    `json:"min_password_length"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
+	// RegistrationEnabled is false while the system still needs initialising,
+	// even when public registration is configured on: the first super
+	// administrator must come from the local setup flow, so offering a
+	// registration form would lead straight into a 409.
+	RegistrationEnabled bool `json:"registration_enabled"`
 }
 
 // adminAccountView is the safe projection of an account. The password hash is
@@ -96,6 +112,7 @@ func (s *Server) handleAdminAuthConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.NeedsSetup = needsSetup
+		out.RegistrationEnabled = s.cfg.PublicRegistrationEnabled && !needsSetup
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -143,7 +160,7 @@ func (s *Server) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in adminSetupRequest
-	if err := decodeAdminAuthBody(r, &in); err != nil {
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}
@@ -193,7 +210,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in adminLoginRequest
-	if err := decodeAdminAuthBody(r, &in); err != nil {
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}
@@ -259,6 +276,21 @@ func (s *Server) handleAdminRefresh(w http.ResponseWriter, r *http.Request) {
 
 // --- POST /admin/logout and POST /admin/auth/logout ------------------------
 
+// logoutAuditAction names the audit row a logout request writes.
+//
+// The HTTP response is a 200 either way — the browser always gets its cookie
+// cleared, because it has to be able to leave — but the trail must be able to
+// tell a device that signed out from a request that presented a token the
+// session did not own. The latter revokes nothing, and recording it as a
+// successful logout would hide exactly the signal an operator investigating
+// session tampering looks for.
+func logoutAuditAction(revoked bool) string {
+	if revoked {
+		return "admin_logout"
+	}
+	return "admin_logout_rejected"
+}
+
 // handleAdminLogout revokes the session behind the refresh cookie.
 //
 // The cookie Path is scoped to /admin/auth, so a browser only attaches it to
@@ -279,10 +311,11 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if raw, err := readAdminRefreshCookie(r); err == nil && s.adminAuth != nil {
-		if err := s.adminAuth.logout(r.Context(), raw); err != nil {
+		revoked, err := s.adminAuth.logout(r.Context(), raw)
+		if err != nil {
 			log.Printf("admin logout: %v", err)
 		}
-		s.auditAdminAuth(r, "admin_logout", http.StatusOK, "")
+		s.auditAdminAuth(r, logoutAuditAction(revoked), http.StatusOK, "")
 	}
 	s.clearAdminRefreshCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -309,7 +342,7 @@ func (s *Server) handleAdminPasswordChange(w http.ResponseWriter, r *http.Reques
 	}
 
 	var in adminPasswordChangeRequest
-	if err := decodeAdminAuthBody(r, &in); err != nil {
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
 		writeAdminError(w, reqID, ErrAdminBadRequest)
 		return
 	}
@@ -405,8 +438,6 @@ func (s *Server) handleAdminSessionByID(w http.ResponseWriter, r *http.Request) 
 // --- shared helpers --------------------------------------------------------
 
 func loginResponseFrom(t adminTokens) adminLoginResponse {
-	roles := make([]string, 0, len(t.User.Roles))
-	roles = append(roles, t.User.Roles...)
 	return adminLoginResponse{
 		AccessToken: t.AccessToken,
 		ExpiresAt:   t.AccessExpiresAt.UTC().Format(time.RFC3339),
@@ -414,20 +445,100 @@ func loginResponseFrom(t adminTokens) adminLoginResponse {
 			ID:          t.User.ID,
 			Username:    t.User.Username,
 			DisplayName: t.User.DisplayName,
-			Roles:       roles,
+			// Normalised so the client never has to reason about whether
+			// "member" sits alongside a management role.
+			Roles: NormalizeAccountRoles(t.User.Roles),
 		},
 	}
 }
 
-func decodeAdminAuthBody(r *http.Request, dst any) error {
-	defer func() { _, _ = io.Copy(io.Discard, r.Body); _ = r.Body.Close() }()
-	dec := json.NewDecoder(io.LimitReader(r.Body, adminAuthBodyLimit))
+// decodeAdminAuthBody decodes exactly one JSON value from the request body.
+//
+// Four boundaries are enforced together, because each on its own is
+// insufficient:
+//
+//   - DisallowUnknownFields refuses a body carrying "roles" or "status" where
+//     none is expected, so a privilege-injection attempt is a loud 400 instead
+//     of a silently ignored field.
+//   - The body is read at most adminAuthBodyLimit+1 bytes, enforced by
+//     http.MaxBytesReader at the transport layer, so an oversized body is
+//     refused whole rather than truncated and decoded from its first fragment.
+//   - A read deadline on the live connection releases the handler if a client
+//     trickles the body slower than the deadline: a byte cap alone does not
+//     stop a Slowloris that never reaches the cap, because the handler would
+//     block on the read until the (capped) body finally arrived. The deadline
+//     bounds that wait to a few seconds and frees the goroutine and connection.
+//   - The second Decode accepts nothing but io.EOF. A valid object followed by
+//     a second JSON value is the canonical request-smuggling shape — an
+//     interceptor can hide a second instruction in one envelope, and a proxy
+//     in front of the gateway can end up disagreeing with the gateway about
+//     how many requests arrived. Only whitespace may trail the value.
+//
+// The body is never drained. A body within the cap was consumed in full by the
+// bounded read, so there is nothing left; a body beyond the cap is being
+// refused, and the server closes the connection when the handler returns with
+// the request unread — the correct outcome for an oversized or double-value
+// body. An unbounded drain used to let a client stream an endless request and
+// hold the handler open indefinitely, one goroutine and one connection per
+// request; reusing a connection for a request we reject is worth less than
+// never being held open.
+//
+// The helper returns the decoding error itself; every caller maps any failure
+// to ErrAdminBadRequest, so the distinct shapes collapse to one stable
+// 400 invalid_request.
+func decodeAdminAuthBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	// Bound the time the body may take to arrive. ResponseController supports
+	// SetReadDeadline only on a live connection; httptest recorders and other
+	// non-connection writers report http.ErrNotSupported, which we ignore — the
+	// byte cap below still holds, and a non-deadline-able writer is a test
+	// double, not a deployment.
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(adminAuthReadDeadline)); err != nil {
+		if !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("set admin auth request read deadline: %w", err)
+		}
+	} else {
+		// ResponseController deadlines are connection-level. net/http clears the
+		// deadline before its keep-alive loop, and clearing it here as well keeps
+		// the helper correct under custom servers and middleware.
+		defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+	}
+
+	// http.MaxBytesReader enforces the cap at the transport layer: once the
+	// limit is reached the read returns an error instead of waiting for the
+	// rest of a body the client may be sending slowly.
+	limited := http.MaxBytesReader(w, r.Body, int64(adminAuthBodyLimit)+1)
+	raw, err := io.ReadAll(limited)
+	_ = r.Body.Close()
+	if err != nil {
+		// The byte cap was exceeded, or the read deadline (Slowloris) fired,
+		// or the connection broke. All mean an unreadable body: refuse it.
+		if len(raw) > adminAuthBodyLimit {
+			return errAdminAuthBodyTooLarge
+		}
+		return fmt.Errorf("read admin auth body: %w", err)
+	}
+	if len(raw) > adminAuthBodyLimit {
+		return errAdminAuthBodyTooLarge
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return err
 	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return errTrailingJSONValue
+	}
 	return nil
 }
+
+// errAdminAuthBodyTooLarge is returned when the body exceeds the cap. The cap
+// is small — a few short strings — so anything larger is an attack or a bug.
+var (
+	errAdminAuthBodyTooLarge = errors.New("request body too large")
+	errTrailingJSONValue     = errors.New("request body must contain exactly one JSON value")
+)
 
 func statusForAdminError(err error) int {
 	status, _ := adminErrorStatus(err)

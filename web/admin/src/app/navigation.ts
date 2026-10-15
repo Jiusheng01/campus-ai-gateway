@@ -7,47 +7,88 @@ import {
   Route,
   Settings,
   ShieldAlert,
+  UserRound,
   Users,
   type LucideIcon,
 } from 'lucide-react'
 
-export type Page = 'dashboard' | 'providers' | 'models' | 'tenants' | 'keys' | 'logs' | 'audit' | 'security' | 'settings'
+export type Page =
+  | 'dashboard'
+  | 'providers'
+  | 'models'
+  | 'tenants'
+  | 'keys'
+  | 'logs'
+  | 'audit'
+  | 'security'
+  | 'users'
+  | 'settings'
+  | 'account'
 
-export type NavItem = {id: Page; label: string; icon: LucideIcon}
+export type NavItem = {
+  id: Page
+  label: string
+  icon: LucideIcon
+  /**
+   * Roles that may see this entry. The lists mirror what the gateway's RBAC
+   * allow-list actually permits, so the navigation never offers a page whose
+   * only possible result is a 403. Hiding an entry is a convenience, not a
+   * permission: the backend stays the real boundary.
+   */
+  roles: string[]
+}
 
 export type NavGroup = {id: string; label: string; items: NavItem[]}
 
-// Nine flat entries force the eye to re-read the whole list on every visit.
-// Grouping them by what the operator is trying to do makes the console
-// scannable as it grows.
+// MANAGEMENT mirrors the gateway's allow-list for the pages every
+// administrator may reach. tenant_admin is deliberately absent: it is inert
+// until the scoped tenant membership exists, so offering it here would only
+// lead to a 403.
+const MANAGEMENT = ['super_admin', 'gateway_admin', 'auditor', 'operator']
+
+// Entries are grouped by what the operator is trying to do. A group disappears
+// when none of its items survive filtering, so a member does not end up staring
+// at an empty "模型服务" heading.
 export const navGroups: NavGroup[] = [
-  {id: 'overview', label: '概览', items: [{id: 'dashboard', label: '总览', icon: LayoutDashboard}]},
+  {
+    id: 'overview',
+    label: '概览',
+    items: [{id: 'dashboard', label: '总览', icon: LayoutDashboard, roles: MANAGEMENT}],
+  },
   {
     id: 'models',
     label: '模型服务',
     items: [
-      {id: 'providers', label: '供应商', icon: Network},
-      {id: 'models', label: '模型与路由', icon: Route},
+      {id: 'providers', label: '供应商', icon: Network, roles: ['super_admin', 'gateway_admin']},
+      {id: 'models', label: '模型与路由', icon: Route, roles: ['super_admin', 'gateway_admin']},
     ],
   },
   {
     id: 'access',
     label: '访问管理',
     items: [
-      {id: 'tenants', label: '租户', icon: Users},
-      {id: 'keys', label: 'API Key', icon: KeyRound},
+      {id: 'tenants', label: '租户', icon: Users, roles: ['super_admin']},
+      {id: 'keys', label: 'API Key', icon: KeyRound, roles: ['super_admin']},
     ],
   },
   {
     id: 'observability',
     label: '可观测性',
     items: [
-      {id: 'logs', label: '请求日志', icon: FileClock},
-      {id: 'audit', label: '管理审计', icon: Database},
-      {id: 'security', label: '安全事件', icon: ShieldAlert},
+      {id: 'logs', label: '请求日志', icon: FileClock, roles: ['super_admin', 'auditor']},
+      {id: 'audit', label: '管理审计', icon: Database, roles: ['super_admin', 'auditor']},
+      {id: 'security', label: '安全事件', icon: ShieldAlert, roles: ['super_admin', 'auditor']},
     ],
   },
-  {id: 'system', label: '系统', items: [{id: 'settings', label: '系统设置', icon: Settings}]},
+  {
+    id: 'system',
+    label: '系统',
+    items: [
+      {id: 'users', label: '用户与权限', icon: UserRound, roles: ['super_admin']},
+      {id: 'settings', label: '系统设置', icon: Settings, roles: MANAGEMENT},
+      {id: 'account', label: '我的账号', icon: UserRound, roles: ['member']},
+    ],
+  },
 ]
 
 /** Title and one-line context for the topbar. */
@@ -60,7 +101,28 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   logs: {title: '请求日志', subtitle: '检索与排查业务请求'},
   audit: {title: '管理审计', subtitle: '管理员对控制面的操作记录'},
   security: {title: '安全事件', subtitle: '鉴权、权限与配额拒绝事件'},
+  users: {title: '用户与权限', subtitle: '管理注册用户和管理员角色'},
   settings: {title: '系统设置', subtitle: '账号、认证方式与登录设备'},
+  account: {title: '我的账号', subtitle: '账号状态与安全设置'},
 }
 
 export const allNavItems: NavItem[] = navGroups.flatMap(g => g.items)
+
+/** Pages the account may enter, in navigation order. */
+export function allowedPages(roles: string[]): Page[] {
+  return allNavItems.filter(item => roleGranted(item.roles, roles)).map(item => item.id)
+}
+
+/** Where an account lands after signing in: the dashboard if it may see it, else the first page it may. */
+export function landingPage(roles: string[]): Page {
+  const allowed = allowedPages(roles)
+  if (allowed.includes('dashboard')) return 'dashboard'
+  return allowed[0] || 'account'
+}
+
+// roleGranted is permissive about an account with no roles at all: the gateway
+// treats it as a member, so the navigation has to agree.
+function roleGranted(allowed: string[], roles: string[]): boolean {
+  if (!roles.length) return allowed.includes('member')
+  return roles.some(r => allowed.includes(r))
+}

@@ -21,6 +21,27 @@ const AdminSessionSecretMinBytes = 32
 // every other HMAC the gateway computes with that secret.
 const adminSessionDerivationLabel = "campus-admin-session-v1"
 
+// adminRefreshReplayGraceDefault is how long a just-superseded refresh token
+// remains acceptable as a benign concurrent refresh when
+// ADMIN_REFRESH_REPLAY_GRACE is not set.
+//
+// Five seconds, not thirty. The window buys exactly one thing: two refreshes
+// that genuinely race — two tabs, two requests in flight, a retried refresh —
+// converge on the same successor instead of one of them being mistaken for a
+// stolen token. Every additional second only extends how long a *stolen
+// superseded* token keeps being accepted, which is not a trade worth making.
+//
+// What this value does not do, stated plainly so no one has to guess: it does
+// not protect a stolen *current* refresh token, which is usable regardless of
+// this setting, and it does not replace HttpOnly, Secure, SameSite,
+// rotation, replay detection or session-family revocation — those remain the
+// controls. Shortening the window reduces the previous-generation silent reuse
+// window; it does not eliminate refresh-token theft risk.
+//
+// A deployment behind an unusually slow proxy may raise the value
+// deliberately; zero would turn ordinary races into account-wide lockouts.
+const adminRefreshReplayGraceDefault = 5 * time.Second
+
 type Config struct {
 	HTTPAddr             string
 	DatabaseURL          string
@@ -64,7 +85,27 @@ type Config struct {
 	// AdminRefreshReplayGrace is how long a just-rotated refresh token is still
 	// accepted as a benign concurrent refresh (two browser tabs racing). Reuse
 	// beyond this window is treated as replay and revokes the session family.
+	// The default lives in adminRefreshReplayGraceDefault; the environment
+	// variable ADMIN_REFRESH_REPLAY_GRACE still overrides it.
 	AdminRefreshReplayGrace time.Duration
+
+	// PublicRegistrationEnabled opens POST /auth/register to anyone who can
+	// reach the login screen.
+	//
+	// It defaults to false. The confirmed architecture puts campus SSO in
+	// front of the gateway, and a "member" has no data-plane capability yet,
+	// so an open anonymous password signup adds abuse surface without adding
+	// anything an account can do. An operator who wants it — for a controlled
+	// trial, or because the deployment genuinely wants local accounts — turns
+	// it on explicitly; the rest of the account system is unaffected either
+	// way.
+	PublicRegistrationEnabled bool
+	// PublicRegisterMaxAttempts and PublicRegisterWindow bound how many
+	// registration attempts one source address may make. Every attempt counts,
+	// including ones that fail on a duplicate username, because the counter
+	// exists to stop automated account creation rather than to punish typos.
+	PublicRegisterMaxAttempts int64
+	PublicRegisterWindow      time.Duration
 }
 
 func LoadConfig() (Config, error) {
@@ -97,7 +138,11 @@ func LoadConfig() (Config, error) {
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
 
 		AdminSessionSecret:      os.Getenv("ADMIN_SESSION_SECRET"),
-		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", 30*time.Second),
+		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", adminRefreshReplayGraceDefault),
+
+		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", false),
+		PublicRegisterMaxAttempts: getenvInt64("PUBLIC_REGISTER_MAX_ATTEMPTS", 5),
+		PublicRegisterWindow:      getenvDuration("PUBLIC_REGISTER_WINDOW", time.Hour),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -130,6 +175,12 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.AdminLoginWindow <= 0 {
 		return Config{}, errors.New("ADMIN_LOGIN_WINDOW must be positive")
+	}
+	if cfg.PublicRegisterMaxAttempts < 0 {
+		return Config{}, errors.New("PUBLIC_REGISTER_MAX_ATTEMPTS cannot be negative")
+	}
+	if cfg.PublicRegisterWindow <= 0 {
+		return Config{}, errors.New("PUBLIC_REGISTER_WINDOW must be positive")
 	}
 	for _, cidr := range cfg.TrustedProxyCIDRs {
 		if _, _, err := parseCIDROrIP(cidr); err != nil {
@@ -166,6 +217,17 @@ func parseCIDROrIP(raw string) (*net.IPNet, net.IP, error) {
 // for existing deployments and are treated as opt-in legacy paths.
 func (c Config) SessionAuthEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "session")
+}
+
+// PublicRegistrationOpen reports whether local account registration is served
+// at all.
+//
+// Registration belongs to the local account system, so the two other modes
+// never offer it: trusted-header deployments get their accounts from the campus
+// identity platform, and the token mode is a break-glass path with no accounts
+// behind it.
+func (c Config) PublicRegistrationOpen() bool {
+	return c.SessionAuthEnabled() && c.PublicRegistrationEnabled
 }
 
 // AdminSessionKey returns the key material for administrator session

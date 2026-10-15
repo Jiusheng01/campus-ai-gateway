@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log"
 	"strings"
@@ -32,21 +33,44 @@ const (
 	adminSessionTouchInterval = 60 * time.Second
 
 	// Revocation reasons recorded in gateway_admin_session.revoke_reason.
-	revokeReasonLogout        = "logout"
-	revokeReasonPassword      = "password_changed"
-	revokeReasonReuse         = "refresh_reuse_detected"
-	revokeReasonDisabled      = "account_disabled"
-	revokeReasonStale         = "auth_version_mismatch"
-	revokeReasonAdminRevoked  = "revoked_by_admin"
+	//
+	// They are distinct so the device list and the audit trail say what
+	// happened. One PATCH produces one reason even when it changed several
+	// fields, because it was one logical change.
+	revokeReasonLogout          = "logout"
+	revokeReasonPassword        = "password_changed"
+	revokeReasonReuse           = "refresh_reuse_detected"
+	revokeReasonDisabled        = "account_disabled"
+	revokeReasonStale           = "auth_version_mismatch"
+	revokeReasonAdminRevoked    = "revoked_by_admin"
+	revokeReasonRoleChanged     = "role_changed"
+	revokeReasonStatusChanged   = "account_status_changed"
+	revokeReasonSecurityChanged = "account_security_changed"
+	// revokeReasonSignInFailed retires a session whose sign-in could not be
+	// completed — the row was committed, but the token never reached the
+	// client. It is distinct from every other reason so a device list can say
+	// "this was never a usable session" rather than "this was logged out".
+	revokeReasonSignInFailed = "signin_failed"
+
+	// Session login methods recorded in gateway_admin_session.login_method.
+	loginMethodPassword = "password"
+	loginMethodRegister = "register"
 )
 
 // adminStore is the slice of the storage layer the auth service depends on.
 // Narrowing it here keeps the service unit-testable with an in-memory fake.
 type adminStore interface {
-	CountAdminUsers(ctx context.Context) (int64, error)
+	CountSuperAdmins(ctx context.Context) (int64, error)
+	AdminUserStats(ctx context.Context) (model.AdminUserStats, error)
 	FindAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error)
 	FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error)
+	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	// UpdateAdminUserAccount is the only way an existing account is changed.
+	// Roles, status and display name go through one transaction so a rejected
+	// patch cannot half-apply, and so auth_version moves at most once.
+	UpdateAdminUserAccount(ctx context.Context, id string, mutation storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error)
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
@@ -73,11 +97,18 @@ type adminLoginLimiter interface {
 }
 
 // adminAuthService owns the whole credential lifecycle: password hashing,
-// session creation, access-token issuance and refresh rotation.
+// session creation, access-token issuance and refresh rotation. It also owns
+// public registration, because a registration is just an account creation
+// followed by a sign-in.
 type adminAuthService struct {
 	store   adminStore
 	limiter adminLoginLimiter
 	secret  []byte
+
+	// registration throttles public account creation. It is nil when the
+	// deployment has no registration path, and the register method tolerates
+	// that so tests can exercise the flow without a cache.
+	registration registrationLimiter
 
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
@@ -88,12 +119,18 @@ type adminAuthService struct {
 	// benign concurrent refresh. See refresh() for the full rationale.
 	grace time.Duration
 
+	// mint signs access tokens. It is a field rather than a direct call so a
+	// test can make minting fail after the session row is committed — the one
+	// interleaving that would otherwise leave a session nobody holds a token
+	// for.
+	mint func(user model.AdminUser, session model.AdminSession) (string, time.Time, error)
+
 	// now is injectable so tests can control expiry without sleeping.
 	now func() time.Time
 }
 
 func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []byte, cfg Config) *adminAuthService {
-	return &adminAuthService{
+	a := &adminAuthService{
 		store:       store,
 		limiter:     limiter,
 		secret:      secret,
@@ -104,6 +141,16 @@ func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []b
 		grace:       cfg.AdminRefreshReplayGrace,
 		now:         time.Now,
 	}
+	a.mint = a.mintAccessToken
+	return a
+}
+
+// withRegistrationLimiter attaches the public-registration throttle. It is a
+// setter rather than a constructor parameter so the session layer's own tests
+// can keep building a service without one.
+func (a *adminAuthService) withRegistrationLimiter(l registrationLimiter) *adminAuthService {
+	a.registration = l
+	return a
 }
 
 // adminTokens is what a successful login or refresh hands back to the HTTP
@@ -119,9 +166,14 @@ type adminTokens struct {
 
 // --- first-run setup -------------------------------------------------------
 
-// needsSetup reports whether no administrator account exists yet.
+// needsSetup reports whether the system still has to be initialised.
+//
+// The question is "is there a super administrator", not "is the account table
+// empty". Public registration can create members at any time, and those must
+// not close the setup window: otherwise a remote visitor could register a
+// throwaway member and leave the deployment with no administrator at all.
 func (a *adminAuthService) needsSetup(ctx context.Context) (bool, error) {
-	n, err := a.store.CountAdminUsers(ctx)
+	n, err := a.store.CountSuperAdmins(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -212,7 +264,7 @@ func (a *adminAuthService) login(ctx context.Context, username, password, ip, us
 		}
 	}
 
-	tokens, err := a.openSession(ctx, user, ip, userAgent)
+	tokens, err := a.openSession(ctx, user, ip, userAgent, loginMethodPassword)
 	if err != nil {
 		return adminTokens{}, err
 	}
@@ -232,14 +284,17 @@ func (a *adminAuthService) recordLoginFailure(ctx context.Context, ip, username 
 }
 
 // openSession creates the session row and mints both tokens.
-func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser, ip, userAgent string) (adminTokens, error) {
+//
+// loginMethod is recorded on the session so the device list and the audit trail
+// can tell a sign-in from an account that was created and signed in at once.
+func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser, ip, userAgent, loginMethod string) (adminTokens, error) {
 	now := a.now()
 	expiresAt := now.Add(a.refreshTTL)
 
 	// The session id is generated here rather than by the database so the
 	// refresh token can be derived from it before the single INSERT.
 	sid := uuid.NewString()
-	refreshPlain, refreshHash, err := security.NewAdminRefreshToken(sid)
+	refreshPlain, refreshHash, err := security.NewAdminRefreshToken(a.secret, sid)
 	if err != nil {
 		return adminTokens{}, ErrAdminInternal
 	}
@@ -249,7 +304,7 @@ func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser
 		UserID:          user.ID,
 		UserAuthVersion: user.AuthVersion,
 		RefreshHash:     refreshHash,
-		LoginMethod:     "password",
+		LoginMethod:     loginMethod,
 		IP:              truncate(ip, 64),
 		UserAgent:       truncate(userAgent, 256),
 		ExpiresAt:       expiresAt,
@@ -258,8 +313,19 @@ func (a *adminAuthService) openSession(ctx context.Context, user model.AdminUser
 		return adminTokens{}, ErrAdminInternal
 	}
 
-	access, accessExp, err := a.mintAccessToken(user, created)
+	access, accessExp, err := a.mint(user, created)
 	if err != nil {
+		// The session row is already committed, but the token that would have
+		// gone with it never existed. Leaving the row live would strand a
+		// session nobody can use: the account's device list would show a
+		// device that never existed, and the row would sit there until its
+		// refresh TTL expires. Retiring it here is what keeps the session list
+		// explainable — the account survives, and the user's next step is to
+		// log in, which the caller reports as a partial success.
+		//
+		// The revocation is best-effort: if the store is the thing that is
+		// broken, the error the caller sees is still the internal one.
+		_ = a.store.RevokeAdminSession(ctx, created.SID, revokeReasonSignInFailed)
 		return adminTokens{}, ErrAdminInternal
 	}
 	return adminTokens{
@@ -308,12 +374,18 @@ func (a *adminAuthService) mintAccessToken(user model.AdminUser, session model.A
 //     predecessor is a replay. Only then is the account's session family
 //     revoked.
 func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAgent string) (adminTokens, error) {
-	sid, secret, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
+	// Parse and, for the signed v2 form, verify the MAC in one step. A malformed
+	// token, or a v2 token whose MAC does not verify, proves nothing about the
+	// bearer — it is not a replay of a real token, so it must not revoke. Answer
+	// 401 with no side effect. This is the P1-04 fix: a forged "<sid>.<guess>"
+	// or "v2.<sid>.<guess>.<badmac>" can no longer trigger a family-wide
+	// revocation.
+	tok, err := security.ParseAdminRefreshToken(a.secret, refreshToken)
 	if err != nil {
 		return adminTokens{}, ErrAdminUnauthenticated
 	}
 
-	session, err := a.store.FindAdminSessionByID(ctx, sid)
+	session, err := a.store.FindAdminSessionByID(ctx, tok.SessionID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAdminSessionNotFound) {
 			return adminTokens{}, ErrAdminSessionNotFound
@@ -348,7 +420,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 	}
 
 	// Deterministic successor: identical for every caller presenting this token.
-	nextPlain, nextHash, err := security.DeriveNextAdminRefreshToken(a.secret, session.SID, secret)
+	nextPlain, nextHash, err := security.DeriveNextAdminRefreshToken(a.secret, session.SID, tok.Secret)
 	if err != nil {
 		return adminTokens{}, ErrAdminUnauthenticated
 	}
@@ -356,7 +428,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 	presented := security.HashAdminRefreshToken(strings.TrimSpace(refreshToken))
 
 	switch {
-	case presented == session.RefreshHash:
+	case adminRefreshDigestEqual(presented, session.RefreshHash):
 		rotated, err := a.store.RotateAdminSessionRefresh(ctx, session.SID, presented, nextHash, now.Add(a.grace))
 		if err != nil {
 			return adminTokens{}, ErrAdminInternal
@@ -377,7 +449,7 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		if a.isBenignRace(fresh, presented, now) {
 			return a.finishRefresh(session, user, nextPlain, now)
 		}
-		return a.replayDetected(ctx, session.UserID)
+		return a.replayOrReject(ctx, tok, fresh, presented, user.ID)
 
 	case a.isBenignRace(session, presented, now):
 		// This request read the row before the winner's rotation landed. The
@@ -386,14 +458,51 @@ func (a *adminAuthService) refresh(ctx context.Context, refreshToken, ip, userAg
 		return a.finishRefresh(session, user, nextPlain, now)
 
 	default:
-		return a.replayDetected(ctx, session.UserID)
+		return a.replayOrReject(ctx, tok, session, presented, user.ID)
 	}
+}
+
+// replayOrReject distinguishes a genuine replay from a forged token and is the
+// single place a family-wide revocation is decided.
+//
+// A signed v2 token proves authenticity through its MAC. A legacy token cannot
+// do that on its own, but an exact match with previous_refresh_hash proves the
+// database issued it; once its grace has expired it is equally a genuine
+// replay. An older legacy generation no longer present in either digest slot is
+// unprovable and is rejected without revocation, as is any guessed legacy
+// secret. This keeps the family-revocation decision evidence-based.
+func (a *adminAuthService) replayOrReject(ctx context.Context, tok security.AdminRefreshToken, session model.AdminSession, presented, userID string) (adminTokens, error) {
+	legacyPrevious := !tok.Signed && session.PreviousRefreshHash != "" &&
+		adminRefreshDigestEqual(presented, session.PreviousRefreshHash)
+	if tok.Signed || legacyPrevious {
+		return a.replayDetected(ctx, userID)
+	}
+	return adminTokens{}, ErrAdminUnauthenticated
+}
+
+// adminRefreshDigestEqual compares two refresh-token digests in constant time.
+//
+// The digest is not a secret in the cryptographic sense — it is a SHA-256 over
+// 256 bits of CSPRNG output — but it is exactly the value an attacker has to
+// match to rotate or revoke a session, so the comparison must not leak how
+// many leading bytes were right. Go's == short-circuits at the first differing
+// byte; this does not. One definition serves both the current and the
+// superseded generation, so there is exactly one comparison to audit.
+//
+// The constant-time property is a property of the implementation, not of a
+// test: a unit test can assert the verdicts below, but it cannot observe
+// timing. The guarantee comes from crypto/subtle.ConstantTimeCompare itself
+// and from there being no other Go-side digest comparison in the service — the
+// other comparison (rotation's compare-and-set) happens inside PostgreSQL's
+// WHERE clause, which is not a Go timing surface.
+func adminRefreshDigestEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // isBenignRace reports whether a presented hash is the session's just-superseded
 // refresh hash and still inside the grace window.
 func (a *adminAuthService) isBenignRace(session model.AdminSession, presented string, now time.Time) bool {
-	if session.PreviousRefreshHash == "" || presented != session.PreviousRefreshHash {
+	if session.PreviousRefreshHash == "" || !adminRefreshDigestEqual(presented, session.PreviousRefreshHash) {
 		return false
 	}
 	if session.PreviousRefreshValidUntil == nil {
@@ -403,8 +512,14 @@ func (a *adminAuthService) isBenignRace(session model.AdminSession, presented st
 }
 
 // finishRefresh mints the access token that accompanies a successful rotation.
+//
+// A failure here is not the same as a failure in openSession: the rotation has
+// already committed, and the client still holds the superseded token, so a
+// retry lands inside the grace window and succeeds. Revoking on a mint failure
+// would turn a recoverable race into a forced re-login, so the session is left
+// alone and the caller sees the internal error.
 func (a *adminAuthService) finishRefresh(session model.AdminSession, user model.AdminUser, nextPlain string, now time.Time) (adminTokens, error) {
-	access, accessExp, err := a.mintAccessToken(user, session)
+	access, accessExp, err := a.mint(user, session)
 	if err != nil {
 		return adminTokens{}, ErrAdminInternal
 	}
@@ -422,8 +537,16 @@ func (a *adminAuthService) finishRefresh(session model.AdminSession, user model.
 // replayDetected retires the whole session family of an account. A refresh
 // token that is neither the current hash nor a grace-window predecessor means a
 // copy leaked, so every session is revoked rather than just this one.
+//
+// The revocation failure is handled honestly: if the store cannot carry it out
+// we must not report a successful replay that never retired anything. We log the
+// gap and return ErrAdminInternal instead of ErrAdminRefreshReplay, so no
+// replay audit event is recorded for an action that did not happen.
 func (a *adminAuthService) replayDetected(ctx context.Context, userID string) (adminTokens, error) {
-	_ = a.store.RevokeSessionsForUser(ctx, userID, revokeReasonReuse)
+	if err := a.store.RevokeSessionsForUser(ctx, userID, revokeReasonReuse); err != nil {
+		log.Printf("admin refresh: replay detected for user %s but the session-family revocation failed: %v", userID, err)
+		return adminTokens{}, ErrAdminInternal
+	}
 	log.Printf("admin refresh: refresh token reuse outside the grace window for user %s; all sessions revoked", userID)
 	return adminTokens{}, ErrAdminRefreshReplay
 }
@@ -510,18 +633,70 @@ func tokenErrorToSentinel(err error) error {
 
 // --- logout and session management ----------------------------------------
 
-// logout revokes the session behind a refresh token. It is idempotent: an
-// unknown or already-revoked token still returns success so a client can always
-// clear its state.
-func (a *adminAuthService) logout(ctx context.Context, refreshToken string) error {
-	sid, _, err := security.SplitAdminRefreshToken(strings.TrimSpace(refreshToken))
+// logout revokes the session behind a refresh token and reports whether it
+// actually revoked one. It is idempotent: an unknown, malformed, already-revoked
+// or expired token still returns success so a client can always clear its
+// state.
+//
+// The session id is not authority. The token's own digest must match the
+// session's current refresh hash — or its grace-window predecessor, because two
+// browser tabs can race a rotation and the loser must still be able to sign its
+// device out. Without that check, anyone who learned a sid from a claim, a
+// device list or a log line could build "<sid>.anything" and log that operator
+// out, which is a denial of service against another account.
+//
+// A token that fails the check gets the same client-visible success and the
+// same cookie clearing as a valid one; it simply revokes nothing, so an
+// attacker probing with forged sids cannot tell a hit from a miss. The bool is
+// what keeps the audit trail honest: the browser always exits, but a request
+// whose token did not own the session must never be recorded as a logout that
+// happened.
+func (a *adminAuthService) logout(ctx context.Context, refreshToken string) (bool, error) {
+	raw := strings.TrimSpace(refreshToken)
+	// Parse the token (and, for v2, verify its MAC) to learn which session it
+	// claims. A malformed or MAC-forged token is not a logout of anything — the
+	// client still exits cleanly, but no session is touched.
+	tok, err := security.ParseAdminRefreshToken(a.secret, raw)
 	if err != nil {
-		return nil
+		return false, nil
 	}
-	if err := a.store.RevokeAdminSession(ctx, sid, revokeReasonLogout); err != nil {
-		return ErrAdminInternal
+	sid := tok.SessionID
+
+	session, err := a.store.FindAdminSessionByID(ctx, sid)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminSessionNotFound) {
+			// Never issued, or long gone: still a clean exit for the client.
+			return false, nil
+		}
+		// The store is unreachable. The client still gets to exit — the
+		// handler clears the cookie either way — but an unverified sid is
+		// never turned into a revocation on the way out.
+		log.Printf("admin logout: session lookup failed: %v", err)
+		return false, ErrAdminInternal
 	}
-	return nil
+
+	if !a.logoutTokenOwnsSession(session, raw) {
+		log.Printf("admin logout: the presented refresh token does not match the session it claims; nothing revoked")
+		return false, nil
+	}
+
+	if err := a.store.RevokeAdminSession(ctx, session.SID, revokeReasonLogout); err != nil {
+		return false, ErrAdminInternal
+	}
+	return true, nil
+}
+
+// logoutTokenOwnsSession reports whether the presented token is the session's
+// own refresh token: either the current generation, or the superseded one still
+// inside the concurrent-refresh grace window. The comparison is constant-time
+// and runs on digests, so neither the stored material nor the comparison
+// itself leaks the token.
+func (a *adminAuthService) logoutTokenOwnsSession(session model.AdminSession, raw string) bool {
+	presented := security.HashAdminRefreshToken(raw)
+	if adminRefreshDigestEqual(presented, session.RefreshHash) {
+		return true
+	}
+	return a.isBenignRace(session, presented, a.now())
 }
 
 // listSessions returns the caller's live sessions.
@@ -644,18 +819,14 @@ func validateAdminPassword(username, password string) error {
 }
 
 // filterAdminRoles keeps only known roles and returns them as a set.
+//
+// An account with no recognisable role becomes a plain member, never an
+// auditor. "auditor" grants read access to request logs and audit trails, so
+// quietly promoting an unlabelled account into it would hand out visibility
+// nobody granted. The trusted-header path has its own fallback and is not
+// affected: a campus proxy that sends no group still means "auditor" there.
 func filterAdminRoles(roles []string) map[string]bool {
-	out := make(map[string]bool, len(roles))
-	for _, r := range roles {
-		switch strings.TrimSpace(r) {
-		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":
-			out[strings.TrimSpace(r)] = true
-		}
-	}
-	if len(out) == 0 {
-		out["auditor"] = true
-	}
-	return out
+	return roleSet(roles)
 }
 
 func truncate(s string, max int) string {

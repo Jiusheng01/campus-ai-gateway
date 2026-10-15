@@ -91,6 +91,30 @@ openssl rand -base64 48
 - 已验证的恢复流程
 - 监控连接数、连接耗尽和慢查询
 
+### 数据库迁移
+
+Schema 由独立的 `cmd/migrate` 命令（实现位于 `internal/migrate`）管理，它是 schema
+的唯一来源：
+
+```powershell
+go run ./cmd/migrate -database-url "$env:DATABASE_URL" -migrations .\migrations
+```
+
+- 按文件名顺序应用 `migrations/` 下全部版本，每个文件在自己的事务内执行，
+  `schema_migrations`（version / filename / checksum / applied_at）与业务 DDL
+  同一事务提交：失败的文件不会留下记录，重跑只会重试它。
+- 已记录文件的校验值变化会直接失败。历史迁移不允许就地改写，改动历史等于要
+  拿线上数据赌一个猜测。
+- 没有 `schema_migrations` 的旧库（包括只应用过 `0001` 的部署）会按顺序重放全部
+  幂等迁移后再建立记录，一条命令补齐到最新版本。
+- 并发执行由 PostgreSQL advisory lock 串行化，两个实例同时启动也不会交叉应用。
+- 数据库不可达、权限不足、SQL 失败或校验冲突时命令非零退出。
+
+Docker Compose 栈把迁移做成一次性服务门禁：`migrate` 服务先运行，
+`gateway-server` 声明 `depends_on: migrate: condition: service_completed_successfully`，
+迁移失败时网关不会启动。镜像内只保留一份迁移源文件（`/migrations`），
+`docker-entrypoint-initdb.d` 的双轨装载已移除，避免两套机制产生不同结构。
+
 ## 5. Redis
 
 推荐生产基线：

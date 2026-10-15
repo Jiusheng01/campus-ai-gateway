@@ -211,17 +211,18 @@ if (-not $dbReady) {
 }
 Write-Ok "PostgreSQL is ready"
 
+$env:DATABASE_URL = "postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslmode=disable"
+
 Write-Step "Applying database migrations..."
-$migrations = Get-ChildItem ".\migrations\*.sql" -File | Sort-Object Name
-foreach ($migration in $migrations) {
-    Write-Host ("       -> " + $migration.Name)
-    Invoke-Native {
-        Get-Content $migration.FullName -Raw |
-            & docker compose @composeFiles exec -T postgres psql -v ON_ERROR_STOP=1 -U campus -d campus_gateway
-    }
-    if (-not (Test-NativeSuccess)) {
-        Fail ("Migration failed: " + $migration.Name)
-    }
+# The migrate command is the single source of truth for the schema. It applies
+# every file in order, records what it applied in schema_migrations, and
+# refuses to replay a historical file whose bytes changed — the per-file psql
+# loop this replaces had no record at all, so a partially applied set was
+# invisible until the gateway failed at runtime. It is the same binary the
+# Docker stack runs as its startup gate.
+Invoke-Native { & go run ./cmd/migrate -database-url $env:DATABASE_URL -migrations ".\migrations" }
+if (-not (Test-NativeSuccess)) {
+    Fail "Migration failed."
 }
 Write-Ok "Database migrations complete"
 
@@ -231,7 +232,6 @@ if (-not $env:ADMIN_TOKEN) {
 if (-not $env:API_KEY_HMAC_SECRET) {
     $env:API_KEY_HMAC_SECRET = $HmacSecret
 }
-$env:DATABASE_URL = "postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslmode=disable"
 $env:REDIS_ADDR = "127.0.0.1:6379"
 $env:THINKWATCH_URL = "http://127.0.0.1:8788"
 

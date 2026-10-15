@@ -93,10 +93,14 @@ func (s *Server) authenticateAdminTrustedHeader(r *http.Request) (adminPrincipal
 	if user == "" {
 		return adminPrincipal{}, ErrAdminUnauthenticated
 	}
+	// A verified identity whose groups map to no global role is a plain member.
+	//
+	// This used to default to auditor, which reads the global request log, the
+	// management audit trail and the security events. An authenticated but
+	// unmapped user was therefore handed visibility nobody granted. A missing or
+	// unrecognised group is a mapping gap, and a mapping gap must resolve to the
+	// least privilege, not to read access over the whole control plane.
 	roles := parseAdminRoles(r.Header.Get(s.cfg.AdminRolesHeader))
-	if len(roles) == 0 {
-		roles["auditor"] = true
-	}
 	return adminPrincipal{
 		Username: user,
 		User:     user,
@@ -114,36 +118,52 @@ func bearerValue(r *http.Request) string {
 	return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 }
 
+// parseAdminRoles parses the role list a campus proxy injected and returns it in
+// the same canonical form every other role path produces, so the proxy path
+// cannot end up reading the same list differently from a stored one.
+//
+// A group that maps to no global privilege is dropped rather than kept. Holding
+// a role that grants nothing would leave the principal's identity disagreeing
+// with what it may actually do, and "member" is the accurate description of an
+// account with no management grant. Unknown groups are dropped for the reason
+// they always were: a typo must not sit in a role set looking like a permission.
+//
+// The result is never empty — an account always has a role — and it is never
+// "auditor". Missing or unrecognised groups must not resolve to privilege.
 func parseAdminRoles(raw string) map[string]bool {
-	out := map[string]bool{}
 	raw = strings.NewReplacer(";", ",", " ", ",").Replace(raw)
+	parts := make([]string, 0, 4)
 	for _, item := range strings.Split(raw, ",") {
 		role := strings.TrimSpace(item)
-		switch role {
-		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":
-			out[role] = true
+		if role == RoleMember || IsManagementRole(role) {
+			parts = append(parts, role)
 		}
 	}
-	return out
+	return roleSet(parts)
 }
 
 // can reports whether the principal may perform the request. super_admin is
 // unrestricted; every other role is granted an explicit list of paths.
+//
+// This is an allow-list, and that is what keeps the user management API safe:
+// /admin/users is reachable only through the super_admin branch above, so no
+// other role — in particular not gateway_admin — can grant itself a role.
 func (p adminPrincipal) can(r *http.Request) bool {
-	if p.Roles["super_admin"] {
+	if p.Roles[RoleSuperAdmin] {
 		return true
 	}
 	path := r.URL.Path
 	method := r.Method
 
 	// Self-service endpoints are always available to any signed-in account:
-	// reading your own identity and rotating your own password must not depend
-	// on RBAC.
+	// reading your own identity, rotating your own password and managing your
+	// own devices must not depend on RBAC. This is also the whole of what a
+	// plain member may do — everything below is an explicit management grant.
 	if p.canSelfService(path, method) {
 		return true
 	}
 
-	if p.Roles["auditor"] && method == http.MethodGet {
+	if p.Roles[RoleAuditor] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
 			strings.HasPrefix(path, "/admin/request-logs"),
@@ -152,33 +172,39 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	if p.Roles["operator"] {
+	if p.Roles[RoleOperator] {
 		if method == http.MethodGet && path == "/admin/status" {
+			return true
+		}
+		// The connectivity test is a diagnostic, not an edit: an operator may
+		// run it and pick a model from the narrowed option list, but may not
+		// read or change the model configuration itself.
+		if method == http.MethodGet && path == "/admin/model-test-options" {
 			return true
 		}
 		if method == http.MethodPost && path == "/admin/model-test" {
 			return true
 		}
 	}
-	if p.Roles["gateway_admin"] {
+	if p.Roles[RoleGatewayAdmin] {
 		switch {
 		case strings.HasPrefix(path, "/admin/providers"),
 			strings.HasPrefix(path, "/admin/models"),
 			strings.HasPrefix(path, "/admin/model-routes"),
 			path == "/admin/thinkwatch/sync",
 			path == "/admin/model-test",
+			path == "/admin/model-test-options",
 			path == "/admin/status":
 			return true
 		}
 	}
-	if p.Roles["tenant_admin"] {
-		switch {
-		case strings.HasPrefix(path, "/admin/tenants"),
-			strings.HasPrefix(path, "/admin/api-keys"),
-			path == "/admin/status":
-			return true
-		}
-	}
+	// There is deliberately no tenant_admin branch. Its global form granted
+	// every tenant and every API key with no resource scope, so a holder could
+	// read and rewrite any tenant's credentials. The confirmed design puts
+	// tenant_admin *inside* a tenant, and until that membership model exists
+	// there is no correct scope to grant — so the role grants nothing rather
+	// than everything. An account still carrying the value is administratively
+	// inert and can be reassigned by a super administrator.
 	return false
 }
 

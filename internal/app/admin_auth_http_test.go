@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +19,8 @@ import (
 func newTestServer(t *testing.T, cfg Config) (*Server, *fakeAdminStore) {
 	t.Helper()
 	store := newFakeAdminStore()
-	svc := newAdminAuthService(store, newFakeLimiter(8), []byte("unit-test-signing-secret"), cfg)
+	svc := newAdminAuthService(store, newFakeLimiter(8), []byte("unit-test-signing-secret"), cfg).
+		withRegistrationLimiter(newFakeRegistrationLimiter(cfg.PublicRegisterMaxAttempts))
 	return &Server{cfg: cfg, adminAuth: svc, mux: http.NewServeMux()}, store
 }
 
@@ -491,7 +493,273 @@ func TestSetupHandlerDisabledInTokenMode(t *testing.T) {
 	}
 }
 
-// --- POST /admin/auth/refresh ---------------------------------------------
+// --- one JSON value per request body ---------------------------------------
+//
+// P1-05. decodeAdminAuthBody must accept exactly one JSON value, optionally
+// followed by whitespace.
+//
+// The old implementation stopped after the first Decode, so a body like
+// {"username":"a"}{"username":"b"} was accepted with the first object and the
+// second silently discarded. That is the classic request-smuggling shape: a
+// proxy in front of the gateway and the gateway itself can end up disagreeing
+// about how many requests arrived, and an interceptor can hide a second
+// instruction inside one envelope. This test fails on that implementation.
+func TestDecodeAdminAuthBodyAllowsExactlyOneJSONValue(t *testing.T) {
+	type payload struct {
+		Username string `json:"username"`
+	}
+	valid := `{"username":"campus-admin"}`
+
+	for _, tc := range []struct{ name, body string }{
+		{"second object", valid + `{"username":"attacker"}`},
+		{"object then array", valid + `[1,2]`},
+		{"object then scalar", valid + `123`},
+		{"object then string", valid + `"x"`},
+		{"object then null", valid + `null`},
+		{"object then true", valid + `true`},
+		{"garbage after whitespace", valid + "  \n oops"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(tc.body))
+			var got payload
+			if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
+				t.Fatalf("a second JSON value must be refused, decoded %+v", got)
+			}
+		})
+	}
+
+	for _, tc := range []struct{ name, body string }{
+		{"no trailing", valid},
+		{"newline", valid + "\n"},
+		{"spaces and tabs", valid + "  \t\n "},
+		{"crlf", valid + "\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(tc.body))
+			var got payload
+			if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err != nil {
+				t.Fatalf("trailing whitespace must be accepted, got %v", err)
+			}
+			if got.Username != "campus-admin" {
+				t.Fatalf("unexpected payload %+v", got)
+			}
+		})
+	}
+
+	// An empty or truncated body stays a refusal rather than a panic or a
+	// half-decoded struct.
+	for _, body := range []string{"", "   ", `{"username":`} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(body))
+		var got payload
+		if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
+			t.Fatalf("body %q must be refused", body)
+		}
+	}
+
+	// Over the cap the body is refused whole, not truncated and decoded from
+	// its first fragment: a value that only completes past the cap must not
+	// reach the handler.
+	oversized := `{"username":"` + strings.Repeat("a", adminAuthBodyLimit+64) + `"}`
+	if len(oversized) <= adminAuthBodyLimit {
+		t.Fatalf("test body must exceed the %d-byte cap", adminAuthBodyLimit)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(oversized))
+	var got payload
+	if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err == nil {
+		t.Fatal("an oversized body must be refused, not truncated and decoded")
+	}
+}
+
+// Every endpoint that shares the helper must refuse the smuggled shape: the
+// fix is in one place, so a single implementation covers login, setup,
+// register, password change and the user PATCH — and this pins that coverage
+// so a future endpoint cannot quietly opt out.
+func TestAuthEndpointsRejectSecondJSONValue(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublicRegistrationEnabled = true
+
+	s, store := newTestServer(t, cfg)
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	member := seedMember(t, store, "zhangsan", "Campus#2026Gate")
+	adminToken := accessTokenFor(t, s, "campus-admin", "Campus#2026Gate")
+
+	smuggle := func(valid string) string { return valid + `{"username":"attacker"}` }
+
+	login := func(body string) *httptest.ResponseRecorder {
+		return postJSON(t, http.HandlerFunc(s.handleAdminLogin), http.MethodPost, "/admin/login", body, nil)
+	}
+	register := func(body string) *httptest.ResponseRecorder {
+		return postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register", body, nil)
+	}
+	password := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/password", strings.NewReader(body))
+		req = req.WithContext(withAdminPrincipal(req.Context(), adminPrincipal{
+			UserID: member.ID, Username: member.Username, Roles: map[string]bool{RoleMember: true},
+		}))
+		rec := httptest.NewRecorder()
+		s.handleAdminPasswordChange(rec, req)
+		return rec
+	}
+	patchUser := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "http://gateway.local/admin/users/"+member.ID, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("X-Request-Id", "test-req")
+		rec := httptest.NewRecorder()
+		s.adminMiddleware(http.HandlerFunc(s.handleAdminUserByID)).ServeHTTP(rec, req)
+		return rec
+	}
+
+	cases := []struct {
+		endpoint string
+		valid    string
+		call     func(string) *httptest.ResponseRecorder
+	}{
+		{"login", `{"username":"campus-admin","password":"Campus#2026Gate"}`, login},
+		{"register", `{"username":"newuser","display_name":"新用户","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate"}`, register},
+		{"password change", `{"current_password":"Campus#2026Gate","new_password":"NewCampus#2027"}`, password},
+		{"user patch", `{"display_name":"新名字"}`, patchUser},
+	}
+	for _, tc := range cases {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			rec := tc.call(smuggle(tc.valid))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s with a second JSON value: expected 400, got %d: %s", tc.endpoint, rec.Code, rec.Body.String())
+			}
+			if code := errorCode(t, rec); code != "invalid_request" {
+				t.Fatalf("%s with a second JSON value: expected invalid_request, got %q", tc.endpoint, code)
+			}
+		})
+	}
+
+	// Setup is gated on "no super administrator yet", so it needs a server
+	// that has not been seeded.
+	t.Run("setup", func(t *testing.T) {
+		fresh, _ := newTestServer(t, cfg)
+		valid := `{"username":"campus-admin","display_name":"管理员","password":"Campus#2026Gate","confirm_password":"Campus#2026Gate"}`
+		req := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/setup", strings.NewReader(smuggle(valid)))
+		req.RemoteAddr = "127.0.0.1:40000"
+		rec := httptest.NewRecorder()
+		fresh.handleAdminSetup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("setup with a second JSON value: expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if code := errorCode(t, rec); code != "invalid_request" {
+			t.Fatalf("setup with a second JSON value: expected invalid_request, got %q", code)
+		}
+		if fresh.adminAuth == nil || len(store.users) != 2 {
+			t.Fatalf("a refused setup must not create an account, got %d users", len(store.users))
+		}
+	})
+}
+
+// The valid shapes keep working: one value plus whitespace is a normal login
+// and a normal registration, not an error.
+func TestAuthEndpointsAcceptSingleValueWithTrailingWhitespace(t *testing.T) {
+	s, _ := newTestServer(t, testConfig())
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAdminLogin), http.MethodPost, "/admin/login",
+		"{\"username\":\"campus-admin\",\"password\":\"Campus#2026Gate\"}\n  \t", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with trailing whitespace: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if findCookie(rec, adminRefreshCookieName) == nil {
+		t.Fatal("a valid login must still set the refresh cookie")
+	}
+}
+
+// --- the body is never read forever -----------------------------------------
+//
+// P1-02 (review). The old helper drained the request body with an unbounded
+// io.Copy in a defer. A client that kept the body open — a valid prefix
+// followed by an endless stream, or an endless stream from the start — left
+// the handler reading forever, one goroutine and one connection held per
+// request. The read is bounded by the same cap the decode uses, and an
+// oversized body forfeits connection reuse instead of being drained.
+//
+// These tests fail on that implementation: it never returns.
+
+// endlessAfterPrefix yields the prefix once and then streams filler forever,
+// which is what a client holding the request body open looks like.
+type endlessAfterPrefix struct {
+	prefix string
+	sent   bool
+}
+
+func (r *endlessAfterPrefix) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.prefix), nil
+	}
+	for i := range p {
+		p[i] = ' '
+	}
+	return len(p), nil
+}
+
+func (r *endlessAfterPrefix) Close() error { return nil }
+
+// endlessReader streams filler from the first byte on.
+type endlessReader struct{}
+
+func (endlessReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+func (endlessReader) Close() error { return nil }
+
+func TestDecodeAdminAuthBodyNeverReadsForever(t *testing.T) {
+	type payload struct {
+		Username string `json:"username"`
+	}
+
+	for _, tc := range []struct {
+		name string
+		body io.ReadCloser
+	}{
+		// The decode itself succeeds here; only the drain used to hang.
+		{"valid value then endless stream", &endlessAfterPrefix{prefix: `{"username":"campus-admin"}`}},
+		{"endless stream from the start", endlessReader{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() {
+				req := httptest.NewRequest(http.MethodPost, "/admin/login", nil)
+				req.Body = tc.body
+				var got payload
+				done <- decodeAdminAuthBody(httptest.NewRecorder(), req, &got)
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("an endless body must never decode successfully")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("decodeAdminAuthBody kept reading an endless body: the drain is unbounded")
+			}
+		})
+	}
+}
+
+// A body inside the cap still works through the same path, and the cap itself
+// still refuses a body beyond it — the bound is the one the decode documents.
+func TestDecodeAdminAuthBodyBoundsWhatItReads(t *testing.T) {
+	type payload struct {
+		Username string `json:"username"`
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login",
+		strings.NewReader(`{"username":"campus-admin"}`))
+	var got payload
+	if err := decodeAdminAuthBody(httptest.NewRecorder(), req, &got); err != nil {
+		t.Fatalf("a small body must decode: %v", err)
+	}
+	if got.Username != "campus-admin" {
+		t.Fatalf("unexpected payload %+v", got)
+	}
+}
 
 func loginForTest(t *testing.T, s *Server, store *fakeAdminStore) *httptest.ResponseRecorder {
 	t.Helper()
@@ -609,6 +877,42 @@ func TestLogoutHandlerRejectsCrossOrigin(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+// P1-04 at the HTTP boundary. A forged refresh cookie — the real session id
+// with a made-up secret — must not revoke the session it names. The handler
+// still answers 200 and still clears the cookie, because the browser has to be
+// able to exit, but the device stays signed in: that asymmetry is what makes a
+// forged sid worthless to an attacker.
+func TestLogoutHandlerForgedCookieDoesNotRevoke(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	login := loginForTest(t, s, store)
+	real := findCookie(login, adminRefreshCookieName)
+	if real == nil {
+		t.Fatal("login must set the refresh cookie")
+	}
+	// Keep the session id, replace the secret half of "sid.secret".
+	dot := strings.IndexByte(real.Value, '.')
+	if dot <= 0 {
+		t.Fatalf("unexpected refresh cookie shape %q", real.Value)
+	}
+	forged := &http.Cookie{Name: adminRefreshCookieName, Value: real.Value[:dot+1] + "not-the-real-secret"}
+
+	req := httptest.NewRequest(http.MethodPost, "http://gateway.local/admin/auth/logout", nil)
+	req.AddCookie(forged)
+	rec := httptest.NewRecorder()
+	s.handleAdminLogout(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if store.liveSessions() != 1 {
+		t.Fatal("a forged refresh cookie must not revoke the session it names")
+	}
+	cleared := findCookie(rec, adminRefreshCookieName)
+	if cleared == nil || cleared.Value != "" || cleared.MaxAge >= 0 {
+		t.Fatal("logout must still expire the cookie")
 	}
 }
 

@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {FlaskConical, Route} from 'lucide-react'
-import {api, type ModelConfig} from '../../api'
+import {api, type ModelTestOption} from '../../api'
 import {Drawer} from '../ui/Drawer'
 import {Button} from '../ui/Button'
 import {Field, Notice} from '../ui/Field'
@@ -31,7 +31,7 @@ export function ModelTestDrawer({
   initialModel,
   onClose,
 }: {
-  models: ModelConfig[]
+  models: ModelTestOption[]
   initialModel?: string
   onClose: () => void
 }) {

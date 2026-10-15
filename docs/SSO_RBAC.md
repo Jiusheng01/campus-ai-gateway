@@ -67,7 +67,7 @@ ADMIN_BOOTSTRAP_PASSWORD=<强密码>
 | `ADMIN_SESSION_SECRET` | 空 | 管理员会话专用密钥（Access Token 签名 + Refresh 轮换派生），至少 32 字节；空则从 `API_KEY_HMAC_SECRET` 域分离派生并告警 |
 | `ADMIN_ACCESS_TTL` | `15m` | Access Token 有效期 |
 | `ADMIN_REFRESH_TTL` | `720h`（30 天） | 会话与 Refresh Cookie 有效期 |
-| `ADMIN_REFRESH_REPLAY_GRACE` | `30s` | 刚被轮换掉的 Refresh Token 仍被视为「并发刷新」的宽限期，见 §1.5 |
+| `ADMIN_REFRESH_REPLAY_GRACE` | `5s` | 刚被轮换掉的 Refresh Token 仍被视为「并发刷新」的宽限期，见 §1.5 |
 | `ADMIN_LOGIN_MAX_ATTEMPTS` | `8` | 登录失败限流阈值（每个窗口）；用户名维度为 4 倍 |
 | `ADMIN_LOGIN_WINDOW` | `15m` | 限流窗口长度 |
 | `ADMIN_COOKIE_SECURE` | `false` | 走 HTTPS 时置 `true` |
@@ -130,6 +130,27 @@ previous_refresh_valid_until  该摘要仍可被接受的截止时间（now + AD
 - 多个浏览器标签页同时刷新**不会**被误判为凭据泄露，也不会互相清除对方的 Cookie；
 - 真正被轮换掉的旧 Token 在宽限期之外再次出现才会触发全会话撤销；
 - 只有 `session_revoked`、`session_expired`、`refresh_replay_detected` 等真实失败才会清除 Cookie。
+
+#### 宽限期的边界与适用建议
+
+宽限判定是 `now <= previous_refresh_valid_until`：等于截止时刻仍算宽限内，超出 1 纳秒即判 replay。
+默认 `5s`，显式设置 `ADMIN_REFRESH_REPLAY_GRACE` 优先；取值为 `0`、负数或无法解析时回落到默认值
+（不会以零宽限进入生产）。
+
+这个窗口只做一件事：让**真正在竞争的并发刷新**收敛到同一个后继 Token，而不是被误判为凭据泄露。
+需要分清它不做什么：
+
+- 它**不能**防止当前有效 Refresh Token 被盗——被窃的当代 Token 与本取值无关，任何时候都可用；
+- 它**不能**替代 `HttpOnly`、`Secure`、`SameSite`、确定性轮换、replay 检测和全会话撤销；
+- 缩短宽限期只是缩小「上一代 Token 可被静默接受」的时间窗，**不等于消除 Refresh Token 重放/被盗风险**。
+
+前端的单飞刷新（module 级共享 Promise）只避免**同一个 JS runtime** 内的重复请求；
+真正的跨标签页、跨 runtime 并发安全，依靠的是服务端的确定性后继、`previous_refresh_hash`
+与这里的宽限窗。两者互补，不能互相替代。
+
+生产建议：默认 `5s` 即可；处于高延迟网络、特殊反向代理或跨区域管理控制台之后可谨慎调到 `10s`。
+不建议恢复 `30s`（除非有明确实测需求），更不要设置为 `0s`——那会把正常的并发竞态
+变成全会话撤销。
 
 ### 1.6 反向代理下的真实客户端 IP
 
@@ -194,9 +215,11 @@ Redis 不可用时限流 fail-open（不锁死管理员），但会记录 warnin
 | 403 | 角色不足、账号被停用、初始化不允许、CSRF 校验失败 |
 | 429 | 登录尝试过于频繁 |
 | 400 | 请求体非法、密码不符合策略 |
-| 503 | **仅**表示认证模式未正确配置（缺少必需设置） |
+| 503 | 认证模式未正确配置；注册限流计数器不可用；注册创建的账号自动登录失败（提示直接登录） |
 
-认证失败**永远不会**返回 503，避免客户端把「凭证错误」误当成「服务暂时不可用」而无限重试。
+认证失败**永远不会**把凭证错误报成 503，避免客户端把「用户名或密码错误」误当成
+「服务暂时不可用」而无限重试。上表后两种 503 都带有可执行的下一步（稍后重试 / 直接登录），
+而不是要求重试同一请求。
 
 ---
 
@@ -204,9 +227,17 @@ Redis 不可用时限流 fail-open（不锁死管理员），但会记录 warnin
 
 - `super_admin`：全部管理权限
 - `gateway_admin`：Provider / Model / Route / ThinkWatch 同步 / 模型测试
-- `tenant_admin`：Tenant / API Key 管理
-- `auditor`：状态、请求日志、管理审计、安全事件
+- `tenant_admin`：**Phase 1 起不授予任何权限**。未作用域化的全局形态可以触达全部租户与
+  API Key，与已确认的「租户内 tenant_admin」设计矛盾，因此全局授权被收回：该名字仍作为
+  存量数据被识别、显示，可由 super_admin 显式替换，但不再出现在可授予列表，持有者等价于
+  `member`。作用域化成员关系属于后续阶段。
+- `auditor`：状态、请求日志、管理审计、安全事件（只读）
 - `operator`：运行状态和模型测试
+- `member`：没有管理角色；只能操作自己的账号（`/admin/whoami`、改密码、登录设备）
+
+`trusted-header` 模式下，代理未提供角色头、只提供未知角色、或提供已撤回的 `tenant_admin`
+时，身份解析为 **`member`**（最小权限），不再兜底为 `auditor`——一个已认证但未映射的
+账号不应该因此获得读取全部控制面的可见性。
 
 以下接口属于**自助操作，不受 RBAC 限制**——任何已登录管理员都可以操作自己的账号：
 
@@ -263,6 +294,10 @@ X-Forwarded-User: <stable campus account>
 X-Forwarded-Groups: gateway_admin,auditor
 ```
 
+角色头缺失、为空、或只包含未映射的组时，账号解析为 `member`（最小权限），不会被兜底
+提升为任何管理角色；组名大小写与分隔符（逗号 / 分号 / 空格）不敏感，未知组名被丢弃。
+身份头本身不是凭据：缺少或错误的 `X-Campus-Auth-Secret` 一律 401，与角色解析无关。
+
 启用 `trusted-header` 后，不要把 Gateway 管理端口直接暴露给用户网络，只有可信反向代理应该能访问该端口。
 
 #### Admin UI 在 `trusted-header` 模式下的行为
@@ -301,6 +336,17 @@ Gateway 本身不绑定具体学校 IdP。最终部署时需要在 oauth2-proxy 
 
 ## 5. 数据库迁移
 
+Schema 由独立命令 `cmd/migrate`（实现位于 `internal/migrate`）统一管理，本地开发与
+Docker 栈（一次性 migrate 服务门禁）使用同一实现：
+
+```powershell
+go run ./cmd/migrate -database-url "$env:DATABASE_URL" -migrations .\migrations
+```
+
+`migrations/` 下全部文件按版本顺序应用并记录在 `schema_migrations`
+（version / filename / checksum / applied_at），每个文件与自己的记录同一事务提交；
+已记录文件的校验值变化会失败，没有该表的旧库会重放全部幂等迁移后建立记录。
+
 管理员认证依赖两张表：
 
 - `gateway_admin_user`（`migrations/0007_admin_users.sql`）
@@ -311,7 +357,7 @@ Gateway 本身不绑定具体学校 IdP。最终部署时需要在 oauth2-proxy 
 - `previous_refresh_hash`
 - `previous_refresh_valid_until`
 
-三个脚本都是**幂等**的：
+这些脚本都是**幂等**的：
 
 - `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`
 - `0007` 还会为已存在的旧表补上 `auth_version` 列，并把大小写敏感的用户名唯一约束替换为 `lower(username)` 唯一索引

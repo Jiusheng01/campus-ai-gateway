@@ -29,10 +29,48 @@ export type AuthConfig={
   setup_allowed_here:boolean
   min_password_length:number
   access_ttl_seconds:number
+  /**
+   * Whether this deployment accepts public sign-ups. It is false while the
+   * first super administrator does not exist yet, because setup — not
+   * registration — creates that account.
+   */
+  registration_enabled:boolean
 }
 
 export type AdminUserView={id:string;username:string;display_name:string;roles:string[]}
+
+/**
+ * A row in the user management table. Deliberately narrow: the API never sends
+ * a password hash, a refresh hash or an auth_version, so there is nothing here
+ * for a script on the page to leak.
+ */
+export type AccountUser={
+  id:string
+  username:string
+  display_name:string
+  roles:string[]
+  status:number
+  last_login_at:string|null
+  created_at:string
+}
+
+export type AccountUserStats={
+  total:number
+  members:number
+  admins:number
+  disabled:number
+}
+
 export type LoginResult={access_token:string;expires_at:string;user:AdminUserView}
+
+/**
+ * The narrow model projection the connectivity test needs.
+ *
+ * It is not a ModelConfig: an operator may run a diagnostic without being
+ * allowed to read or edit the model configuration, so the gateway answers this
+ * from a dedicated endpoint that carries only what the picker renders.
+ */
+export type ModelTestOption={id:string;alias:string;status:number}
 export type AdminSessionView={
   id:string;current:boolean;login_method:string;ip:string;user_agent:string
   created_at:string;last_active_at:string;expires_at:string
@@ -73,7 +111,7 @@ export function clearSession(){accessToken='';accessExpiresAt=0}
 
 // Endpoints that must never trigger the refresh-and-retry loop: they either are
 // the refresh itself or are meant to fail with a visible message.
-const AUTH_PATHS=['/admin/auth-config','/admin/login','/admin/setup','/admin/auth/refresh','/admin/auth/logout','/admin/logout']
+const AUTH_PATHS=['/admin/auth-config','/admin/login','/admin/setup','/auth/register','/admin/auth/refresh','/admin/auth/logout','/admin/logout']
 function isAuthEndpoint(path:string){
   const base=path.split('?')[0]
   return AUTH_PATHS.some(p=>base===p)
@@ -172,6 +210,28 @@ export async function setupAdmin(input:{username:string;display_name:string;pass
   return out
 }
 
+/**
+ * register creates a public member account and signs it in.
+ *
+ * The server fixes the role list to ["member"] and refuses a body that carries
+ * role fields at all, so this function sends only the four fields it owns. The
+ * response is the same shape as a login: an access token plus the refresh
+ * cookie, which means a new user lands in the console without retyping the
+ * password they just chose.
+ */
+export async function register(input:{username:string;display_name:string;password:string;confirm_password:string}){
+  const r=await fetch('/auth/register',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(input),
+  })
+  const d=await r.json().catch(()=>({}))
+  if(!r.ok)throw new ApiError(d?.error?.message||'注册失败',r.status,d?.error?.code||'')
+  const out=d as LoginResult
+  applySession(out.access_token,out.expires_at)
+  return out
+}
+
 // logout calls the cookie-reachable path so the browser actually attaches the
 // refresh cookie. The server revokes the session and clears the cookie.
 export async function logout(){
@@ -203,4 +263,60 @@ export async function whoami(){
 
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
+}
+
+// --- user management (super_admin only) -----------------------------------
+
+/**
+ * listUsers reads the account table. The server answers 403 for every role
+ * other than super_admin, so the page it feeds is gated on the same thing.
+ */
+export async function listUsers(){
+  const d=await api<{data:AccountUser[];stats:AccountUserStats}>('/admin/users')
+  return {data:d.data||[],stats:d.stats}
+}
+
+export type UserPatch={
+  display_name?:string
+  roles?:string[]
+  status?:number
+}
+
+/**
+ * AccountChangeSet reports which fields a patch actually moved.
+ *
+ * It is computed by the gateway from the before and after states, not from the
+ * request body, so a patch that resent the current values reports no change and
+ * the console can avoid claiming otherwise.
+ */
+export type AccountChangeSet={
+  roles:boolean
+  status:boolean
+  display_name:boolean
+  authentication:boolean
+}
+
+/**
+ * updateUser sends only the fields that actually changed.
+ *
+ * A field that is absent from the patch is left alone by the gateway, so
+ * omitting the ones the operator did not touch is what keeps a display-name
+ * edit from signing the account out: sending all three fields would make every
+ * save look like a role change.
+ */
+export async function updateUser(id:string,patch:UserPatch){
+  const d=await api<{data:AccountUser;changes:AccountChangeSet}>(`/admin/users/${encodeURIComponent(id)}`,{
+    method:'PATCH',
+    body:JSON.stringify(patch),
+  })
+  return {user:d.data,changes:d.changes}
+}
+
+/**
+ * listModelTestOptions reads the model picker for the connectivity test. It is
+ * available to super_admin, gateway_admin and operator, unlike /admin/models.
+ */
+export async function listModelTestOptions(){
+  const d=await api<{data:ModelTestOption[]}>('/admin/model-test-options')
+  return d.data||[]
 }

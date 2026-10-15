@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +41,33 @@ type fakeAdminStore struct {
 	// instead of the stored row, then cleared. It reproduces the interleaving
 	// where a second request read the session before the first rotation landed.
 	staleRead *model.AdminSession
+
+	// findSessionErr, when set, makes every FindAdminSessionByID call fail.
+	// It models the store being unreachable, which is the case where a
+	// caller must not be able to turn an outage into a revocation.
+	findSessionErr error
+
+	// createSessionErr, when set, makes the next CreateAdminSession call fail
+	// and is then cleared. It models the store going away between the two
+	// writes a registration performs: the account is inserted, the session is
+	// not.
+	createSessionErr error
+
+	// revokeSessionsErr, when set, makes every RevokeSessionsForUser call fail.
+	// It models the store going away at exactly the moment a replay has to
+	// retire the session family, which is the case where the service must not
+	// report a revocation that did not happen.
+	revokeSessionsErr error
+
+	// revokes records every RevokeSessionsForUser call, so a test can assert
+	// that one logical mutation revoked once and not once per field.
+	revokes []revokeCall
+}
+
+// revokeCall is one recorded family revocation.
+type revokeCall struct {
+	UserID string
+	Reason string
 }
 
 func newFakeAdminStore() *fakeAdminStore {
@@ -49,8 +78,55 @@ func newFakeAdminStore() *fakeAdminStore {
 	}
 }
 
-func (f *fakeAdminStore) CountAdminUsers(context.Context) (int64, error) {
-	return int64(len(f.users)), nil
+func (f *fakeAdminStore) CountSuperAdmins(context.Context) (int64, error) {
+	var n int64
+	for _, u := range f.users {
+		if hasSuperAdmin(u.Roles) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// enabledSuperAdmins counts the accounts that keep the console administrable.
+// The real store enforces the same invariant inside a transaction; the fake
+// mirrors it so the service-level tests exercise the same rule.
+func (f *fakeAdminStore) enabledSuperAdmins() int64 {
+	var n int64
+	for _, u := range f.users {
+		if u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles) {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeAdminStore) AdminUserStats(context.Context) (model.AdminUserStats, error) {
+	var out model.AdminUserStats
+	for _, u := range f.users {
+		out.Total++
+		if hasManagementRole(u.Roles) {
+			out.Admins++
+		} else {
+			out.Members++
+		}
+		if u.Status != model.AdminStatusEnabled {
+			out.Disabled++
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAdminStore) ListAdminUsers(_ context.Context, limit int) ([]model.AdminUser, error) {
+	out := make([]model.AdminUser, 0, len(f.users))
+	for _, u := range f.users {
+		out = append(out, u)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
 func (f *fakeAdminStore) FindAdminUserByUsername(_ context.Context, username string) (model.AdminUser, error) {
@@ -70,8 +146,14 @@ func (f *fakeAdminStore) FindAdminUserByID(_ context.Context, id string) (model.
 }
 
 func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
-	if len(f.users) > 0 {
+	// Mirrors the storage guard: setup is closed by an existing super
+	// administrator, not by any account at all. A registered member must not
+	// be able to close the setup window.
+	if n, _ := f.CountSuperAdmins(context.Background()); n > 0 {
 		return model.AdminUser{}, storage.ErrAdminUserNotFound
+	}
+	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
 	}
 	f.seq++
 	id := uuid.NewString()
@@ -84,6 +166,86 @@ func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displ
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id
 	return u, nil
+}
+
+func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
+	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
+	}
+	f.seq++
+	id := uuid.NewString()
+	now := time.Now().UTC()
+	u := model.AdminUser{
+		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
+		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	f.users[id] = u
+	f.names[strings.ToLower(username)] = id
+	return u, nil
+}
+
+// UpdateAdminUserAccount mirrors the real transaction: compute the final state,
+// judge the super-administrator invariant once against that outcome, bump
+// auth_version at most once, and leave the row completely untouched when nothing
+// changed.
+func (f *fakeAdminStore) UpdateAdminUserAccount(_ context.Context, id string, m storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error) {
+	current, ok := f.users[id]
+	if !ok {
+		return model.AdminUser{}, storage.AdminUserChangeSet{}, storage.ErrAdminUserNotFound
+	}
+
+	next := current
+	if m.Roles != nil {
+		next.Roles = *m.Roles
+	}
+	if m.Status != nil {
+		next.Status = *m.Status
+	}
+	if m.DisplayName != nil {
+		next.DisplayName = *m.DisplayName
+	}
+
+	changes := storage.AdminUserChangeSet{
+		OldRoles:       current.Roles,
+		NewRoles:       next.Roles,
+		OldStatus:      current.Status,
+		NewStatus:      next.Status,
+		OldDisplayName: current.DisplayName,
+		NewDisplayName: next.DisplayName,
+	}
+	changes.RolesChanged = canonicalRoles(current.Roles) != canonicalRoles(next.Roles)
+	changes.StatusChanged = current.Status != next.Status
+	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
+
+	// The real store evaluates this against the final state, inside the same
+	// transaction as the write; the fake must not be more permissive than that
+	// or the service tests would pass against behaviour that does not exist.
+	if isEnabledSuperAdmin(current) && !isEnabledSuperAdmin(next) && f.enabledSuperAdmins() <= 1 {
+		return model.AdminUser{}, storage.AdminUserChangeSet{}, storage.ErrLastSuperAdmin
+	}
+
+	// A no-op is not a write.
+	if !changes.AnythingChanged() {
+		return current, changes, nil
+	}
+
+	if changes.AuthenticationChanged() {
+		next.AuthVersion++
+	}
+	next.UpdatedAt = time.Now().UTC()
+	f.users[id] = next
+	return next, changes, nil
+}
+
+// canonicalRoles gives a role list a comparable form so a reordered list is not
+// mistaken for a change.
+func canonicalRoles(roles []string) string {
+	return strings.Join(NormalizeAccountRoles(roles), ",")
+}
+
+func isEnabledSuperAdmin(u model.AdminUser) bool {
+	return u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles)
 }
 
 func (f *fakeAdminStore) UpdateAdminUserPassword(_ context.Context, id, hash string) error {
@@ -119,6 +281,11 @@ func (f *fakeAdminStore) TouchAdminUserLogin(_ context.Context, id string) {
 }
 
 func (f *fakeAdminStore) CreateAdminSession(_ context.Context, s model.AdminSession) (model.AdminSession, error) {
+	if f.createSessionErr != nil {
+		err := f.createSessionErr
+		f.createSessionErr = nil
+		return model.AdminSession{}, err
+	}
 	if _, exists := f.sessions[s.SID]; exists {
 		return model.AdminSession{}, errors.New("duplicate session id")
 	}
@@ -132,6 +299,9 @@ func (f *fakeAdminStore) CreateAdminSession(_ context.Context, s model.AdminSess
 }
 
 func (f *fakeAdminStore) FindAdminSessionByID(_ context.Context, sid string) (model.AdminSession, error) {
+	if f.findSessionErr != nil {
+		return model.AdminSession{}, f.findSessionErr
+	}
 	if f.staleRead != nil {
 		s := *f.staleRead
 		f.staleRead = nil
@@ -188,6 +358,10 @@ func (f *fakeAdminStore) RevokeAdminSession(_ context.Context, sid, reason strin
 }
 
 func (f *fakeAdminStore) RevokeSessionsForUser(_ context.Context, userID, reason string) error {
+	if f.revokeSessionsErr != nil {
+		return f.revokeSessionsErr
+	}
+	f.revokes = append(f.revokes, revokeCall{UserID: userID, Reason: reason})
 	for sid, s := range f.sessions {
 		if s.UserID != userID || s.RevokedAt != nil {
 			continue
@@ -209,6 +383,29 @@ func (f *fakeAdminStore) ListAdminSessions(_ context.Context, userID string) ([]
 		}
 	}
 	return out, nil
+}
+
+// revokeCallsFor counts how many times an account's sessions were revoked.
+func (f *fakeAdminStore) revokeCallsFor(userID string) int {
+	n := 0
+	for _, r := range f.revokes {
+		if r.UserID == userID {
+			n++
+		}
+	}
+	return n
+}
+
+// lastRevokeReason is the reason recorded by the most recent revocation of an
+// account's sessions.
+func (f *fakeAdminStore) lastRevokeReason(userID string) string {
+	reason := ""
+	for _, r := range f.revokes {
+		if r.UserID == userID {
+			reason = r.Reason
+		}
+	}
+	return reason
 }
 
 // liveSessions counts non-revoked sessions, used by assertions.
@@ -256,17 +453,64 @@ func (l *fakeLimiter) ResetAdminLogin(_ context.Context, ip, username string) er
 	return nil
 }
 
+// fakeRegistrationLimiter is an in-memory registrationLimiter.
+//
+// It mirrors the real limiter's shape: one call increments and decides, and the
+// count is compared after the increment, so a limit of five admits exactly five.
+// broken models a Redis outage, which registration must fail closed on.
+type fakeRegistrationLimiter struct {
+	mu     sync.Mutex
+	max    int64
+	window time.Duration
+	counts map[string]int64
+	// attempts counts every consumed unit of budget, which is what the tests
+	// assert on when they check that a failed attempt still costs.
+	attempts int64
+	broken   bool
+}
+
+func newFakeRegistrationLimiter(max int64) *fakeRegistrationLimiter {
+	return &fakeRegistrationLimiter{max: max, window: time.Hour, counts: map[string]int64{}}
+}
+
+func (l *fakeRegistrationLimiter) ConsumeRegistration(_ context.Context, ip string) (bool, time.Duration, error) {
+	if l.broken {
+		return false, 0, errors.New("limiter unavailable")
+	}
+	if l.max <= 0 {
+		return true, 0, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.counts[ip]++
+	l.attempts++
+	if l.counts[ip] > l.max {
+		return false, l.window, nil
+	}
+	return true, 0, nil
+}
+
+// consumed reports how many units of budget have been charged.
+func (l *fakeRegistrationLimiter) consumed() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.attempts
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func testConfig() Config {
 	return Config{
-		AdminAuthMode:           "session",
-		AdminAccessTTL:          15 * time.Minute,
-		AdminRefreshTTL:         30 * 24 * time.Hour,
-		AdminLoginMaxAttempts:   8,
-		AdminLoginWindow:        15 * time.Minute,
-		AdminSetupLocalOnly:     true,
-		AdminRefreshReplayGrace: 30 * time.Second,
+		AdminAuthMode:             "session",
+		AdminAccessTTL:            15 * time.Minute,
+		AdminRefreshTTL:           30 * 24 * time.Hour,
+		AdminLoginMaxAttempts:     8,
+		AdminLoginWindow:          15 * time.Minute,
+		AdminSetupLocalOnly:       true,
+		AdminRefreshReplayGrace:   30 * time.Second,
+		PublicRegistrationEnabled: true,
+		PublicRegisterMaxAttempts: 5,
+		PublicRegisterWindow:      time.Hour,
 	}
 }
 
@@ -274,7 +518,8 @@ func newTestService(t *testing.T) (*adminAuthService, *fakeAdminStore, *fakeLimi
 	t.Helper()
 	store := newFakeAdminStore()
 	limiter := newFakeLimiter(8)
-	svc := newAdminAuthService(store, limiter, []byte("unit-test-signing-secret"), testConfig())
+	svc := newAdminAuthService(store, limiter, []byte("unit-test-signing-secret"), testConfig()).
+		withRegistrationLimiter(newFakeRegistrationLimiter(5))
 	return svc, store, limiter
 }
 
@@ -368,7 +613,7 @@ func TestLoginSuccessIssuesTokensAndSession(t *testing.T) {
 	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		t.Fatal("login must return both tokens")
 	}
-	if !strings.HasPrefix(tokens.RefreshToken, tokens.Session.SID+".") {
+	if !strings.HasPrefix(tokens.RefreshToken, "v2."+tokens.Session.SID+".") {
 		t.Fatalf("refresh token must embed the session id: %q", tokens.RefreshToken)
 	}
 	if store.liveSessions() != 1 {
@@ -606,6 +851,228 @@ func TestRefreshReplayOutsideGraceRevokesEverySession(t *testing.T) {
 	}
 }
 
+// --- the five-second default replay grace -----------------------------------
+//
+// P1-04 (confirmed and implemented). The shipped default for
+// ADMIN_REFRESH_REPLAY_GRACE is five seconds. These tests pin the behaviour at
+// that value with an injected clock — none of them sleeps.
+//
+// What the window is for, so it is not mistaken for more: two refreshes that
+// genuinely race converge on the same successor instead of one being treated
+// as a stolen credential. It does not make a stolen *current* token useless,
+// and it does not replace HttpOnly, Secure, SameSite, rotation, replay
+// detection or session-family revocation.
+
+// graceService builds a service whose replay grace is the shipped default, so
+// the behaviour under test is the behaviour production gets.
+func graceService(t *testing.T) (*adminAuthService, *fakeAdminStore) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.AdminRefreshReplayGrace = adminRefreshReplayGraceDefault
+	store := newFakeAdminStore()
+	svc := newAdminAuthService(store, newFakeLimiter(8), []byte("unit-test-signing-secret"), cfg).
+		withRegistrationLimiter(newFakeRegistrationLimiter(cfg.PublicRegisterMaxAttempts))
+	return svc, store
+}
+
+// T0: A → B. T0+4s: A again. Still the benign race: the same successor comes
+// back, the session stays active, no replay is recorded.
+func TestRefreshSupersededTokenWithinFiveSecondsIsBenign(t *testing.T) {
+	svc, store := graceService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	first, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	svc.now = func() time.Time { return base.Add(4 * time.Second) }
+	second, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("a superseded token inside the five-second window must be accepted: %v", err)
+	}
+	if second.RefreshToken != first.RefreshToken {
+		t.Fatal("both racing refreshes must derive the identical successor")
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("a benign race must not revoke the session, %d live", store.liveSessions())
+	}
+	if reason := store.sessions[tokens.Session.SID].RevokeReason; reason != "" {
+		t.Fatalf("a benign race must not record a revoke reason, got %q", reason)
+	}
+	// The successor stays usable afterwards.
+	svc.now = func() time.Time { return base.Add(4 * time.Second) }
+	if _, err := svc.refresh(context.Background(), second.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("the successor must stay usable: %v", err)
+	}
+}
+
+// The boundary is "not after validUntil", and it stays that way: T0+5s exactly
+// is still benign; one nanosecond later is a replay that retires the family.
+func TestRefreshSupersededTokenAtFiveSecondBoundary(t *testing.T) {
+	svc, store := graceService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	other, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	first, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// now == validUntil: still inside the window.
+	svc.now = func() time.Time { return base.Add(adminRefreshReplayGraceDefault) }
+	atBoundary, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("the exact boundary must still be the benign race: %v", err)
+	}
+	if atBoundary.RefreshToken != first.RefreshToken {
+		t.Fatal("the boundary refresh must return the identical successor")
+	}
+
+	// One nanosecond past the boundary: replay, and the whole family goes.
+	svc.now = func() time.Time { return base.Add(adminRefreshReplayGraceDefault + time.Nanosecond) }
+	if _, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminRefreshReplay) {
+		t.Fatalf("expected ErrAdminRefreshReplay one nanosecond past the boundary, got %v", err)
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("a replay must revoke every session of the account, %d still live", store.liveSessions())
+	}
+	if store.sessions[other.Session.SID].RevokeReason != revokeReasonReuse {
+		t.Fatalf("the second device must be revoked with the replay reason, got %q", store.sessions[other.Session.SID].RevokeReason)
+	}
+}
+
+// Past the window the superseded token is a replay: ErrAdminRefreshReplay,
+// every session of the account revoked, reason recorded.
+func TestRefreshSupersededTokenAfterFiveSecondsIsReplay(t *testing.T) {
+	svc, store := graceService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	other, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	rotated, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	svc.now = func() time.Time { return base.Add(adminRefreshReplayGraceDefault + time.Second) }
+	if _, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminRefreshReplay) {
+		t.Fatalf("expected ErrAdminRefreshReplay past the five-second window, got %v", err)
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("replay must revoke every session of the account, %d still live", store.liveSessions())
+	}
+	if store.sessions[other.Session.SID].RevokeReason != revokeReasonReuse {
+		t.Fatalf("expected reason %q, got %q", revokeReasonReuse, store.sessions[other.Session.SID].RevokeReason)
+	}
+	// The token issued by the legitimate rotation is dead too.
+	if _, err := svc.refresh(context.Background(), rotated.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminSessionRevoked) {
+		t.Fatalf("the whole family must be revoked, got %v", err)
+	}
+}
+
+// The current token is untouched by the grace window: six grace periods after
+// the rotation, B still rotates normally to C, and the chain continues to D.
+// The previous hash only ever represents the most recent generation.
+func TestRefreshCurrentTokenUnaffectedByFiveSecondGrace(t *testing.T) {
+	svc, store := graceService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	if tokens.RefreshToken == "" {
+		t.Fatal("login must issue a refresh token")
+	}
+
+	first, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "") // A → B
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	svc.now = func() time.Time { return base.Add(30 * time.Second) }
+	second, err := svc.refresh(context.Background(), first.RefreshToken, "10.0.0.5", "") // B → C
+	if err != nil {
+		t.Fatalf("the current token must rotate normally long after the grace window: %v", err)
+	}
+	if second.RefreshToken == first.RefreshToken {
+		t.Fatal("rotation must issue a new token")
+	}
+
+	third, err := svc.refresh(context.Background(), second.RefreshToken, "10.0.0.5", "") // C → D
+	if err != nil {
+		t.Fatalf("the chain must continue: %v", err)
+	}
+	if third.RefreshToken == second.RefreshToken {
+		t.Fatal("rotation must issue a new token")
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("normal rotations must not touch the session count, got %d", store.liveSessions())
+	}
+	if reason := store.sessions[tokens.Session.SID].RevokeReason; reason != "" {
+		t.Fatalf("normal rotations must not record a revoke reason, got %q", reason)
+	}
+
+	// The generation before the previous one is no longer the grace subject:
+	// after C → D, presenting B is a replay, not a benign race.
+	if _, err := svc.refresh(context.Background(), first.RefreshToken, "10.0.0.5", ""); !errors.Is(err, ErrAdminRefreshReplay) {
+		t.Fatalf("only the most recent predecessor is inside the window, got %v", err)
+	}
+}
+
+// Two refreshes genuinely in flight — the loser read the session row before
+// the winner's rotation landed — still converge at five seconds, and nothing
+// is revoked. The frontend's single-flight promise cannot help across runtimes
+// or tabs; this is the backend mechanism that can.
+func TestConcurrentRefreshWithinFiveSecondsConverges(t *testing.T) {
+	svc, store := graceService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	// The row as the loser's read saw it: before the winner's rotation.
+	preRotation := store.sessions[tokens.Session.SID]
+
+	first, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// The loser's lookup returns the pre-rotation row once, exactly as a
+	// concurrent request would have read it.
+	store.staleRead = &preRotation
+
+	second, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("a concurrent refresh must be accepted at five seconds too: %v", err)
+	}
+	if second.RefreshToken != first.RefreshToken {
+		t.Fatal("both tabs must converge on the identical successor")
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("a benign race must not revoke anything, %d live", store.liveSessions())
+	}
+	if reason := store.sessions[tokens.Session.SID].RevokeReason; reason != "" {
+		t.Fatalf("a benign race must not record a revoke reason, got %q", reason)
+	}
+	if _, err := svc.refresh(context.Background(), second.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("the successor must stay usable: %v", err)
+	}
+}
+
 func TestRefreshRejectsExpiredSession(t *testing.T) {
 	svc, store, _ := newTestService(t)
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
@@ -706,7 +1173,7 @@ func TestAuthenticateRejectsRevokedSession(t *testing.T) {
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
 	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
 
-	if err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
+	if _, err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
 	if _, err := svc.authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, ErrAdminSessionRevoked) {
@@ -781,14 +1248,30 @@ func TestAuthenticateRejectsTokenSignedWithAnotherSecret(t *testing.T) {
 
 // --- logout and session management ----------------------------------------
 
+// P2-2 (review). The audit action is what the operator reads back, so a
+// request that revoked nothing must not be named like one that did. The
+// mapping lives in one pure function so this holds without a database.
+func TestLogoutAuditAction(t *testing.T) {
+	if got := logoutAuditAction(true); got != "admin_logout" {
+		t.Fatalf("a real logout must be audited as admin_logout, got %q", got)
+	}
+	if got := logoutAuditAction(false); got != "admin_logout_rejected" {
+		t.Fatalf("a no-op logout must be audited as admin_logout_rejected, got %q", got)
+	}
+}
+
 func TestLogoutRevokesOnlyTheGivenSession(t *testing.T) {
 	svc, store, _ := newTestService(t)
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
 	a, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
 	b, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
 
-	if err := svc.logout(context.Background(), a.RefreshToken); err != nil {
+	revoked, err := svc.logout(context.Background(), a.RefreshToken)
+	if err != nil {
 		t.Fatalf("logout: %v", err)
+	}
+	if !revoked {
+		t.Fatal("a genuine logout must report the revocation")
 	}
 	if store.sessions[a.Session.SID].RevokeReason != revokeReasonLogout {
 		t.Fatal("logout must record its own revocation reason")
@@ -804,12 +1287,201 @@ func TestLogoutIsIdempotentAndTolerant(t *testing.T) {
 	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
 
 	for i := 0; i < 3; i++ {
-		if err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
+		if _, err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
 			t.Fatalf("logout %d: %v", i, err)
 		}
 	}
-	if err := svc.logout(context.Background(), "garbage"); err != nil {
+	if _, err := svc.logout(context.Background(), "garbage"); err != nil {
 		t.Fatalf("a malformed token must still return success: %v", err)
+	}
+}
+
+// P1-04. Logout must verify the token it is handed, not only the session id
+// inside it.
+//
+// The old implementation split the refresh token, kept the sid and revoked the
+// session on that alone. Anyone who learned a sid — from an access-token claim,
+// a device list, a log line, a URL — could send "<sid>.anything" and sign that
+// operator's device out: a denial of service against another account, with no
+// credential needed. A logout request is authorised by the refresh token
+// itself, exactly like a refresh request.
+//
+// The forged token still gets the client-visible success and cookie clearing,
+// so an attacker probing with forged sids cannot distinguish a hit from a miss.
+func TestLogoutWithForgedTokenDoesNotRevoke(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	victim, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+	// A second device that must be untouched by anything happening here.
+	other, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
+
+	for _, forged := range []string{
+		victim.Session.SID + ".anything",
+		victim.Session.SID + ".aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		other.Session.SID + ".forged-secret",
+	} {
+		revoked, err := svc.logout(context.Background(), forged)
+		if err != nil {
+			t.Fatalf("a forged token must still exit cleanly, got %v", err)
+		}
+		// P2-2 (review): the bool is what keeps the audit trail honest — a
+		// forged token must never be recorded as a logout that happened.
+		if revoked {
+			t.Fatalf("a forged token must not report a revocation: %s", forged)
+		}
+	}
+	if store.liveSessions() != 2 {
+		t.Fatalf("a forged token must not revoke any session, %d still live", store.liveSessions())
+	}
+	if store.sessions[victim.Session.SID].RevokedAt != nil {
+		t.Fatal("the victim's session must survive a forged logout")
+	}
+
+	// The genuine token still works — the check narrows the forged path, it
+	// does not break the honest one.
+	revoked, err := svc.logout(context.Background(), victim.RefreshToken)
+	if err != nil {
+		t.Fatalf("the genuine token must still log the session out: %v", err)
+	}
+	if !revoked {
+		t.Fatal("the genuine token must report the revocation")
+	}
+	if store.sessions[victim.Session.SID].RevokeReason != revokeReasonLogout {
+		t.Fatal("the genuine logout must still record its reason")
+	}
+	if store.liveSessions() != 1 {
+		t.Fatalf("the other session must survive, %d live", store.liveSessions())
+	}
+}
+
+// An unknown sid and an already-revoked session are not authorisation either:
+// both are answered with success and change nothing.
+func TestLogoutWithUnknownOrDeadTokenIsHarmless(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	live, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	// A session that was already revoked by other means: its sid is known, but
+	// logging out with its (correct) token must not resurrect or re-revoke it.
+	dead, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
+	if revoked, err := svc.logout(context.Background(), dead.RefreshToken); err != nil {
+		t.Fatalf("logout: %v", err)
+	} else if !revoked {
+		t.Fatal("a token that owns its session must report the revocation, already applied or not")
+	}
+	if _, err := svc.logout(context.Background(), dead.RefreshToken); err != nil {
+		t.Fatalf("a repeated logout must stay idempotent: %v", err)
+	}
+
+	for _, raw := range []string{"00000000-0000-0000-0000-000000000000.never-issued", "garbage", ""} {
+		revoked, err := svc.logout(context.Background(), raw)
+		if err != nil {
+			t.Fatalf("logout(%q) must return success, got %v", raw, err)
+		}
+		// None of these identify a session this token owns, so none of them is
+		// a logout — the audit must not say otherwise.
+		if revoked {
+			t.Fatalf("logout(%q) must not report a revocation", raw)
+		}
+	}
+	if store.liveSessions() != 1 || store.sessions[live.Session.SID].RevokedAt != nil {
+		t.Fatal("the live session must not be touched by dead-token logouts")
+	}
+}
+
+// A just-rotated token is still the caller's own: two browser tabs can race a
+// rotation and the loser must still be able to log its session out, inside the
+// same grace window refresh() honours.
+func TestLogoutWithSupersededTokenInsideGraceStillWorks(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	rotated, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", "")
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	// The superseded token arrives after the rotation, still inside the window.
+	if _, err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
+		t.Fatalf("the superseded token must be able to log out inside the grace window: %v", err)
+	}
+	if store.sessions[tokens.Session.SID].RevokedAt == nil {
+		t.Fatal("the session must be revoked")
+	}
+	// The current generation can still log out too — idempotent no-op by then.
+	if _, err := svc.logout(context.Background(), rotated.RefreshToken); err != nil {
+		t.Fatalf("the current token must also be accepted: %v", err)
+	}
+}
+
+// Outside the grace window the superseded token is no proof of ownership, so
+// it must not revoke either.
+func TestLogoutWithSupersededTokenOutsideGraceDoesNotRevoke(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	if _, err := svc.refresh(context.Background(), tokens.RefreshToken, "10.0.0.5", ""); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	// Past the grace window, the superseded token is no longer a credential
+	// for this session — the same rule replay detection applies.
+	svc.now = func() time.Time { return base.Add(testConfig().AdminRefreshReplayGrace + time.Second) }
+
+	if _, err := svc.logout(context.Background(), tokens.RefreshToken); err != nil {
+		t.Fatalf("logout must still return success, got %v", err)
+	}
+	if store.sessions[tokens.Session.SID].RevokedAt != nil {
+		t.Fatal("a superseded token outside the grace window must not revoke the session")
+	}
+}
+
+// A store failure is reported to the server, but the sid is never used as
+// authorisation on the way out: the client exits, nothing is revoked.
+func TestLogoutWithStoreFailureDoesNotRevoke(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
+	tokens, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
+
+	store.findSessionErr = errors.New("store unavailable")
+	_, err := svc.logout(context.Background(), tokens.RefreshToken)
+	if !errors.Is(err, ErrAdminInternal) {
+		t.Fatalf("expected ErrAdminInternal, got %v", err)
+	}
+	if store.sessions[tokens.Session.SID].RevokedAt != nil {
+		t.Fatal("an outage must never revoke a session")
+	}
+}
+
+// P1-05 (review). One comparison definition serves both refresh-token
+// generations, and it is the constant-time one. The verdicts are asserted
+// here; the timing property itself is not testable — see the helper's comment.
+func TestAdminRefreshDigestEqual(t *testing.T) {
+	if !adminRefreshDigestEqual("abc", "abc") {
+		t.Fatal("identical digests must compare equal")
+	}
+	if adminRefreshDigestEqual("abc", "abd") {
+		t.Fatal("digests differing in the last byte must compare unequal")
+	}
+	// A prefix is not a match, and the length difference must not panic or
+	// compare equal the way a byte-wise loop over the shorter string might.
+	if adminRefreshDigestEqual("abc", "ab") {
+		t.Fatal("a prefix must not compare equal")
+	}
+	if adminRefreshDigestEqual("ab", "abc") {
+		t.Fatal("a prefix must not compare equal in either direction")
+	}
+	if !adminRefreshDigestEqual("", "") {
+		t.Fatal("two empty digests are equal")
+	}
+	if adminRefreshDigestEqual("", "x") {
+		t.Fatal("an empty digest must not equal a non-empty one")
 	}
 }
 
@@ -819,7 +1491,7 @@ func TestListSessionsExcludesRevoked(t *testing.T) {
 	a, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
 	b, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.6", "")
 
-	_ = svc.logout(context.Background(), a.RefreshToken)
+	_, _ = svc.logout(context.Background(), a.RefreshToken)
 	items, err := svc.listSessions(context.Background(), b.User.ID)
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -1032,8 +1704,50 @@ func TestFilterAdminRoles(t *testing.T) {
 	if !got["super_admin"] || !got["auditor"] || len(got) != 2 {
 		t.Fatalf("unexpected roles: %v", got)
 	}
-	if fallback := filterAdminRoles(nil); !fallback["auditor"] || len(fallback) != 1 {
-		t.Fatalf("an account with no known role must fall back to auditor, got %v", fallback)
+	// An account with no recognisable role is a plain member. Falling back to
+	// auditor would hand out read access to request logs and audit trails.
+	if fallback := filterAdminRoles(nil); !fallback[RoleMember] || len(fallback) != 1 {
+		t.Fatalf("an account with no known role must fall back to member, got %v", fallback)
+	}
+	if fallback := filterAdminRoles([]string{"nonsense"}); !fallback[RoleMember] || len(fallback) != 1 {
+		t.Fatalf("an account with only unknown roles must be a member, got %v", fallback)
+	}
+	// member and a management role must never coexist: whichever check ran
+	// first would otherwise decide whether the account is an administrator.
+	mixed := filterAdminRoles([]string{"member", "gateway_admin"})
+	if mixed[RoleMember] || !mixed[RoleGatewayAdmin] || len(mixed) != 1 {
+		t.Fatalf("member must be dropped once a management role is present, got %v", mixed)
+	}
+	if only := filterAdminRoles([]string{"member"}); !only[RoleMember] || len(only) != 1 {
+		t.Fatalf("a registered member must stay a member, got %v", only)
+	}
+}
+
+func TestNormalizeAccountRolesIsDeterministicAndLeastPrivilege(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty becomes member", nil, []string{RoleMember}},
+		{"unknown dropped", []string{"root", "member"}, []string{RoleMember}},
+		{"member removed with management role", []string{"member", "auditor"}, []string{RoleAuditor}},
+		{"duplicates collapse", []string{"operator", "operator"}, []string{RoleOperator}},
+		{"canonical order", []string{"auditor", "super_admin", "operator"}, []string{RoleSuperAdmin, RoleOperator, RoleAuditor}},
+		{"trimmed", []string{"  gateway_admin  "}, []string{RoleGatewayAdmin}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeAccountRoles(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
@@ -1165,10 +1879,11 @@ func TestRefreshUsesDerivedSuccessorNotRandomValue(t *testing.T) {
 	seedAdmin(t, store, "campus-admin", "Campus#2026Gate")
 
 	s1, _ := svc.login(context.Background(), "campus-admin", "Campus#2026Gate", "10.0.0.5", "")
-	_, presentedSecret, err := security.SplitAdminRefreshToken(s1.RefreshToken)
+	parsed, err := security.ParseAdminRefreshToken(svc.secret, s1.RefreshToken)
 	if err != nil {
 		t.Fatal(err)
 	}
+	presentedSecret := parsed.Secret
 	want, _, err := security.DeriveNextAdminRefreshToken(svc.secret, s1.Session.SID, presentedSecret)
 	if err != nil {
 		t.Fatal(err)

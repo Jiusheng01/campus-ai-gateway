@@ -19,12 +19,43 @@ const AUDIT_LABELS: Record<string, string> = {
   admin_password_change_rejected: '修改密码被拒绝',
   admin_session_revoked: '撤销登录设备',
   admin_refresh_replay_detected: '检测到登录凭据重放',
+
+  // Account and permission events. These read as actions rather than verbs
+  // because whoever reviews the trail wants to know what happened to the
+  // account, not which method the client used.
+  account_registered: '注册账号',
+  account_register_failed: '注册失败',
+  account_register_rejected: '注册被拒绝',
+  account_register_before_setup: '尚未初始化即尝试注册',
+  account_register_username_taken: '注册：用户名已被占用',
+  registration_rate_limited: '注册被限流',
+  'user.role.update': '变更用户角色',
+  'user.disable': '停用用户',
+  'user.enable': '启用用户',
+  'user.profile.update': '修改用户资料',
+  'user.update_failed': '用户更新被拒绝',
 }
 
 export const auditLabel = (action: string) => AUDIT_LABELS[action] || action
 
-const AUDIT_DANGER = new Set(['admin_setup_remote_rejected', 'admin_refresh_replay_detected', 'DELETE'])
-const AUDIT_WARNING = new Set(['admin_login_failed', 'admin_login_throttled', 'admin_setup_failed', 'admin_password_change_failed'])
+const AUDIT_DANGER = new Set([
+  'admin_setup_remote_rejected',
+  'admin_refresh_replay_detected',
+  'DELETE',
+  'user.disable',
+  'user.role.update',
+])
+const AUDIT_WARNING = new Set([
+  'admin_login_failed',
+  'admin_login_throttled',
+  'admin_setup_failed',
+  'admin_password_change_failed',
+  'account_register_failed',
+  'account_register_username_taken',
+  'account_register_before_setup',
+  'account_register_rejected',
+  'registration_rate_limited',
+])
 
 export function auditTone(action: string): Tone {
   if (AUDIT_DANGER.has(action)) return 'danger'
@@ -43,6 +74,8 @@ const SECURITY_LABELS: Record<string, {label: string; tone: Tone}> = {
   concurrency_exceeded: {label: '并发超限', tone: 'warning'},
   tenant_request_quota_exceeded: {label: '租户请求配额超限', tone: 'warning'},
   tenant_token_quota_exceeded: {label: '租户 Token 配额超限', tone: 'warning'},
+  account_registered: {label: '账号注册', tone: 'info'},
+  registration_rate_limited: {label: '注册被限流', tone: 'warning'},
 }
 
 export const securityLabel = (type: string) => SECURITY_LABELS[type]?.label || type

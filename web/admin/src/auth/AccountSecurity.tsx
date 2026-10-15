@@ -98,7 +98,7 @@ export function AccountSecurity({who, onSignedOut}: {who: WhoAmI | null; onSigne
   const identityRows: [string, string][] = [
     ['用户名', who?.username || who?.user || '—'],
     ['角色', who?.roles?.length ? who.roles.join('、') : '—'],
-    ['登录方式', sessionMode ? '本地管理员会话' : '学校统一身份认证'],
+    ['登录方式', sessionMode ? '账号密码登录' : '学校统一身份认证'],
   ]
 
   return (

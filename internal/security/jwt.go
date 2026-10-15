@@ -56,10 +56,10 @@ var (
 // database on every request so a role change or disable takes effect
 // immediately rather than when the token expires.
 type AdminAccessClaims struct {
-	Subject         string    // admin user id
-	SessionID       string    // gateway_admin_session.sid
-	UserAuthVersion int64     // admin user auth_version at issue time
-	SessionVersion  int64     // session version at issue time
+	Subject         string // admin user id
+	SessionID       string // gateway_admin_session.sid
+	UserAuthVersion int64  // admin user auth_version at issue time
+	SessionVersion  int64  // session version at issue time
 	IssuedAt        time.Time
 	NotBefore       time.Time
 	ExpiresAt       time.Time
@@ -69,17 +69,17 @@ type AdminAccessClaims struct {
 // jwtPayload is the on-the-wire JSON. Field names are short to keep the token
 // compact; they are the ones described in the design doc.
 type jwtPayload struct {
-	TokenUse string `json:"token_use"`
-	Subject  string `json:"sub"`
-	Session  string `json:"sid"`
-	UserAuth int64  `json:"uv"`
-	SessVer  int64  `json:"sv"`
-	Issuer   string `json:"iss"`
-	Audience string `json:"aud"`
-	IssuedAt int64  `json:"iat"`
-	NotBefore int64 `json:"nbf"`
-	Expires  int64  `json:"exp"`
-	JTI      string `json:"jti"`
+	TokenUse  string `json:"token_use"`
+	Subject   string `json:"sub"`
+	Session   string `json:"sid"`
+	UserAuth  int64  `json:"uv"`
+	SessVer   int64  `json:"sv"`
+	Issuer    string `json:"iss"`
+	Audience  string `json:"aud"`
+	IssuedAt  int64  `json:"iat"`
+	NotBefore int64  `json:"nbf"`
+	Expires   int64  `json:"exp"`
+	JTI       string `json:"jti"`
 }
 
 type jwtHeaderFields struct {
@@ -228,43 +228,98 @@ func audienceMatches(raw string) bool {
 
 // --- refresh tokens --------------------------------------------------------
 
-// Refresh token format: "<session_id>.<secret>".
+// Refresh tokens are opaque strings a client presents to rotate an access
+// token. Two forms exist:
 //
-// Only the secret carries entropy; the session id is an identifier, not a
-// secret, and is stored in the cookie alongside it so the server can look the
-// session up without scanning the table. The database stores SHA-256 of the
-// full token, never the token itself.
-const refreshSecretBytes = 32
+//   - Legacy "<session_id>.<secret>": the secret carries all the entropy and the
+//     database stores SHA-256 of the whole string. It has no authentication of
+//     its own beyond that hash, so it is accepted only when its hash matches
+//     the stored one — a legacy token is "proven" by the database, never by
+//     anything the client attached.
+//
+//   - Signed "v2.<session_id>.<secret>.<mac>": the MAC is
+//     HMAC-SHA256(secret, label || session_id || secret) under a domain label
+//     distinct from every other use of the admin session secret. The MAC is
+//     what lets the gateway tell a genuine replay (a real token the holder
+//     copied) from a forgery (a guessed "<sid>.<guess>" built from a leaked
+//     session id): only someone who knows the signing secret can produce a
+//     valid MAC, and guessing the secret is precluded by the stored hash.
+//
+// A forged legacy token and a forged v2 token are both rejected with 401 and
+// revoke nothing. Only a MAC-valid v2 token that is neither the current hash
+// nor a grace-window predecessor is treated as a replay and revokes the
+// session family — because reaching that branch proves the bearer really held
+// the token.
+const (
+	refreshSecretBytes = 32
 
-// ErrRefreshTokenMalformed is returned when a refresh token does not have the
-// "<sid>.<secret>" shape.
+	// refreshTokenV2Prefix marks the signed token form.
+	refreshTokenV2Prefix = "v2."
+
+	// refreshTokenMACLabel domain-separates the refresh-token MAC from the
+	// rotation derivation and every other use of the admin session secret.
+	// Reusing one key with distinct labels is the standard way to serve
+	// several purposes without any of them being exchangeable.
+	refreshTokenMACLabel = "refresh-token-mac-v2"
+
+	// AdminRefreshRotationLabel domain-separates the rotation derivation from
+	// every other use of the admin session secret.
+	AdminRefreshRotationLabel = "refresh-rotation-v1"
+)
+
+// ErrRefreshTokenMalformed is returned when a refresh token does not parse or
+// its v2 MAC does not verify.
 var ErrRefreshTokenMalformed = errors.New("refresh token is malformed")
 
-// NewAdminRefreshToken mints a refresh token for a session and returns both the
-// plaintext (to put in the cookie) and the hash (to persist).
-func NewAdminRefreshToken(sessionID string) (plain, hash string, err error) {
+// AdminRefreshToken is a parsed, MAC-verified refresh token.
+type AdminRefreshToken struct {
+	SessionID string
+	// Secret is the per-token secret half: the part after the session id and
+	// before any trailing MAC.
+	Secret string
+	// Signed reports whether the v2 MAC was verified. A signed token proves
+	// the bearer knows the signing secret; an unsigned legacy token must be
+	// confirmed against the database hash before it is trusted.
+	Signed bool
+}
+
+// NewAdminRefreshToken mints a signed v2 refresh token for a session and
+// returns both the plaintext (to put in the cookie) and the hash (to persist).
+func NewAdminRefreshToken(secret []byte, sessionID string) (plain, hash string, err error) {
+	if len(secret) == 0 {
+		return "", "", errors.New("refresh signing secret is empty")
+	}
 	if sessionID == "" {
 		return "", "", errors.New("session id is required")
 	}
-	secret, err := NewRandomID(refreshSecretBytes)
+	s, err := NewRandomID(refreshSecretBytes)
 	if err != nil {
 		return "", "", err
 	}
-	plain = sessionID + "." + secret
+	return wrapRefreshToken(secret, sessionID, s)
+}
+
+// wrapRefreshToken builds a signed v2 token from a session id and its secret
+// half, returning the plaintext and the stored hash.
+func wrapRefreshToken(secret []byte, sessionID, refreshSecret string) (plain, hash string, err error) {
+	plain = refreshTokenV2Prefix + sessionID + "." + refreshSecret + "." + refreshTokenMAC(secret, sessionID, refreshSecret)
 	return plain, HashAdminRefreshToken(plain), nil
 }
 
 // HashAdminRefreshToken returns the stored representation of a refresh token.
 //
-// A plain SHA-256 is enough here: the secret is 256 bits of CSPRNG output, so
-// it is not brute-forceable even if the hash leaks. Keying the hash would only
-// couple session validity to the signing secret for no security gain.
+// It hashes the whole opaque string — MAC and all — so the stored value is tied
+// to the exact bytes the client holds. A plain SHA-256 is enough: the secret
+// half is 256 bits of CSPRNG output, not brute-forceable even if the hash
+// leaks.
 func HashAdminRefreshToken(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(sum[:])
 }
 
-// SplitAdminRefreshToken validates the shape and returns the two halves.
+// SplitAdminRefreshToken validates the legacy "<sid>.<secret>" shape and
+// returns the two halves. It is retained for the legacy branch of Parse and for
+// tests that exercise the legacy form directly.
 func SplitAdminRefreshToken(plain string) (sessionID, secret string, err error) {
 	idx := strings.IndexByte(plain, '.')
 	if idx <= 0 || idx == len(plain)-1 {
@@ -277,33 +332,106 @@ func SplitAdminRefreshToken(plain string) (sessionID, secret string, err error) 
 	return sessionID, secret, nil
 }
 
-// AdminRefreshRotationLabel domain-separates the rotation derivation from every
-// other use of the admin session secret.
-const AdminRefreshRotationLabel = "refresh-rotation-v1"
-
-// DeriveNextAdminRefreshToken computes the successor of a refresh token.
+// ParseAdminRefreshToken parses a presented refresh token and, for the signed
+// v2 form, verifies the MAC.
 //
-// The successor is a pure function of (secret, session id, current secret), so
-// the same presented token always yields byte-identical successors. That is
-// what makes concurrent refreshes safe: when two browser tabs race with the
-// same token, both derive the same next cookie, and the loser of the database
-// race can still answer 200 with a token that matches what the winner stored,
-// instead of clearing the cookie the winner just set.
+//   - A v2 token with a valid MAC returns Signed == true: the bearer proved
+//     knowledge of the signing secret, which an attacker who only learned the
+//     session id cannot do.
+//   - A v2 token with an invalid MAC, or any unparseable shape, returns
+//     ErrRefreshTokenMalformed so the caller answers 401 and revokes nothing.
+//   - A legacy "<sid>.<secret>" returns Signed == false; the caller must confirm
+//     the secret against the stored hash before trusting it, and the first such
+//     confirmation transparently upgrades the cookie to v2 on rotation.
+func ParseAdminRefreshToken(secret []byte, plain string) (AdminRefreshToken, error) {
+	plain = strings.TrimSpace(plain)
+	if strings.HasPrefix(plain, refreshTokenV2Prefix) {
+		rest := plain[len(refreshTokenV2Prefix):]
+		sid, sec, mac, ok := splitRefreshParts(rest)
+		if !ok {
+			return AdminRefreshToken{}, ErrRefreshTokenMalformed
+		}
+		if !verifyRefreshTokenMAC(secret, sid, sec, mac) {
+			return AdminRefreshToken{}, ErrRefreshTokenMalformed
+		}
+		return AdminRefreshToken{SessionID: sid, Secret: sec, Signed: true}, nil
+	}
+	sid, sec, err := SplitAdminRefreshToken(plain)
+	if err != nil {
+		return AdminRefreshToken{}, err
+	}
+	return AdminRefreshToken{SessionID: sid, Secret: sec, Signed: false}, nil
+}
+
+// splitRefreshParts splits "sid.secret.mac" into its three parts, requiring
+// exactly two separators and no dot inside the trailing mac.
+func splitRefreshParts(s string) (sid, secret, mac string, ok bool) {
+	i := strings.IndexByte(s, '.')
+	if i <= 0 {
+		return "", "", "", false
+	}
+	j := strings.IndexByte(s[i+1:], '.')
+	if j <= 0 {
+		return "", "", "", false
+	}
+	sid = s[:i]
+	secret = s[i+1 : i+1+j]
+	mac = s[i+1+j+1:]
+	if strings.ContainsAny(mac, ".") {
+		return "", "", "", false
+	}
+	return sid, secret, mac, true
+}
+
+// refreshTokenMAC computes the v2 integrity tag over the session id and the
+// token's secret half.
+func refreshTokenMAC(secret []byte, sessionID, refreshSecret string) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(refreshTokenMACLabel))
+	mac.Write([]byte(sessionID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(refreshSecret))
+	return b64.EncodeToString(mac.Sum(nil))
+}
+
+// verifyRefreshTokenMAC checks a v2 MAC in constant time.
+func verifyRefreshTokenMAC(secret []byte, sessionID, refreshSecret, mac string) bool {
+	expected := refreshTokenMAC(secret, sessionID, refreshSecret)
+	return hmac.Equal([]byte(expected), []byte(mac))
+}
+
+// DeriveNextAdminRefreshToken computes the signed v2 successor of a refresh
+// token.
+//
+// The successor's secret is a pure function of (secret, session id, current
+// secret), so the same presented token always yields byte-identical
+// successors. That is what makes concurrent refreshes safe: when two browser
+// tabs race with the same token, both derive the same next cookie, and the
+// loser of the database race can still answer 200 with a token that matches
+// what the winner stored, instead of clearing the cookie the winner just set.
 func DeriveNextAdminRefreshToken(secret []byte, sessionID, currentSecret string) (plain, hash string, err error) {
+	nextSecret, err := deriveNextRefreshSecret(secret, sessionID, currentSecret)
+	if err != nil {
+		return "", "", err
+	}
+	return wrapRefreshToken(secret, sessionID, nextSecret)
+}
+
+// deriveNextRefreshSecret is the bare deterministic successor secret, without
+// the version prefix or the MAC. Callers wrap it for the wire format they need.
+func deriveNextRefreshSecret(secret []byte, sessionID, currentSecret string) (string, error) {
 	if len(secret) == 0 {
-		return "", "", errors.New("refresh rotation secret is empty")
+		return "", errors.New("refresh rotation secret is empty")
 	}
 	if sessionID == "" || currentSecret == "" {
-		return "", "", ErrRefreshTokenMalformed
+		return "", ErrRefreshTokenMalformed
 	}
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(AdminRefreshRotationLabel))
 	mac.Write([]byte(sessionID))
 	mac.Write([]byte{0})
 	mac.Write([]byte(currentSecret))
-	next := b64.EncodeToString(mac.Sum(nil))
-	plain = sessionID + "." + next
-	return plain, HashAdminRefreshToken(plain), nil
+	return b64.EncodeToString(mac.Sum(nil)), nil
 }
 
 // b64 is the unpadded base64url alphabet required by JWT.

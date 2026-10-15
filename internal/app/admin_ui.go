@@ -15,7 +15,46 @@ import (
 //go:embed adminui/dist
 var adminUIFS embed.FS
 
+// adminUIContentSecurityPolicy is the CSP applied to every Admin UI response.
+//
+// The console holds access tokens in memory and issues privileged control-plane
+// calls, so it must be able to load only its own bundle and talk only to its own
+// origin. The directives:
+//
+//   - default-src 'self'  everything not listed below comes from this origin;
+//   - base-uri 'none'     a <base> tag cannot re-point relative URLs elsewhere;
+//   - object-src 'none'   no plugins, no embedded documents;
+//   - frame-ancestors 'none'  this UI may not be framed at all;
+//   - form-action 'self'  forms may only post back to this origin;
+//   - script-src 'self'   no inline or eval'd script — the bundle is a file;
+//   - connect-src 'self'  API calls go to the same origin;
+//   - img-src 'self' data:  inlined favicon/data images keep working;
+//   - font-src 'self';
+//   - style-src 'self' 'unsafe-inline'  the React components set inline style
+//     attributes; Phase 1 tolerates that one exception, and only that one.
+//     script-src keeps 'unsafe-inline' and 'unsafe-eval' forbidden.
+//
+// HSTS is deliberately absent: it belongs to the TLS entry point, not to an
+// application that also serves plain HTTP in development.
+const adminUIContentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; " +
+	"frame-ancestors 'none'; form-action 'self'; script-src 'self'; connect-src 'self'; " +
+	"img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'"
+
+// setAdminUISecurityHeaders attaches the browser-security headers to every Admin
+// UI response: success, SPA fallback and 404 alike. Setting them at the top of
+// the handler is what makes the 404 body — produced by http.NotFound further
+// down — carry the same protection as the app shell.
+func setAdminUISecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", adminUIContentSecurityPolicy)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+}
+
 func (s *Server) serveAdminUI(w http.ResponseWriter, r *http.Request) {
+	setAdminUISecurityHeaders(w)
 	if r.URL.Path != "/admin-ui" && !strings.HasPrefix(r.URL.Path, "/admin-ui/") {
 		http.NotFound(w, r)
 		return

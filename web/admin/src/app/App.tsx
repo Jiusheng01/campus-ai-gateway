@@ -9,10 +9,11 @@ import {
   setUnauthenticatedHandler,
   whoami,
   type AuthConfig,
+  type LoginResult,
   type WhoAmI,
 } from '../api'
 import {Shell} from './Shell'
-import type {Page} from './navigation'
+import {allowedPages, landingPage, type Page} from './navigation'
 import {ToastProvider, useToast} from '../components/ui/Toast'
 import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import {AuthSplash} from '../auth/AuthSplash'
@@ -28,7 +29,9 @@ import {ApiKeysPage} from '../pages/ApiKeysPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
 import {SecurityPage} from '../pages/SecurityPage'
+import {UsersPage} from '../pages/UsersPage'
 import {SettingsPage} from '../pages/SettingsPage'
+import {AccountPage} from '../pages/AccountPage'
 
 // loading   — checking the auth config and trying to restore a session
 // setup     — no administrator exists yet, show the first-run form
@@ -36,6 +39,9 @@ import {SettingsPage} from '../pages/SettingsPage'
 // ready     — signed in
 // identity  — trusted-header mode: the campus proxy must inject an identity
 // unsupported — the gateway is running a legacy auth mode this UI cannot drive
+//
+// Registration is not a separate phase: it lives in a tab on the login screen,
+// because a member and an administrator differ by role rather than by kind.
 type AuthPhase = 'loading' | 'login' | 'setup' | 'ready' | 'identity' | 'unsupported'
 
 const authModeOf = (cfg: AuthConfig | null) => (cfg?.auth_mode || '').toLowerCase()
@@ -115,13 +121,63 @@ function Console() {
         setPhase('identity')
         return
       }
-      setAuthNotice(reason === 'revoked' ? '会话已被撤销，请重新登录。' : '登录状态已过期，请重新登录。')
+      // A role change or a disable revokes the account's sessions; the operator
+      // then sees why they were signed out instead of a silent bounce.
+      setAuthNotice(
+        reason === 'revoked'
+          ? '会话已被撤销，请重新登录。如果刚有管理员调整了你的权限或账号状态，重新登录后即可看到变化。'
+          : '登录状态已过期，请重新登录。',
+      )
       setPhase('login')
     })
   }, [authConfig])
 
+  // Derived, not state: the shell and every page read the same list, and it is
+  // refreshed wholesale when whoami resolves.
+  const roles = who?.roles || []
+
+  // Roles can change under a live session — a promotion bumps auth_version and
+  // revokes, but a demotion only resolves on the next request. Rather than
+  // rendering a page the gateway would reject, move the account to a page it
+  // may actually see.
+  //
+  // This must sit above the early returns below: a hook that is reached on some
+  // renders and not others changes the hook count, which React refuses to
+  // render at all.
+  useEffect(() => {
+    if (!allowedPages(roles).includes(page)) setPage(landingPage(roles))
+  }, [roles, page])
+
+  // The public auth config is the answer to a question whose answer changes:
+  // before the first super administrator exists, registration is closed, and it
+  // opens the moment setup completes. The console fetches it once at boot, but
+  // the login screen is re-entered many times — logout, a revoked session, a
+  // role change — so serving the copy captured before setup would leave the
+  // registration tab hidden for the rest of the browser session. Refresh it
+  // whenever the login or setup screen is shown instead.
+  //
+  // Like every hook here this sits above the early returns; a hook reached on
+  // some renders but not others changes the hook count, which React refuses to
+  // render.
+  useEffect(() => {
+    if (phase !== 'login' && phase !== 'setup') return
+    let cancelled = false
+    void getAuthConfig()
+      .then(cfg => {
+        if (!cancelled) setAuthConfig(cfg)
+      })
+      .catch(() => {
+        // Keep the previous config: the screen still renders, and a failure
+        // here must not stop someone signing in.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
+
   // The identity chip lives in the shell on every page, so it is resolved once
-  // per sign-in rather than per page.
+  // per sign-in rather than per page. The roles from the sign-in response seed
+  // it so the navigation does not briefly default to "member only".
   useEffect(() => {
     if (phase !== 'ready' || who) return
     let cancelled = false
@@ -137,11 +193,27 @@ function Console() {
     }
   }, [phase, who])
 
-  function onAuthenticated() {
+  // onAuthenticated is called by every path that ends with a session: setup,
+  // login and registration. The roles it carries decide where the account
+  // lands, so a member never sits on a dashboard that would 403 for them.
+  function onAuthenticated(result?: LoginResult) {
+    const roles = result?.user?.roles || []
     setAuthNotice('')
-    setWho(null)
+    // Toasts are cleared on every account change: one about another user's
+    // permissions must never follow a member into their own session.
+    toast.clear()
+    setWho(
+      result?.user
+        ? {
+            user: result.user.username,
+            username: result.user.username,
+            roles,
+            auth_mode: authModeOf(authConfig) || 'session',
+          }
+        : null,
+    )
     setPhase('ready')
-    setPage('dashboard')
+    setPage(landingPage(roles))
   }
 
   async function signOut() {
@@ -149,6 +221,7 @@ function Console() {
     clearSession()
     setWho(null)
     setAuthNotice('已安全退出登录。')
+    toast.clear()
     setPhase('login')
   }
 
@@ -175,7 +248,7 @@ function Console() {
       refreshing={false}
       onSignOut={() => void signOut().catch(e => toast.error(e instanceof Error ? e.message : '退出登录失败'))}
     >
-      {page === 'dashboard' && <DashboardPage />}
+      {page === 'dashboard' && <DashboardPage roles={roles} />}
       {page === 'providers' && <ProvidersPage />}
       {page === 'models' && <ModelsPage />}
       {page === 'tenants' && <TenantsPage />}
@@ -183,7 +256,9 @@ function Console() {
       {page === 'logs' && <RequestLogsPage />}
       {page === 'audit' && <AuditPage />}
       {page === 'security' && <SecurityPage />}
+      {page === 'users' && <UsersPage />}
       {page === 'settings' && <SettingsPage who={who} authConfig={authConfig} onSignedOut={() => void signOut()} />}
+      {page === 'account' && <AccountPage who={who} onSignedOut={() => void signOut()} />}
     </Shell>
   )
 }

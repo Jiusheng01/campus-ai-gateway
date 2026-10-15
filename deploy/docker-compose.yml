@@ -7,11 +7,46 @@ services:
       POSTGRES_PASSWORD: campus
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../migrations/0001_init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    # The health check lets the migrate service — and then the gateway — wait
+    # for a database that is actually accepting connections, rather than one
+    # whose container merely started.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U campus -d campus_gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes: [redis_data:/data]
+  # One-shot migration gate. It runs the same binary a local deployment runs,
+  # against the same migration files shipped in the image, and exits. The
+  # gateway below only starts once this service has completed successfully, so
+  # a failed migration stops the stack instead of leaving a half-migrated
+  # schema serving traffic.
+  #
+  # The docker-entrypoint-initdb.d mount that used to load only 0001_init.sql
+  # is gone on purpose: two mechanisms would be two chances to produce
+  # different schemas, and the volume-mounted one only ever ran on a fresh,
+  # empty volume.
+  #
+  # The image ENTRYPOINT is the gateway binary, so this service must override
+  # the entrypoint and not only the command: compose "command" replaces the
+  # image CMD, and overriding only the command would run
+  # "/usr/local/bin/campus-ai-gateway <migrate args>" — the server would start
+  # and ignore the migration flags entirely.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/usr/local/bin/campus-ai-gateway-migrate"]
+    command: ["-migrations", "/migrations"]
+    environment:
+      DATABASE_URL: "postgres://campus:campus@postgres:5432/campus_gateway?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
   gateway-server:
     build:
       context: ..
@@ -24,7 +59,13 @@ services:
       THINKWATCH_URL: "http://host.docker.internal:8788"
       THINKWATCH_GATEWAY_KEY: ""
       ADMIN_TOKEN: "change-me-in-production"
-    depends_on: [postgres, redis]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
   nginx:

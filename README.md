@@ -4,7 +4,7 @@
 
 Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-13）：核心网关、Admin UI v2、管理员会话认证 v2、多 Provider 控制面、配额与审计已经进入 `main`。
+> 当前状态（2026-10-13）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
 >
 > 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
 >
@@ -32,6 +32,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成；最终 Provider / attempts 取决于 ThinkWatch 实际 telemetry |
 | Admin UI v2 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
 | 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
+| 统一账户与开放注册 | ✅ | 公开注册创建 member、super_admin 授予管理角色、用户与权限管理 |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
 | trusted-header / 校园 SSO 边界 | ✅* | Gateway 侧完成；学校真实 IdP 待验收 |
 | 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
@@ -90,13 +91,14 @@ http://127.0.0.1:8080/admin-ui
 主要页面包括：
 
 - 总览与系统健康状态
-- Provider 管理
-- 虚拟模型与 Route 管理
-- ThinkWatch 同步与模型测试
-- Tenant / API Key 管理
+- 供应商管理
+- 模型与路由（线路 / 故障切换）
+- ThinkWatch 同步与模型连通测试
+- 租户 / API Key 管理
+- 用户与权限（super_admin）
 - 请求日志筛选、分页、CSV 与详情
 - 管理审计与安全事件
-- 当前身份、修改密码、登录设备与退出登录
+- 我的账号、修改密码、登录设备与退出登录
 
 默认：
 
@@ -110,9 +112,47 @@ ADMIN_AUTH_MODE=session
 
 首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。
 
-创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。
+创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。守卫条件是“是否已存在 super_admin”，而不是“账号表是否为空”。
 
-数据库已经存在管理员后，不再提供公开“注册”入口。当前也没有面向管理员的自助“忘记密码”流程。
+### 统一用户账户体系与开放注册
+
+网关只有一种账号，管理员是拥有管理角色的普通账号：
+
+```text
+User
+├── member          公开注册创建，无管理权限
+├── auditor         只读观测
+├── operator        运行状态与模型连通测试
+├── tenant_admin    Phase 1 起不授予任何权限（全局形态已撤回，等同 member）
+├── gateway_admin   供应商、模型与线路、ThinkWatch 同步
+└── super_admin      只能通过首次 Setup 创建，或由现有 super_admin 授予
+```
+
+- 首次部署没有 super_admin 时，**只**显示“创建管理员账号”，此时公开注册接口拒绝请求
+  （`409 setup_required`），避免远程用户抢先注册导致系统无人可管理
+- 首个 super_admin 创建后，`POST /auth/register` 仅在**显式设置**
+  `PUBLIC_REGISTRATION_ENABLED=true` 时开放，且**只能**创建 `member`（后端固定，请求体
+  携带 `roles` 等字段会被直接拒绝）
+- 该开关默认 `false`：生产入口是校园 SSO，member 暂时没有数据面能力，默认开放匿名密码
+  注册只会扩大滥用面；需要本地账号时由运维显式开启，账号体系其余部分不受影响
+- 管理员角色只能由 super_admin 在「用户与权限」中授予；`/admin/users` 不在任何其它角色的
+  允许列表里，gateway_admin 无法给自己提权
+- 角色与 `member` 互斥：拥有任一管理角色时 `member` 自动移除，由后端 normalize
+- 注册成功后自动登录（复用同一套 Access + Refresh Session），不需要再输一次密码
+- 注册限流按来源 IP 计算（默认 5 次 / 小时），Redis 不可用时**拒绝**注册而不是放行
+- 系统始终保留至少一个启用的 super_admin：停用或降级最后一个会被拒绝（`409 last_super_admin`）
+
+注册与用户管理相关配置：
+
+```text
+PUBLIC_REGISTRATION_ENABLED=false
+PUBLIC_REGISTER_MAX_ATTEMPTS=5
+PUBLIC_REGISTER_WINDOW=1h
+```
+
+公开注册目前**不提供**邮箱验证、忘记密码、邀请码或管理员审批。
+
+完整说明见 `docs/ACCOUNTS.md`。
 
 ### 会话模型
 
@@ -137,7 +177,7 @@ RBAC
 - 新密码使用 Argon2id；兼容 bcrypt 旧密码并可透明升级
 - Access Token 不写入 localStorage / sessionStorage / IndexedDB
 - Refresh Cookie 为 `HttpOnly` + `SameSite=Strict`
-- Refresh Token 确定性轮换，默认 30 秒并发宽限期
+- Refresh Token 确定性轮换，默认 5 秒并发宽限期（`ADMIN_REFRESH_REPLAY_GRACE`）
 - 多标签页同时刷新不会被误判为 Token 泄露
 - 超出宽限期的旧 Refresh Token 重用会触发 replay 检测并撤销会话
 - 修改密码会提升 `auth_version` 并使已有会话失效
@@ -175,6 +215,7 @@ Campus AI Gateway RBAC
 详见：
 
 - `docs/ADMIN_UI.md`
+- `docs/ACCOUNTS.md`
 - `docs/SSO_RBAC.md`
 - `docs/PRODUCTION.md`
 
@@ -232,6 +273,21 @@ ThinkWatch Core 不在常见目录时：
 .\scripts\status.ps1
 .\scripts\stop.ps1
 ```
+
+### 数据库迁移
+
+Schema 由独立命令管理，`dev.ps1` / `setup.ps1` 与 Docker Compose 栈（一次性 `migrate`
+服务门禁）都调用同一实现：
+
+```powershell
+go run ./cmd/migrate -database-url "postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslmode=disable" -migrations .\migrations
+```
+
+- 按顺序应用 `migrations/` 下全部版本，并在 `schema_migrations` 中记录版本、文件名、
+  校验值和应用时间；每个文件与自己的记录同一事务提交。
+- 已记录文件的校验值变化会失败；没有 `schema_migrations` 的旧库会重放全部幂等迁移后
+  建立记录；并发执行由 advisory lock 串行化。
+- 迁移失败时命令非零退出，Compose 栈中的网关不会启动。
 
 ---
 
@@ -434,12 +490,14 @@ npm --prefix .\web\admin run build
 ```text
 cmd/
 ├── server/                 Gateway HTTP 服务入口
-└── keygen/                 业务 API Key 工具
+├── keygen/                 业务 API Key 工具
+└── migrate/                 数据库迁移命令入口
 
 internal/
 ├── app/                    Server / Admin API / Auth / Embedded UI
 │   └── adminui/dist/       Admin UI v2 构建产物
 ├── httpx/                  HTTP 公共能力
+├── migrate/                迁移执行器（schema_migrations / 校验值 / advisory lock）
 ├── model/                  数据结构
 ├── proxy/                  ThinkWatch 透明代理
 ├── ratelimit/              Redis 限流

@@ -12,7 +12,7 @@ import {
   ServerCog,
   Zap,
 } from 'lucide-react'
-import {api, type DashboardStatus, type ModelConfig} from '../api'
+import {api, listModelTestOptions, type DashboardStatus, type ModelTestOption} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Table} from '../components/ui/Table'
@@ -28,12 +28,19 @@ import {fmt, ms, num, ratio} from '../lib/format'
  * Dashboard, arranged in three layers so the operator reads it top-down:
  * business KPIs, then infrastructure, then per-supplier telemetry.
  */
-export function DashboardPage() {
+export function DashboardPage({roles}: {roles: string[]}) {
   const toast = useToast()
   const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
-  const [testing, setTesting] = useState<ModelConfig[] | null>(null)
+  const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
   const [syncing, setSyncing] = useState(false)
+
+  // Quick actions are gated by the same allow-list the gateway uses, so the
+  // dashboard never offers a button whose only possible result is a 403. A
+  // gateway_admin may read the status the page reports and the operator may
+  // read it too; neither may change the routing that produced it.
+  const canSync = roles.includes('super_admin') || roles.includes('gateway_admin')
+  const canTestModel = canSync || roles.includes('operator')
 
   const sync = async () => {
     const ok = await confirm({
@@ -56,10 +63,15 @@ export function DashboardPage() {
 
   // The model list is only needed to populate the test drawer, so it is fetched
   // on demand rather than adding another request to every dashboard load.
+  //
+  // It comes from /admin/model-test-options rather than /admin/models: running a
+  // connectivity test and editing model routes are different capabilities, and
+  // an operator has the first without the second. Reading the full model
+  // configuration here would have made the button 403 for the role the button
+  // exists for.
   const openTest = async () => {
     try {
-      const d = await api<{data: ModelConfig[]}>('/admin/models')
-      setTesting(d.data || [])
+      setTesting(await listModelTestOptions())
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无法加载模型列表')
     }
@@ -77,14 +89,20 @@ export function DashboardPage() {
 
   return (
     <div className="stack">
-      <div className="quickActions">
-        <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
-          同步 ThinkWatch
-        </Button>
-        <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
-          模型连通测试
-        </Button>
-      </div>
+      {(canSync || canTestModel) && (
+        <div className="quickActions">
+          {canSync && (
+            <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
+              同步 ThinkWatch
+            </Button>
+          )}
+          {canTestModel && (
+            <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
+              模型连通测试
+            </Button>
+          )}
+        </div>
+      )}
 
       {error ? (
         <Panel title="运行状态">
