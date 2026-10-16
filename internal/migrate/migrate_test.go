@@ -26,6 +26,25 @@ func writeMigration(t *testing.T, dir, name, body string) {
 	}
 }
 
+// nextMigrationName returns a filename one version past the highest in dir.
+//
+// Tests that inject a broken migration use it instead of a literal version
+// number, because the literal collides the moment the repository grows a
+// migration with that version. When it collided, the run still failed — with
+// "migrations 0010_x.sql and 0010_broken.sql share version 0010" — so the test
+// kept passing while no longer exercising the broken SQL it was written for,
+// and the bootstrap variant stopped reaching the bookkeeping table at all.
+func nextMigrationName(t *testing.T, dir string) string {
+	t.Helper()
+	highest := 0
+	for _, name := range listMigrationFiles(t, dir) {
+		if v := parseVersion(name); v > highest {
+			highest = v
+		}
+	}
+	return fmt.Sprintf("%04d_broken.sql", highest+1)
+}
+
 func TestLoadOrdersByVersionAndChecksumsBody(t *testing.T) {
 	dir := t.TempDir()
 	writeMigration(t, dir, "0002_beta.sql", "SELECT 2;")
@@ -285,18 +304,36 @@ func isolatedDatabase(t *testing.T) string {
 	}
 	defer func() { _ = admin.Close(context.Background()) }()
 
-	drop := func() {
+	// drop opens its own connection instead of reusing admin above. t.Cleanup
+	// runs after this function has returned, by which point the deferred
+	// admin.Close() has already fired; reusing admin made every cleanup drop a
+	// silent no-op and leaked one database per integration test.
+	drop := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		conn, err := pgx.ConnectConfig(ctx, adminCfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close(context.Background()) }()
 		// WITH (FORCE) drops connections a previous run left behind. Only the
 		// database this test created is ever named here.
-		_, _ = admin.Exec(ctx, `DROP DATABASE IF EXISTS `+quoteIdent(name)+` WITH (FORCE)`)
+		_, err = conn.Exec(ctx, `DROP DATABASE IF EXISTS `+quoteIdent(name)+` WITH (FORCE)`)
+		return err
 	}
-	drop()
+	if err := drop(); err != nil {
+		t.Fatalf("drop stale test database: %v", err)
+	}
 	if _, err := admin.Exec(ctx, `CREATE DATABASE `+quoteIdent(name)); err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
-	t.Cleanup(drop)
+	t.Cleanup(func() {
+		// Reported rather than swallowed: a failure here means a database
+		// survived the run, which is exactly the leak this guards against.
+		if err := drop(); err != nil {
+			t.Logf("could not drop test database %s: %v", name, err)
+		}
+	})
 
 	out := cfg.Copy()
 	out.Database = name
@@ -468,7 +505,7 @@ func TestApplyRecordsNothingForAFailedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeMigration(t, dir, "0010_broken.sql", "INSERT INTO gateway_no_such_table VALUES (1);")
+	writeMigration(t, dir, nextMigrationName(t, dir), "INSERT INTO gateway_no_such_table VALUES (1);")
 
 	_, err = Apply(context.Background(), url, dir)
 	if err == nil {
@@ -485,7 +522,7 @@ func TestApplyRecordsNothingForAFailedFile(t *testing.T) {
 	}
 	var broken int
 	if err := conn.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM schema_migrations WHERE filename = '0010_broken.sql'`).Scan(&broken); err != nil {
+		`SELECT COUNT(*) FROM schema_migrations WHERE version > $1`, len(listMigrationFiles(t, repoMigrations))).Scan(&broken); err != nil {
 		t.Fatal(err)
 	}
 	if broken != 0 {
@@ -511,7 +548,7 @@ func TestBootstrapRecordsNothingWhenAFileFails(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeMigration(t, dir, "0010_broken.sql", "INSERT INTO gateway_no_such_table VALUES (1);")
+	writeMigration(t, dir, nextMigrationName(t, dir), "INSERT INTO gateway_no_such_table VALUES (1);")
 
 	if _, err := Apply(context.Background(), url, dir); err == nil {
 		t.Fatal("expected the broken migration to fail the run")
