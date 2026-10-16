@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -16,6 +17,8 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type adminAuditResponseWriter struct {
@@ -97,6 +100,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/admin/status":
 		s.handleAdminStatus(w, r)
+	case r.URL.Path == "/admin/status/trend":
+		s.handleAdminTrend(w, r)
 	case r.URL.Path == "/admin/whoami":
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
@@ -123,6 +128,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeyByID(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
+	case r.URL.Path == "/admin/request-logs/summary":
+		s.handleRequestLogsSummary(w, r)
+	case r.URL.Path == "/admin/request-logs/facets":
+		s.handleRequestLogFacets(w, r)
 	case r.URL.Path == "/admin/request-logs/export":
 		s.handleRequestLogsExport(w, r)
 	case r.URL.Path == "/admin/admin-audit":
@@ -446,15 +455,23 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodPut {
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
-		return
-	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/api-keys/")
 	if id == "" {
 		http.NotFound(w, r)
 		return
 	}
+	switch r.Method {
+	case http.MethodPut:
+		s.updateAPIKey(w, r, id, reqID)
+	case http.MethodDelete:
+		s.revokeAPIKey(w, r, id, reqID)
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	}
+}
+
+func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request, id, reqID string) {
 	var in model.APIKeyAdmin
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
@@ -470,6 +487,48 @@ func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// revokeAPIKey destroys a key's credential.
+//
+// DELETE means revoke here, not "remove the row". gateway_request_log records
+// the key that served each request by id, so deleting the row would leave every
+// historical request pointing at an identifier nothing can resolve — the audit
+// trail would survive but stop being readable, and the usage column on the key
+// list would have nothing to aggregate.
+//
+// So the row stays and two things change: the key is disabled, and its stored
+// digest is replaced with a freshly generated one. The second part is what
+// makes this a revocation rather than a disable. Without it the column would
+// still hold the digest of a credential that has already been handed out, and
+// re-enabling the key — an ordinary edit anyone with key access can make —
+// would bring the same credential back into service. With it, the only way to
+// use this key again is to create a new one.
+//
+// The operation is idempotent: revoking twice re-rotates the digest, which is
+// harmless, and answers 200 both times.
+func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		// Not a UUID cannot name a row, so it is the same answer as a key that
+		// does not exist — and it must not reach the database, where the cast
+		// would fail the whole statement.
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+	_, _, digest, err := security.NewAPIKey(s.cfg.KeyHMACSecret)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "key_generation_failed", "Unable to generate a replacement credential", reqID)
+		return
+	}
+	if err := s.pg.RevokeAPIKey(r.Context(), id, digest); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "API key could not be revoked", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "status": 2})
 }
 
 func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
@@ -510,39 +569,80 @@ func parseAdminLimit(r *http.Request) int {
 	return limit
 }
 
-func requestLogFilterFrom(r *http.Request, defaultLimit int) storage.RequestLogFilter {
+func requestLogFilterFrom(r *http.Request, defaultLimit int) (storage.RequestLogFilter, error) {
+	q := r.URL.Query()
 	limit := defaultLimit
-	if raw := r.URL.Query().Get("limit"); raw != "" {
+	if raw := q.Get("limit"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 5000 {
 			limit = n
 		}
 	}
 	offset := 0
-	if raw := r.URL.Query().Get("offset"); raw != "" {
+	if raw := q.Get("offset"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
 			offset = n
 		}
 	}
 	status := 0
-	if raw := r.URL.Query().Get("status"); raw != "" {
+	if raw := q.Get("status"); raw != "" {
 		status, _ = strconv.Atoi(raw)
 	}
+	// The zero value of Failover means "did not fail over", so the "any" case
+	// has to be stated explicitly. It is spelled out here rather than left to
+	// the struct's zero value because getting it wrong silently hides every
+	// failover row from the table.
 	failover := -1
-	switch r.URL.Query().Get("failover") {
+	switch q.Get("failover") {
 	case "true", "1":
 		failover = 1
 	case "false", "0":
 		failover = 0
 	}
-	return storage.RequestLogFilter{
-		Limit: limit,
-		Offset: offset,
-		Model: strings.TrimSpace(r.URL.Query().Get("model")),
-		Provider: strings.TrimSpace(r.URL.Query().Get("provider")),
-		Status: status,
-		RequestID: strings.TrimSpace(r.URL.Query().Get("request_id")),
-		Failover: failover,
+	from, err := parseTimeParam(q.Get("from"))
+	if err != nil {
+		return storage.RequestLogFilter{}, err
 	}
+	to, err := parseTimeParam(q.Get("to"))
+	if err != nil {
+		return storage.RequestLogFilter{}, err
+	}
+	return storage.RequestLogFilter{
+		Limit:     limit,
+		Offset:    offset,
+		Model:     strings.TrimSpace(q.Get("model")),
+		Provider:  strings.TrimSpace(q.Get("provider")),
+		Status:    status,
+		RequestID: strings.TrimSpace(q.Get("request_id")),
+		Failover:  failover,
+		TenantID:  strings.TrimSpace(q.Get("tenant_id")),
+		APIKeyID:  strings.TrimSpace(q.Get("api_key_id")),
+		From:      from,
+		To:        to,
+	}, nil
+}
+
+// parseTimeParam reads one end of a time range.
+//
+// Only RFC 3339 is accepted, and that is deliberate: it is the one form that
+// carries the offset. A bare local timestamp would have to be interpreted in a
+// zone the server does not know, and guessing wrong shifts the window by hours
+// without anything failing — the operator would see a plausible table of the
+// wrong rows. The console converts its local pickers to instants before sending
+// them for the same reason.
+//
+// An empty value means "unbounded on that side". A malformed one is an error
+// rather than a silent omission, because a dropped time filter looks exactly
+// like a filter that matched everything.
+func parseTimeParam(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("time filters must be RFC 3339 instants, got %q", raw)
+	}
+	return t, nil
 }
 
 func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
@@ -551,7 +651,11 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	f := requestLogFilterFrom(r, 100)
+	f, err := requestLogFilterFrom(r, 100)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
 	items, err := s.pg.SearchRequestLogs(r.Context(), f)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list request logs", reqID)
@@ -560,13 +664,127 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
 }
 
+// handleRequestLogsSummary aggregates the rows the table is currently filtered
+// to.
+//
+// It is a separate endpoint from the table because the two answer different
+// questions and are paginated differently: the table is fifty rows of detail,
+// the summary is the whole filtered set in eight numbers. Computing the summary
+// over the returned page would make "total requests" mean "requests on this
+// page", which is the one reading an operator would never intend.
+//
+// It takes exactly the same query parameters as the table, from the same
+// parser, so the two cannot drift into describing different sets of rows.
+func (s *Server) handleRequestLogsSummary(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	f, err := requestLogFilterFrom(r, 0)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
+	summary, err := s.pg.SummarizeRequestLogs(r.Context(), f)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to summarise request logs", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleRequestLogFacets answers the option lists for the log filters.
+//
+// It is derived from the log rather than from the tenant and key tables so that
+// the role which may read logs — an auditor — can also filter them, without
+// being granted the tenant and key management APIs it deliberately does not
+// have.
+func (s *Server) handleRequestLogFacets(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	facets, err := s.pg.RequestLogFacets(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list request log filters", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, facets)
+}
+
+// handleAdminTrend answers the dashboard's traffic chart.
+//
+// The window defaults to the last 24 hours in hourly buckets, which is the view
+// an operator opens the console to see. A caller that wants a different window
+// states both ends; the range is half-open so that two adjacent windows never
+// count the boundary row twice.
+func (s *Server) handleAdminTrend(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	q := r.URL.Query()
+
+	unit, ok := trendUnit(q.Get("bucket"))
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "invalid_bucket", "bucket must be hour or day", reqID)
+		return
+	}
+
+	to, err := parseTimeParam(q.Get("to"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
+	if to.IsZero() {
+		to = time.Now()
+	}
+	from, err := parseTimeParam(q.Get("from"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
+	if from.IsZero() {
+		from = to.Add(-24 * time.Hour)
+	}
+	if !from.Before(to) {
+		httpx.Error(w, http.StatusBadRequest, "invalid_range", "from must be earlier than to", reqID)
+		return
+	}
+	if to.Sub(from) > time.Duration(maxTrendBuckets)*trendStep(unit) {
+		httpx.Error(w, http.StatusBadRequest, "range_too_wide",
+			fmt.Sprintf("the range would need more than %d %s buckets", maxTrendBuckets, unit), reqID)
+		return
+	}
+
+	offset := parseTrendOffset(q.Get("tz_offset"))
+	rows, err := s.pg.RequestLogSeries(r.Context(), from, to, unit, offset, trendLabelFormat(unit))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the traffic trend", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":   fillTrendBuckets(rows, from, to, unit, offset),
+		"bucket": unit,
+		"from":   from.UTC(),
+		"to":     to.UTC(),
+	})
+}
+
 func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodGet {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	f := requestLogFilterFrom(r, 5000)
+	f, err := requestLogFilterFrom(r, 5000)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
 	f.Offset = 0
 	items, err := s.pg.SearchRequestLogs(r.Context(), f)
 	if err != nil {

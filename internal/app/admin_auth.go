@@ -166,6 +166,12 @@ func (p adminPrincipal) can(r *http.Request) bool {
 	if p.Roles[RoleAuditor] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
+			// The trend is the same telemetry /admin/status already returns,
+			// grouped by time, so a role that may read the status page may read
+			// the chart of it. It is named explicitly rather than covered by a
+			// prefix rule on /admin/status so a future endpoint under that path
+			// has to justify its own grant.
+			path == "/admin/status/trend",
 			strings.HasPrefix(path, "/admin/request-logs"),
 			path == "/admin/admin-audit",
 			path == "/admin/security-events":
@@ -173,7 +179,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		}
 	}
 	if p.Roles[RoleOperator] {
-		if method == http.MethodGet && path == "/admin/status" {
+		if method == http.MethodGet && (path == "/admin/status" || path == "/admin/status/trend") {
 			return true
 		}
 		// The connectivity test is a diagnostic, not an edit: an operator may
@@ -194,7 +200,8 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			path == "/admin/thinkwatch/sync",
 			path == "/admin/model-test",
 			path == "/admin/model-test-options",
-			path == "/admin/status":
+			path == "/admin/status",
+			path == "/admin/status/trend":
 			return true
 		}
 	}

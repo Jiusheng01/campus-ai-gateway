@@ -64,6 +64,16 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 	}{
 		{"auditor", http.MethodGet, "/admin/request-logs", true},
 		{"auditor", http.MethodPost, "/admin/thinkwatch/sync", false},
+		// The summary and the trend are reads of telemetry the same roles
+		// already see, so they follow the pages they feed rather than opening
+		// a new grant.
+		{"auditor", http.MethodGet, "/admin/request-logs/summary", true},
+		{"auditor", http.MethodGet, "/admin/status/trend", true},
+		{"operator", http.MethodGet, "/admin/status/trend", true},
+		{"gateway_admin", http.MethodGet, "/admin/status/trend", true},
+		// Reading a chart is not revoking a credential.
+		{"auditor", http.MethodDelete, "/admin/api-keys/x", false},
+		{"operator", http.MethodDelete, "/admin/api-keys/x", false},
 		{"gateway_admin", http.MethodPost, "/admin/thinkwatch/sync", true},
 		{"gateway_admin", http.MethodPut, "/admin/tenants/x", false},
 		// P1-02: the global form of tenant_admin no longer reaches tenant or
@@ -73,10 +83,13 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 		{"tenant_admin", http.MethodGet, "/admin/tenants", false},
 		{"tenant_admin", http.MethodPost, "/admin/api-keys", false},
 		{"tenant_admin", http.MethodGet, "/admin/status", false},
+		{"tenant_admin", http.MethodGet, "/admin/status/trend", false},
 		{"operator", http.MethodPost, "/admin/model-test", true},
 		// A plain member reaches nothing but its own account.
 		{"member", http.MethodGet, "/admin/status", false},
+		{"member", http.MethodGet, "/admin/status/trend", false},
 		{"member", http.MethodGet, "/admin/request-logs", false},
+		{"member", http.MethodGet, "/admin/request-logs/summary", false},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
