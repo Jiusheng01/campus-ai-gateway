@@ -138,3 +138,58 @@ func TestRefreshReplayGraceDefaultAndOverride(t *testing.T) {
 		}
 	}
 }
+
+// loadConfigWithPublicOrigin runs the real environment-parsing path with
+// ADMIN_PUBLIC_ORIGIN set to the given value.
+func loadConfigWithPublicOrigin(t *testing.T, value string) (Config, error) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("ADMIN_PUBLIC_ORIGIN", value)
+	return LoadConfig()
+}
+
+// ADMIN_PUBLIC_ORIGIN is reduced to the scheme://authority the same-origin check
+// compares against. An operator pasting the console URL is doing the obvious
+// thing, so the path is dropped rather than treated as an error; a value that
+// is not an http(s) origin is a real mistake and must fail startup instead of
+// quietly disconnecting the CSRF check.
+func TestAdminPublicOriginNormalisation(t *testing.T) {
+	cfg, err := loadConfigWithPublicOrigin(t, "https://gateway.example.edu/admin-ui/")
+	if err != nil {
+		t.Fatalf("a console URL must be accepted: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "https://gateway.example.edu" {
+		t.Fatalf("the path must be dropped, got %q", cfg.AdminPublicOrigin)
+	}
+
+	cfg, err = loadConfigWithPublicOrigin(t, "http://gateway.example.edu:8088")
+	if err != nil {
+		t.Fatalf("a non-default port must be accepted: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "http://gateway.example.edu:8088" {
+		t.Fatalf("the port must be preserved, got %q", cfg.AdminPublicOrigin)
+	}
+}
+
+func TestAdminPublicOriginRejectsWhatItCannotUse(t *testing.T) {
+	for _, raw := range []string{"gateway.example.edu", "ftp://gateway.example.edu", "https://"} {
+		if _, err := loadConfigWithPublicOrigin(t, raw); err == nil {
+			t.Fatalf("ADMIN_PUBLIC_ORIGIN=%q must be refused", raw)
+		}
+	}
+}
+
+// Unset is the common case and must stay a no-op: the check then rests on the
+// request's own authority.
+func TestAdminPublicOriginDefaultsToUnset(t *testing.T) {
+	cfg, err := loadConfigWithPublicOrigin(t, "")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "" {
+		t.Fatalf("an unset ADMIN_PUBLIC_ORIGIN must stay empty, got %q", cfg.AdminPublicOrigin)
+	}
+}

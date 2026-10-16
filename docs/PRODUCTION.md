@@ -78,6 +78,41 @@ openssl rand -base64 48
 运维必须先在本机完成初始化，或使用 `ADMIN_BOOTSTRAP_USERNAME` /
 `ADMIN_BOOTSTRAP_PASSWORD` 进行无人值守初始化。
 
+### 管理控制台的 Host 头与 ADMIN_PUBLIC_ORIGIN
+
+管理控制台的登录态由 **HttpOnly Refresh Cookie + 内存中的 Access Token** 维持：
+刷新页面时前端会调用 `POST /admin/auth/refresh`，用 Cookie 换一个新的 Access Token。
+该接口（以及 `POST /admin/auth/logout`）带同源校验：**浏览器发来的 `Origin`
+必须与网关收到的 Host 一致**。
+
+代理必须如实转发客户端的主机与端口。Nginx 请用 `$http_host`：
+
+```nginx
+proxy_set_header Host $http_host;   # 保留端口
+# proxy_set_header Host $host;      # 注意：$host 会丢掉端口，见下
+```
+
+`$host` 只保留主机名、**丢弃端口**，而浏览器 `Origin` 始终带端口。若控制台发布在非默认
+端口上（仓库自带的 `deploy/docker-compose.yml` 就把 nginx 发布在 **8088**），
+`Origin: http://host:8088` 与 Host `host` 无法匹配，请求被判定为跨站并返回
+`403 csrf_rejected`。
+
+后果很有迷惑性：**登录本身不受影响**（`/admin/login` 不做同源校验），因此表现为
+「登录成功，一刷新就要求重新登录」。
+
+网关现在按 authority 比较，**一侧未声明端口即视为未声明而非不同**，因此上述
+`$host` 场景已经可以正常工作；当两侧都写明了端口时仍必须一致。
+
+若代理把 Host 改写成了浏览器从未使用过的 authority（例如内网服务名），任何归一化都
+无法恢复匹配，此时显式配置对外地址：
+
+```bash
+ADMIN_PUBLIC_ORIGIN=https://gateway.example.edu
+```
+
+它只是一个额外的可接受 authority，不会关闭同源校验；请求自身的主机依旧有效。
+未设置时该检查只依赖请求自身的 authority。
+
 
 ## 4. PostgreSQL
 

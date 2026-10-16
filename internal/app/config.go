@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -71,6 +72,17 @@ type Config struct {
 	AdminCookieSecure      bool          // add Secure to the refresh cookie (needs HTTPS)
 	AdminSetupLocalOnly    bool          // first-run setup is localhost-only
 	TrustedProxyCIDRs      []string      // proxies whose X-Forwarded-For we trust
+
+	// AdminPublicOrigin is the browser-facing origin of the console, such as
+	// "https://gateway.example.edu". It is optional and only consulted by the
+	// same-origin check that guards the cookie-authenticated endpoints.
+	//
+	// It exists for proxies that rewrite Host to something the browser never
+	// said — an internal service name, an upstream port — where comparing the
+	// Origin header against the request's own authority can never match and
+	// every refresh would look like a cross-site request. Setting it gives the
+	// gateway a second, explicit authority to accept.
+	AdminPublicOrigin string
 	AdminBootstrapUsername string        // optional non-interactive bootstrap
 	AdminBootstrapPassword string
 
@@ -154,6 +166,13 @@ func LoadConfig() (Config, error) {
 	if s := strings.TrimSpace(cfg.AdminSessionSecret); s != "" && len(s) < AdminSessionSecretMinBytes {
 		return Config{}, errors.New("ADMIN_SESSION_SECRET must be at least 32 bytes of entropy")
 	}
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_PUBLIC_ORIGIN")); raw != "" {
+		origin, err := normalizePublicOrigin(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.AdminPublicOrigin = origin
+	}
 	if cfg.AdminRefreshReplayGrace <= 0 {
 		return Config{}, errors.New("ADMIN_REFRESH_REPLAY_GRACE must be positive")
 	}
@@ -188,6 +207,29 @@ func LoadConfig() (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// normalizePublicOrigin validates an ADMIN_PUBLIC_ORIGIN value and reduces it
+// to the scheme://authority form the same-origin check compares against.
+//
+// A path, query or fragment is dropped rather than rejected: an operator who
+// pastes the console URL — "https://gateway.example.edu/admin-ui/" — means the
+// origin of that URL, and refusing it would be a trap. A missing scheme or
+// authority is a real mistake and fails startup instead of silently
+// disconnecting the CSRF check from what the operator intended.
+func normalizePublicOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN is not a valid URL")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN must include a host")
+	}
+	return scheme + "://" + u.Host, nil
 }
 
 // parseCIDROrIP accepts either a CIDR block or a bare address. A bare address is

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -592,8 +593,25 @@ func readAdminRefreshCookie(r *http.Request) (string, error) {
 }
 
 // checkSameOrigin implements the CSRF defence for cookie-authenticated
-// requests: the Origin (or Referer) host must match the host the request was
-// addressed to.
+// requests: the Origin (or Referer) host must be the host the request was
+// addressed to, or the explicitly configured public origin.
+//
+// The comparison is on the authority, not the raw string, because the two sides
+// are written by different parties. A browser sends what the operator typed —
+// "http://gateway.local:8088" — while the gateway sees whatever the proxy put
+// in Host. An nginx `proxy_set_header Host $host` drops the port, so the
+// gateway is routinely handed "gateway.local" for a page served from :8088.
+// Comparing the raw strings made every such deployment treat its own console as
+// cross-site, and because only the refresh and logout endpoints are guarded,
+// the visible effect was that signing in worked and the first reload threw the
+// operator back to the login screen. See sameAuthority for the rule that fixes
+// it without giving up the check.
+//
+// ADMIN_PUBLIC_ORIGIN is the escape hatch for a proxy that rewrites Host to an
+// authority the browser never used — an internal service name, for instance —
+// where no amount of normalisation can recover a match. It is deliberately an
+// operator-provided value rather than a forwarded header: X-Forwarded-Host
+// arrives from the client on a direct connection and is therefore not evidence.
 func (s *Server) checkSameOrigin(r *http.Request) error {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
@@ -614,11 +632,60 @@ func (s *Server) checkSameOrigin(r *http.Request) error {
 	if err != nil || parsed.Host == "" {
 		return ErrAdminCSRFRejected
 	}
-	if strings.EqualFold(parsed.Host, r.Host) {
+	if sameAuthority(parsed.Host, r.Host) {
 		return nil
+	}
+	if allowed := s.cfg.AdminPublicOrigin; allowed != "" {
+		// A normalised value, validated at startup; a parse failure here is
+		// impossible in practice, and failing closed if it ever happened is the
+		// correct direction for a security check.
+		want, err := url.Parse(allowed)
+		if err == nil && want.Host != "" &&
+			strings.EqualFold(parsed.Scheme, want.Scheme) &&
+			sameAuthority(parsed.Host, want.Host) {
+			return nil
+		}
 	}
 	return ErrAdminCSRFRejected
 }
+
+// sameAuthority reports whether two host[:port] authorities name the same host.
+//
+// A missing port means "not stated", not "different". That is the whole point:
+// a proxy may legitimately strip it (nginx's $host), and the gateway has no way
+// to recover it, so refusing to match would reject the deployment's own
+// console. When both sides do state a port they must agree, which keeps the
+// check strict everywhere the information survived the proxy. The host itself
+// must always match, so a genuinely foreign origin — a different site, the
+// actual CSRF threat — is still refused.
+func sameAuthority(a, b string) bool {
+	aHost, aPort := splitAuthority(a)
+	bHost, bPort := splitAuthority(b)
+	if aHost == "" || bHost == "" || !strings.EqualFold(aHost, bHost) {
+		return false
+	}
+	if aPort == "" || bPort == "" {
+		return true
+	}
+	return aPort == bPort
+}
+
+// splitAuthority separates a host[:port] authority into its parts, tolerating
+// the shapes that reach it from browsers and proxies: "host", "host:port",
+// "[::1]" and "[::1]:port". A value net.SplitHostPort cannot parse is treated
+// as a bare host rather than an error, so the caller's comparison — not the
+// parser — decides whether the request proceeds.
+func splitAuthority(raw string) (host, port string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if h, p, err := net.SplitHostPort(raw); err == nil {
+		return strings.Trim(h, "[]"), p
+	}
+	return strings.Trim(raw, "[]"), ""
+}
+
 
 // auditAdminAuth records an authentication event. It is best effort: an audit
 // write failure must never change the response the caller receives.
