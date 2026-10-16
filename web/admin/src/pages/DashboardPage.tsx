@@ -21,6 +21,7 @@ import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
+import {TrendPanel} from '../components/charts/TrendPanel'
 import {useResource} from '../lib/useResource'
 import {fmt, ms, num, ratio} from '../lib/format'
 
@@ -160,6 +161,8 @@ export function DashboardPage({roles}: {roles: string[]}) {
               })}
             </div>
           </Panel>
+
+          <TrendPanel />
 
           <Panel
             title="供应商状态"

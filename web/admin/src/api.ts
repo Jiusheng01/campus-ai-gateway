@@ -3,13 +3,32 @@ export type ModelConfig={id:string;alias:string;provider_id:string;provider_name
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
 export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
-export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];rpm_limit:number;tpm_limit:number;max_concurrency:number;route_group:string}
+export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];rpm_limit:number;tpm_limit:number;max_concurrency:number;route_group:string;usage_requests:number;usage_tokens:number}
 export type RequestLog={request_id:string;tenant_id:string;api_key_id:string;client_ip:string;requested_model:string;actual_model:string;provider:string;upstream_model:string;route_priority:number;attempts:number;failover:boolean;stream:boolean;input_tokens:number;output_tokens:number;total_tokens:number;latency_ms:number;status_code:number;error_code:string;created_at:string}
 export type AdminAudit={id:number;request_id:string;actor:string;action:string;resource:string;status_code:number;client_ip:string;created_at:string}
 export type SecurityEvent={id:number;request_id:string;tenant_id:string;api_key_id:string;event_type:string;client_ip:string;requested_model:string;detail:string;created_at:string}
 export type ProviderStat={provider:string;requests:number;success_rate:number;avg_latency_ms:number}
 export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;thinkwatch:boolean;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
 export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
+
+/**
+ * RequestLogSummary aggregates the whole filtered set, not the page on screen.
+ *
+ * The distinction matters to every reader: `requests` is how many rows match
+ * the current filter, not how many are displayed.
+ */
+export type RequestLogSummary={requests:number;errors:number;input_tokens:number;output_tokens:number;total_tokens:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number}
+
+/**
+ * One point of the traffic trend.
+ *
+ * `bucket` is a wall-clock label the server formatted in this browser's UTC
+ * offset, not an instant. It is rendered verbatim — parsing it back into a Date
+ * would shift it a second time and label every bar with the wrong hour.
+ */
+export type TrendBucket={bucket:string;requests:number;tokens:number;errors:number;avg_latency_ms:number;p95_latency_ms:number}
+
+export type TrendSeries={data:TrendBucket[];bucket:'hour'|'day';from:string;to:string}
 
 // ---------------------------------------------------------------------------
 // Authentication
@@ -319,4 +338,73 @@ export async function updateUser(id:string,patch:UserPatch){
 export async function listModelTestOptions(){
   const d=await api<{data:ModelTestOption[]}>('/admin/model-test-options')
   return d.data||[]
+}
+
+// --- traffic telemetry -----------------------------------------------------
+
+/**
+ * localOffsetMinutes is this browser's UTC offset in minutes east of UTC.
+ *
+ * The server cannot know it, and it is the only thing that makes a "day" on the
+ * trend mean the reader's day rather than UTC's. Note the sign: getTimezoneOffset
+ * returns minutes *west* of UTC, so UTC+8 reports -480 and this negates it.
+ */
+export function localOffsetMinutes(){
+  return -new Date().getTimezoneOffset()
+}
+
+/**
+ * fetchTrend reads the dashboard's traffic series for a window.
+ *
+ * Both ends are converted to RFC 3339 instants before they leave the browser.
+ * The picker hands back a zoneless local string, and sending that would make the
+ * server guess the zone — the one guess that silently shifts a window by hours
+ * without anything failing.
+ */
+export async function fetchTrend(from:Date,to:Date,bucket:'hour'|'day'){
+  const q=new URLSearchParams({
+    from:from.toISOString(),
+    to:to.toISOString(),
+    bucket,
+    tz_offset:String(localOffsetMinutes()),
+  })
+  return api<TrendSeries>(`/admin/status/trend?${q}`)
+}
+
+/**
+ * summarizeRequestLogs aggregates the same rows the log table is filtered to.
+ *
+ * It takes the identical query string as the table on purpose: the summary sits
+ * directly above the list, so the two describing different sets of rows would be
+ * worse than having no summary at all.
+ */
+export async function summarizeRequestLogs(query:string){
+  return api<RequestLogSummary>(`/admin/request-logs/summary?${query}`)
+}
+
+/**
+ * revokeApiKey permanently destroys a key's credential.
+ *
+ * DELETE is a revocation, not a row deletion: the gateway keeps the key so the
+ * request log can still resolve it, disables it, and replaces its stored digest
+ * with one no client holds. The key cannot be brought back by re-enabling it —
+ * only a new key will work.
+ */
+export async function revokeApiKey(id:string){
+  return api<{ok:boolean;id:string;status:number}>(`/admin/api-keys/${encodeURIComponent(id)}`,{method:'DELETE'})
+}
+
+export type TenantFacet={id:string;code:string;name:string}
+export type APIKeyFacet={id:string;name:string;key_prefix:string;tenant_id:string}
+export type RequestLogFacets={tenants:TenantFacet[];keys:APIKeyFacet[]}
+
+/**
+ * listRequestLogFacets reads the values the log filters can take.
+ *
+ * It comes from the log rather than from the tenant and key APIs, so a role that
+ * may read logs can also filter them — and so the lists only offer tenants and
+ * keys that have actually served traffic.
+ */
+export async function listRequestLogFacets(){
+  return api<RequestLogFacets>('/admin/request-logs/facets')
 }

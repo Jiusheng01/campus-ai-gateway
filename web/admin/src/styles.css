@@ -328,6 +328,9 @@ svg { width: 16px; height: 16px; flex: none; }
 }
 .link svg { width: 13px; height: 13px; }
 .link:hover { text-decoration: underline; }
+/* An inline action that is mid-flight keeps its place in the row instead of
+   disappearing, so the layout does not shift under the pointer. */
+.link:disabled { opacity: 0.55; cursor: not-allowed; text-decoration: none; }
 .dangerText { color: var(--danger); }
 
 /* --- badges --------------------------------------------------------------- */
@@ -644,14 +647,36 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 
 /* --- filters and pager ---------------------------------------------------- */
 
+/* The filter row is a fluid grid, not a fixed column count: the request-log
+   page carries nine controls and the number that fit on a line depends on the
+   window, so a hand-written template would need a breakpoint per width. A
+   minimum track lets the browser decide, and the action buttons take the last
+   line on their own once the row wraps. */
 .filters {
   display: grid;
-  grid-template-columns: 1fr 1fr 0.7fr 1.3fr 1fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
   gap: 8px;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
 }
-.filterActions { display: flex; gap: 8px; }
+.filterActions { display: flex; gap: 8px; grid-column: -2 / -1; justify-content: flex-end; align-items: flex-end; }
+.filters .filterWide { grid-column: span 2; }
+/* The caption sits above its control rather than inside it as a placeholder:
+   a placeholder vanishes once a value is typed, leaving a row of anonymous
+   boxes, and a datetime-local input has no placeholder to show at all. */
+.filterField { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.filterField > span { font-size: 11px; color: var(--text-faint); padding-left: 2px; }
+/* A filter that silently became a different kind of control is worse than one
+   that says why: the operator would be looking at a bare ID box with no idea
+   that a picker was meant to be there. */
+.filterNote {
+  margin: 0;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--warning-soft);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
 .pager {
   display: flex;
   align-items: center;
@@ -663,6 +688,134 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   font-size: 12px;
 }
 .pagerActions { display: flex; gap: 8px; }
+
+/* --- aggregate summary ---------------------------------------------------- */
+
+/* The summary strip sits directly above the table it summarises, so it uses the
+   same fluid grid as the KPI cards rather than a fixed count: the number of
+   statistics is a property of the endpoint, not of the window width. */
+.summaryStrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.summaryCell {
+  background: var(--surface);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.summaryCell small { color: var(--text-faint); font-size: 11px; }
+.summaryCell b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.summaryCell.warning b { color: var(--warning); }
+.summaryCell.danger b { color: var(--danger); }
+
+/* --- charts --------------------------------------------------------------- */
+
+.chart { display: flex; flex-direction: column; gap: 8px; }
+.chartEmpty { padding: 26px 0; text-align: center; font-size: 12.5px; }
+
+/* The readout replaces a floating tooltip. A tooltip over a horizontally
+   scrollable plot clips at both ends and covers the bars nearest the pointer;
+   a fixed line has neither problem and is announced without extra work. */
+.chartReadout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.chartReadout b { color: var(--text); font-variant-numeric: tabular-nums; }
+.chartReadout .chartReadoutWhen { min-width: 96px; color: var(--text); }
+.chartReadout .danger b { color: var(--danger); }
+
+.chartScroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+.chartPlot { display: flex; align-items: flex-end; gap: 2px; height: 132px; min-width: 100%; }
+.chartCol {
+  position: relative;
+  flex: 1 0 6px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 3px;
+}
+.chartCol .chartTrack {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: var(--surface-subtle);
+}
+.chartCol.on .chartTrack { background: var(--surface-hover); }
+.chartBar {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 3px 3px 0 0;
+  background: var(--primary);
+  transition: filter 0.12s ease;
+}
+.chartCol.on .chartBar { filter: brightness(1.15); }
+.chartBarError {
+  width: 100%;
+  display: block;
+  border-radius: 0 0 3px 3px;
+  background: var(--danger);
+}
+.chartAxis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chartPeak { font-size: 11px; color: var(--text-faint); }
+
+/* The trend panel stacks one chart per metric. Each keeps its own scale, which
+   is the point: requests and tokens differ by orders of magnitude, and putting
+   them on one axis would make one of them invisible. */
+.chartStack { display: flex; flex-direction: column; gap: 18px; padding: 16px 0; }
+.chartBlock { display: flex; flex-direction: column; gap: 2px; padding: 0 18px; }
+.chartBlockHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.chartBlockHead b { font-size: 12.5px; }
+.chartBlockHead small { color: var(--text-faint); font-size: 11px; }
+
+/* A segmented control: mutually exclusive choices that apply immediately, as
+   opposed to tabs (which switch what is displayed) or a select (which hides the
+   alternatives). Real buttons in a group, so the pressed state is announced. */
+.segmented {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.segmentedItem {
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.segmentedItem:hover { color: var(--text); }
+.segmentedItem.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+.segmentedItem:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 /* --- forms ---------------------------------------------------------------- */
 
@@ -1071,7 +1224,6 @@ input:focus, select:focus, textarea:focus {
    same `repeat(n, 1fr)` here would just be a second place to keep in sync. */
 
 @media (max-width: 1180px) {
-  .filters { grid-template-columns: repeat(3, 1fr); }
   .settingsGrid { grid-template-columns: 1fr; }
   .skeletonCards { grid-template-columns: repeat(2, 1fr); }
 }
@@ -1136,8 +1288,8 @@ input:focus, select:focus, textarea:focus {
   .panelActions { justify-content: flex-start; flex-wrap: wrap; }
   .statusRow, .kpiGrid { grid-template-columns: 1fr; }
   .providerCards { grid-template-columns: 1fr; }
-  .filters { grid-template-columns: 1fr 1fr; }
-  .filterActions { grid-column: 1 / -1; }
+  .filters .filterWide { grid-column: span 1; }
+  .filterActions { grid-column: 1 / -1; justify-content: flex-start; }
   .formGrid { grid-template-columns: 1fr; }
   .modelHead { flex-direction: column; }
   .modelActions { width: 100%; justify-content: flex-start; }

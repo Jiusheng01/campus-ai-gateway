@@ -1,6 +1,6 @@
 import {useState} from 'react'
-import {KeyRound, Pencil, Plus} from 'lucide-react'
-import {api, type ApiKey, type ModelConfig, type Tenant} from '../api'
+import {Ban, KeyRound, Pencil, Plus} from 'lucide-react'
+import {api, revokeApiKey, type ApiKey, type ModelConfig, type Tenant} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge, StatusBadge} from '../components/ui/Badge'
@@ -9,15 +9,17 @@ import {SkeletonRows} from '../components/ui/Skeleton'
 import {Drawer} from '../components/ui/Drawer'
 import {Table} from '../components/ui/Table'
 import {useToast} from '../components/ui/Toast'
+import {useConfirm} from '../components/ui/ConfirmDialog'
 import {KeyForm, type KeyDraft} from '../components/keys/KeyForm'
 import {SecretModal} from '../components/keys/SecretModal'
 import {useResource} from '../lib/useResource'
-import {ago, num} from '../lib/format'
+import {ago, fmt, num} from '../lib/format'
 
 type Bundle = {keys: ApiKey[]; tenants: Tenant[]; models: ModelConfig[]}
 
 export function ApiKeysPage() {
   const toast = useToast()
+  const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(async (): Promise<Bundle> => {
     const [k, t, m] = await Promise.all([
       api<{data: ApiKey[]}>('/admin/api-keys'),
@@ -28,6 +30,7 @@ export function ApiKeysPage() {
   })
   const [draft, setDraft] = useState<KeyDraft | null>(null)
   const [secret, setSecret] = useState<string | null>(null)
+  const [revoking, setRevoking] = useState<string | null>(null)
 
   const save = async (v: KeyDraft) => {
     try {
@@ -41,6 +44,32 @@ export function ApiKeysPage() {
       reload()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '保存 API Key 失败')
+    }
+  }
+
+  /**
+   * Revoking is not the same as the 停用 option in the edit drawer, and the
+   * confirmation says so: 停用 can be undone, revocation cannot. The gateway
+   * replaces the stored digest, so the key that was handed out will never
+   * authenticate again even if the row is re-enabled later.
+   */
+  const revoke = async (k: ApiKey) => {
+    const ok = await confirm({
+      title: `吊销「${k.name}」？`,
+      description: `吊销后 ${k.key_prefix}… 会立即失效，且无法恢复——重新启用也不会让旧 Key 再次可用。历史请求日志会保留，如需继续使用请创建新的 Key。`,
+      confirmText: '确认吊销',
+      danger: true,
+    })
+    if (!ok) return
+    setRevoking(k.id)
+    try {
+      await revokeApiKey(k.id)
+      toast.success(`已吊销「${k.name}」`)
+      reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '吊销失败')
+    } finally {
+      setRevoking(null)
     }
   }
 
@@ -67,11 +96,14 @@ export function ApiKeysPage() {
         }
       >
         {loading && !data ? (
-          <SkeletonRows rows={5} columns={7} />
+          <SkeletonRows rows={5} columns={9} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : keys.length ? (
-          <Table heads={['名称', '租户', 'Key 前缀', '状态', '允许模型', 'RPM', 'TPM', '并发', '最后使用', '操作']} minWidth={1180}>
+          <Table
+            heads={['名称', '租户', 'Key 前缀', '状态', '允许模型', 'RPM', 'TPM', '已用请求', '已用 Token', '最后使用', '操作']}
+            minWidth={1380}
+          >
             {keys.map(k => (
               <tr key={k.id}>
                 <td>
@@ -91,12 +123,24 @@ export function ApiKeysPage() {
                 </td>
                 <td className="numeric">{num(k.rpm_limit)}</td>
                 <td className="numeric">{num(k.tpm_limit)}</td>
-                <td className="numeric">{num(k.max_concurrency)}</td>
+                {/* Cumulative, aggregated from the request log rather than from
+                    a counter on the key, so it can never disagree with the log
+                    it summarises. */}
+                <td className="numeric">{num(k.usage_requests)}</td>
+                <td className="numeric">{fmt(k.usage_tokens)}</td>
                 <td>{ago(k.last_used_at)}</td>
                 <td className="rowActions">
                   <button className="link" onClick={() => setDraft(k)}>
                     <Pencil aria-hidden />
                     编辑
+                  </button>
+                  <button
+                    className="link dangerText"
+                    disabled={revoking === k.id}
+                    onClick={() => void revoke(k)}
+                  >
+                    <Ban aria-hidden />
+                    {revoking === k.id ? '吊销中…' : '吊销'}
                   </button>
                 </td>
               </tr>
