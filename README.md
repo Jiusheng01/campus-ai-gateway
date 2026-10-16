@@ -4,7 +4,7 @@
 
 Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-13）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
+> 当前状态（2026-10-16）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
 >
 > 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
 >
@@ -30,7 +30,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | Volcengine Ark / 豆包 | ✅* | 真实模型测试已通过；完整业务数据面 Failover 仍待最终验收 |
 | 多 Provider Failover 控制面 | ✅ | Route 优先级 / 权重 / 超时 + ThinkWatch renderer |
 | 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成；最终 Provider / attempts 取决于 ThinkWatch 实际 telemetry |
-| Admin UI v2 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
+| Admin UI v3 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
 | 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
 | 统一账户与开放注册 | ✅ | 公开注册创建 member、super_admin 授予管理角色、用户与权限管理 |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
@@ -110,9 +110,21 @@ ADMIN_AUTH_MODE=session
 
 数据库中没有管理员时，Admin UI 会显示“创建管理员账号”。
 
-首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。
+**项目不存在内置的默认账号或默认密码。** 首个 `super_admin` 完全由部署者自己创建，有两条路径：
+
+1. **交互式（默认）**：打开 `http://127.0.0.1:8080/admin-ui`，首次会引导填写用户名 / 密码 / 确认密码。密码策略为 Argon2id、至少 10 位、不能等于用户名、字母 / 数字 / 符号至少包含两类。
+2. **无人值守**：启动前设置以下两个变量，网关会在启动时自动创建首个管理员。仅当系统中**尚不存在 `super_admin`** 时生效；留空则回落到上面的交互式流程。
+
+   ```text
+   ADMIN_BOOTSTRAP_USERNAME=admin
+   ADMIN_BOOTSTRAP_PASSWORD=<强密码>
+   ```
+
+首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。**因此在反向代理后部署时，远程访问者无法通过代理创建第一个管理员**：运维必须先在本机完成初始化，或改用上面的 `ADMIN_BOOTSTRAP_*` 无人值守方式。
 
 创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。守卫条件是“是否已存在 super_admin”，而不是“账号表是否为空”。
+
+**如果复用已有的数据库**（`DATABASE_URL` 指向一个已经初始化过的库），则不会再出现创建引导，必须直接使用该库中已有的账号登录——这些凭据不在仓库里，只有最初创建账号的人知道。
 
 ### 统一用户账户体系与开放注册
 
@@ -229,6 +241,14 @@ Campus AI Gateway RBAC
 - Docker Desktop
 - Node.js 22+（仅 Admin UI 构建阶段）
 - ThinkWatch Core
+
+### 配置来源
+
+网关的全部配置都通过**进程环境变量**注入，项目本身**不加载 `.env` 文件**（没有 dotenv 依赖，`scripts/` 与 Docker Compose 都不会读它）。仓库根目录的 `.env.example` 是**变量参考清单**，把它复制成 `.env` 不会被自动读取。
+
+- Windows 本地开发：`scripts/setup.ps1` 会把 ThinkWatch 相关值写入 Windows **User 环境变量**；其余变量在启动前用 `$env:NAME = "value"` 设置。
+- Docker Compose：在 `deploy/docker-compose.yml` 的 `environment` 段配置。
+- 生产：使用 Secret Manager / KMS / Vault 注入，不要提交到仓库。
 
 ### 第一次初始化
 
@@ -495,7 +515,7 @@ cmd/
 
 internal/
 ├── app/                    Server / Admin API / Auth / Embedded UI
-│   └── adminui/dist/       Admin UI v2 构建产物
+│   └── adminui/dist/       Admin UI v3 构建产物
 ├── httpx/                  HTTP 公共能力
 ├── migrate/                迁移执行器（schema_migrations / 校验值 / advisory lock）
 ├── model/                  数据结构
@@ -519,9 +539,16 @@ web/
 └── admin/                  React + TypeScript + Vite
 
 deploy/
+├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
-└── nginx/
+├── nginx.conf
+├── nginx.production.example.conf
+└── monitoring/             Prometheus 示例配置
+
+docs/                       设计与验收文档（账户 / SSO / 生产 / Admin UI 等）
+
+loadtest/                   k6 压测脚本（k6-chat.js / k6-models.js）
 
 scripts/
 ├── setup.ps1
@@ -623,7 +650,7 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - [x] Tenant / 业务 API Key
 - [x] RPM / TPM / 最大并发
 - [x] 请求日志 / 管理审计 / 安全事件
-- [x] Admin UI v2
+- [x] Admin UI v3
 - [x] 管理员 Session Auth v2
 - [x] RBAC
 - [x] trusted-header SSO 接入边界

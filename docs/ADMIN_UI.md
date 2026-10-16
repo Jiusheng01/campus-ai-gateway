@@ -1,4 +1,4 @@
-# Admin UI v2
+# Admin UI v3
 
 Campus AI Gateway 的管理后台已经从单文件 HTML 升级为独立前端工程，但最终仍由 Go Gateway 内嵌并通过 `/admin-ui` 提供。
 
@@ -167,7 +167,7 @@ npm install
 
 ## 后续可继续增强
 
-Admin UI v2 当前重点是建立稳定、可维护的前端架构。后续可在不改变后端契约的情况下继续增加：
+Admin UI v3 当前重点是建立稳定、可维护的前端架构。后续可在不改变后端契约的情况下继续增加：
 
 - 趋势图
 - P50 / P99 图表
