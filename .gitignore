@@ -20,3 +20,7 @@ Thumbs.db
 # go:embed always finds the directory; the real bundle is produced by
 # `npm --prefix web/admin run build` before the Go build.
 internal/app/adminui/dist/assets/
+
+# Agent working state: local memory logs, scratch scripts and browser
+# profiles from acceptance runs. Machine-local, never shared.
+.workbuddy-ai/
