@@ -178,7 +178,7 @@ export function ModelsPage() {
                               <span>失败自动切换</span>
                             </div>
                           )}
-                          <div className={`routeStep ${r.status === 1 ? '' : 'isDisabled'}`}>
+                          <div className={`routeStep ${r.status === 1 ? '' : 'isDisabled'} ${isPrimary ? 'isPrimary' : ''}`}>
                             <span className="routeIndex" aria-hidden>
                               {i + 1}
                             </span>

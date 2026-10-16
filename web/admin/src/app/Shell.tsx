@@ -1,5 +1,5 @@
-import type {ReactNode} from 'react'
-import {Loader2, LogOut, Menu, Moon, Sun} from 'lucide-react'
+import {useEffect, useState, type ReactNode} from 'react'
+import {Loader2, LogOut, Menu, Moon, Sun, X} from 'lucide-react'
 import {IconButton} from '../components/ui/Button'
 import {navGroups, pageMeta, type NavItem, type Page } from './navigation'
 import {primaryRole, roleLabel} from '../lib/roles'
@@ -63,6 +63,46 @@ export function Shell({
 }: Props) {
   const meta = pageMeta[page]
   const items = visibleItems(who?.roles || [])
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  // Close mobile drawer on Escape key
+  useEffect(() => {
+    if (!mobileNavOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileNavOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [mobileNavOpen])
+
+  // Prevent background scroll while mobile drawer is open
+  useEffect(() => {
+    if (mobileNavOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [mobileNavOpen])
+
+  // The drawer only exists in the narrow layout. If the viewport grows past the
+  // breakpoint while it is open — a phone rotated to landscape, a desktop window
+  // widened — the sidebar goes back to being fixed, but the scroll lock would
+  // stay on and the close button would be stranded in a layout that has no
+  // drawer. Close it on the way up rather than leaving the page unscrollable.
+  useEffect(() => {
+    if (!mobileNavOpen) return
+    const wide = window.matchMedia('(min-width: 781px)')
+    const closeIfWide = () => {
+      if (wide.matches) setMobileNavOpen(false)
+    }
+    closeIfWide()
+    wide.addEventListener('change', closeIfWide)
+    return () => wide.removeEventListener('change', closeIfWide)
+  }, [mobileNavOpen])
+
   // Group the visible items back into their headings, dropping any group that
   // has nothing left in it.
   const groups = navGroups
@@ -70,25 +110,43 @@ export function Shell({
     .filter(g => g.items.length > 0)
 
   return (
-    <div className={`shell ${collapsed ? 'isCollapsed' : ''}`}>
-      <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+    <div className={`shell ${collapsed ? 'isCollapsed' : ''} ${mobileNavOpen ? 'isMobileOpen' : ''}`}>
+      {mobileNavOpen && (
+        <div
+          className="sidebarBackdrop"
+          aria-hidden="true"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      )}
+
+      <aside id="admin-sidebar" className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileNavOpen ? 'mobileShown' : ''}`}>
         <div className="brand">
           <div className="brandMark" aria-hidden>
             AI
           </div>
-          {!collapsed && (
+          {(!collapsed || mobileNavOpen) && (
             <div className="brandText">
               <b>校园模型网关</b>
               <span>Campus AI Gateway</span>
             </div>
+          )}
+          {mobileNavOpen && (
+            <button
+              type="button"
+              className="iconBtn mobileCloseBtn"
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="关闭导航菜单"
+            >
+              <X aria-hidden />
+            </button>
           )}
         </div>
 
         <nav className="nav" aria-label="主导航">
           {groups.map(group => (
             <div className="navGroup" key={group.id}>
-              {!collapsed && <span className="navGroupLabel">{group.label}</span>}
-              {collapsed && <span className="navGroupRule" aria-hidden />}
+              {(!collapsed || mobileNavOpen) && <span className="navGroupLabel">{group.label}</span>}
+              {collapsed && !mobileNavOpen && <span className="navGroupRule" aria-hidden />}
               {group.items.map(item => {
                 const Icon = item.icon
                 const active = page === item.id
@@ -97,12 +155,15 @@ export function Shell({
                     key={item.id}
                     type="button"
                     className={`navItem ${active ? 'active' : ''}`}
-                    onClick={() => onNavigate(item.id)}
-                    title={collapsed ? item.label : undefined}
+                    onClick={() => {
+                      onNavigate(item.id)
+                      setMobileNavOpen(false)
+                    }}
+                    title={collapsed && !mobileNavOpen ? item.label : undefined}
                     aria-current={active ? 'page' : undefined}
                   >
                     <Icon aria-hidden />
-                    {!collapsed && <span>{item.label}</span>}
+                    {(!collapsed || mobileNavOpen) && <span>{item.label}</span>}
                   </button>
                 )
               })}
@@ -124,9 +185,22 @@ export function Shell({
 
       <section className="workspace">
         <header className="topbar">
-          <div className="topbarText">
-            <h1>{meta.title}</h1>
-            <p>{meta.subtitle}</p>
+          <div className="topbarLeft">
+            <button
+              type="button"
+              className="iconBtn mobileNavTrigger"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="打开导航菜单"
+              aria-controls="admin-sidebar"
+              aria-expanded={mobileNavOpen}
+              title="打开菜单"
+            >
+              <Menu aria-hidden />
+            </button>
+            <div className="topbarText">
+              <h1>{meta.title}</h1>
+              <p>{meta.subtitle}</p>
+            </div>
           </div>
           <div className="topActions">
             {refreshing && (

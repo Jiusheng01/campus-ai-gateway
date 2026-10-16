@@ -13,32 +13,38 @@
 
   --bg: #f4f6fa;
   --surface: #ffffff;
-  --surface-subtle: #f7f9fc;
+  --surface-subtle: #f8fafc;
   --surface-hover: #eef2f8;
   --text: #0f172a;
-  --text-muted: #5b6b82;
-  --text-faint: #8695ab;
-  --border: #e2e8f1;
+  --text-muted: #475569;
+  --text-faint: #64748b;
+  --border: #e2e8f0;
   --border-strong: #cbd5e1;
 
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
-  --primary-soft: #eef4ff;
-  --success: #15803d;
-  --success-soft: #ecf8f0;
-  --warning: #b45309;
-  --warning-soft: #fdf4e5;
+  --primary-soft: #eff6ff;
+  --success: #16a34a;
+  --success-soft: #f0fdf4;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
   --danger: #dc2626;
-  --danger-soft: #fdeeee;
-  --info: #0369a1;
-  --info-soft: #eaf4fb;
+  --danger-soft: #fef2f2;
+  --info: #0284c7;
+  --info-soft: #f0f9ff;
 
   --radius-sm: 6px;
   --radius-md: 9px;
   --radius-lg: 13px;
 
-  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05);
-  --shadow-md: 0 10px 30px -22px rgb(15 23 42 / 0.4);
+  --shadow-sm: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.04);
+  --shadow-md: 0 4px 14px -3px rgb(15 23 42 / 0.08), 0 2px 6px -2px rgb(15 23 42 / 0.04);
+  --shadow-lg: 0 12px 32px -6px rgb(15 23 42 / 0.12), 0 4px 12px -2px rgb(15 23 42 / 0.06);
+
+  /* Colour of the shadow that marks a sideways-scrollable table. It has to be
+     a variable because a shadow that reads on a white surface disappears on a
+     dark one. */
+  --scroll-hint: rgb(15 23 42 / 0.18);
 
   --control-h: 34px;
   --control-h-sm: 28px;
@@ -53,7 +59,7 @@
   --surface-hover: #1c2331;
   --text: #e8edf5;
   --text-muted: #9aa8bd;
-  --text-faint: #7b8a9f;
+  --text-faint: #8192a8;
   --border: #232b3a;
   --border-strong: #33405a;
 
@@ -69,8 +75,11 @@
   --info: #7dd3fc;
   --info-soft: #132735;
 
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
-  --shadow-md: 0 14px 34px -22px rgb(0 0 0 / 0.85);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.4), 0 1px 2px -1px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 6px 18px -4px rgb(0 0 0 / 0.6), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 16px 38px -6px rgb(0 0 0 / 0.75), 0 4px 14px -2px rgb(0 0 0 / 0.5);
+
+  --scroll-hint: rgb(0 0 0 / 0.55);
 }
 
 /* --- reset ---------------------------------------------------------------- */
@@ -104,6 +113,10 @@ svg { width: 16px; height: 16px; flex: none; }
 /* --- shell ---------------------------------------------------------------- */
 
 .shell { display: flex; min-height: 100vh; }
+
+.sidebarBackdrop {
+  display: none;
+}
 
 .sidebar {
   position: fixed;
@@ -225,6 +238,20 @@ svg { width: 16px; height: 16px; flex: none; }
   gap: 16px;
   padding: 0 22px;
 }
+.topbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.mobileNavTrigger {
+  display: none;
+}
+/* The drawer's close button belongs to the drawer, so it stays out of the
+   sidebar the desktop layout shows. The `.sidebar` prefix is load-bearing:
+   `.iconBtn` sets `display: grid` further down the sheet and would otherwise
+   win on source order alone. */
+.sidebar .mobileCloseBtn { display: none; }
 .topbarText { min-width: 0; }
 .topbarText h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
 .topbarText p { margin: 2px 0 0; color: var(--text-muted); font-size: 11.5px; }
@@ -360,7 +387,20 @@ svg { width: 16px; height: 16px; flex: none; }
 
 /* --- tables --------------------------------------------------------------- */
 
-.tableWrap { overflow-x: auto; }
+/* A table wider than its container scrolls sideways, and nothing on screen says
+   so — the row simply stops mid-cell at the edge, which reads as a rendering
+   fault rather than as more data to the right. Two surface-coloured layers
+   attached to the content (local) mask a pair of shadow layers pinned to the
+   box (scroll), so the cue shows up only on the side that still has table
+   behind it and clears itself once that edge is reached. */
+.tableWrap {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--surface) 40%, rgb(255 255 255 / 0)) left center / 26px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 40%, rgb(255 255 255 / 0)) right center / 26px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, var(--scroll-hint), rgb(0 0 0 / 0)) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, var(--scroll-hint), rgb(0 0 0 / 0)) right center / 12px 100% no-repeat scroll;
+}
 table.data { width: 100%; border-collapse: collapse; }
 table.data th,
 table.data td {
@@ -436,17 +476,19 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 
 /* --- KPI ------------------------------------------------------------------ */
 
-.kpiGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.kpiGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .kpi {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 15px 16px;
+  padding: 16px;
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
+.kpi:hover { border-color: var(--border-strong); }
 .kpi.warning { border-color: color-mix(in srgb, var(--warning) 34%, var(--border)); }
 .kpiLabel { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .kpiLabel svg { width: 15px; height: 15px; }
@@ -457,7 +499,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 
 /* --- infrastructure status ------------------------------------------------ */
 
-.statusRow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 18px; }
+.statusRow { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 16px 18px; }
 .statusCard {
   display: flex;
   align-items: center;
@@ -480,7 +522,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 
 /* --- provider cards ------------------------------------------------------- */
 
-.providerCards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 16px 18px; }
+.providerCards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 16px 18px; }
 .providerCard {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -551,7 +593,11 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 12px 13px;
+  padding: 12px 14px;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.routeStep.isPrimary .routeBox {
+  border-left: 3px solid var(--primary);
 }
 .routeBoxHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .routeBoxHead b { font-size: 13px; }
@@ -710,6 +756,7 @@ input:focus, select:focus, textarea:focus {
   position: fixed;
   inset: 0;
   background: rgb(2 6 23 / 0.45);
+  backdrop-filter: blur(2px);
   z-index: 100;
   display: flex;
   justify-content: flex-end;
@@ -720,9 +767,10 @@ input:focus, select:focus, textarea:focus {
 .drawer {
   width: min(560px, 96vw);
   height: 100%;
+  max-height: 100dvh;
   background: var(--surface);
   border-left: 1px solid var(--border);
-  box-shadow: -20px 0 50px -38px #000;
+  box-shadow: -12px 0 36px -10px rgb(0 0 0 / 0.35);
   display: flex;
   flex-direction: column;
   animation: slide 0.16s ease-out;
@@ -1017,57 +1065,115 @@ input:focus, select:focus, textarea:focus {
 
 /* --- responsive ----------------------------------------------------------- */
 
-@media (max-width: 1400px) {
-  .kpiGrid { grid-template-columns: repeat(4, 1fr); }
-  .providerCards { grid-template-columns: repeat(2, 1fr); }
-  .skeletonCards { grid-template-columns: repeat(4, 1fr); }
-}
+/* Every card grid above is fluid (`auto-fit` / `auto-fill` with a minimum
+   track), so a breakpoint only has to describe a change the fluid rule cannot
+   express: a different column count, a stacked header, a drawer. Repeating the
+   same `repeat(n, 1fr)` here would just be a second place to keep in sync. */
 
 @media (max-width: 1180px) {
-  .statusRow { grid-template-columns: repeat(2, 1fr); }
-  .providerCards { grid-template-columns: repeat(2, 1fr); }
   .filters { grid-template-columns: repeat(3, 1fr); }
   .settingsGrid { grid-template-columns: 1fr; }
   .skeletonCards { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 900px) {
-  .kpiGrid { grid-template-columns: repeat(2, 1fr); }
   .desktopOnly { display: none; }
   .mobileOnly { display: block; }
-  .skeletonCards { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 780px) {
-  .sidebar { width: 62px; }
-  .sidebar .brandText, .sidebar .navGroupLabel, .sidebar .navItem span, .sidebar .collapseBtn span { display: none; }
-  .sidebar .navItem { justify-content: center; padding: 9px 0; }
-  .sidebar .navGroupRule { display: block; }
-  .workspace, .shell.isCollapsed .workspace { margin-left: 62px; }
-  .topbar { padding: 0 14px; }
-  .topbarText p, .identity { display: none; }
-  .page { padding: 14px 14px 48px; }
-  .panelHead { flex-direction: column; align-items: stretch; }
+  .sidebarBackdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgb(2 6 23 / 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 90;
+    animation: fade 0.16s ease-out;
+  }
+  .mobileNavTrigger {
+    display: grid;
+    place-items: center;
+  }
+  .sidebar {
+    width: 260px;
+    transform: translateX(-100%);
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 100;
+    box-shadow: none;
+  }
+  .sidebar.mobileShown {
+    transform: translateX(0);
+    box-shadow: 0 10px 40px -10px rgb(0 0 0 / 0.6);
+  }
+  .sidebar.collapsed {
+    width: 260px;
+    transform: translateX(-100%);
+  }
+  .sidebar.collapsed.mobileShown {
+    transform: translateX(0);
+  }
+  .sidebar .collapseBtn {
+    display: none;
+  }
+  .sidebar .mobileCloseBtn {
+    display: grid;
+    margin-left: auto;
+  }
+  .workspace, .shell.isCollapsed .workspace {
+    margin-left: 0 !important;
+    width: 100%;
+    min-width: 0;
+  }
+  .topbar { padding: 0 14px; gap: 10px; }
+  .topbarText p { display: none; }
+  .topbarText h1 { font-size: 15px; }
+  .identity { padding-right: 0; }
+  .identityRole { display: none; }
+  .identityName { font-size: 11.5px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .page { padding: 14px 12px 48px; }
+  .panelHead { flex-direction: column; align-items: stretch; gap: 10px; }
   .panelActions { justify-content: flex-start; flex-wrap: wrap; }
-  .statusRow, .kpiGrid { grid-template-columns: 1fr 1fr; }
+  .statusRow, .kpiGrid { grid-template-columns: 1fr; }
   .providerCards { grid-template-columns: 1fr; }
   .filters { grid-template-columns: 1fr 1fr; }
   .filterActions { grid-column: 1 / -1; }
   .formGrid { grid-template-columns: 1fr; }
   .modelHead { flex-direction: column; }
-  .modelActions { width: 100%; }
-  .drawer { width: 100vw; }
-  .drawer.lg { width: 100vw; }
-  .detailRow { grid-template-columns: 110px 1fr; }
+  .modelActions { width: 100%; justify-content: flex-start; }
+  .drawer, .drawer.lg {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100%;
+    height: 100dvh;
+    border-left: 0;
+    border-radius: 0;
+  }
+  .drawerFoot {
+    padding-bottom: max(12px, calc(12px + env(safe-area-inset-bottom, 0px)));
+  }
+  .detailRow { grid-template-columns: 100px 1fr; }
   .quickActions { justify-content: stretch; }
   .quickActions .btn { flex: 1; }
-  .toastWrap { left: 14px; right: 14px; max-width: none; }
+  .toastWrap { left: 14px; right: 14px; max-width: none; bottom: 14px; }
+}
+
+/* Phones. A single-column KPI stack pushes everything below it a full screen
+   down, so the headline numbers go two-up and the cards tighten to suit — the
+   value is the only thing that has to stay legible at this size. */
+@media (max-width: 620px) {
+  .kpiGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .kpi { padding: 12px 13px; gap: 6px; }
+  .kpiLabel { font-size: 11.5px; }
+  .kpiValue { font-size: 21px; }
+  .statusRow { gap: 10px; padding: 14px; }
+  .miniCardRows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 480px) {
-  .statusRow, .kpiGrid { grid-template-columns: 1fr; }
-  .miniCardRows { grid-template-columns: 1fr 1fr; }
-  .providerRow { grid-template-columns: 1fr; gap: 2px; }
+  .topbarText h1 { font-size: 14px; }
+  .identity { display: none; }
+  .authCard { padding: 20px 16px; }
 }
 
 /* ------------------------------------------------------------------ */
