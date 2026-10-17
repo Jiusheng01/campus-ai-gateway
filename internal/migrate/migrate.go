@@ -17,7 +17,10 @@
 //     leaves no record, so re-running retries it and only it.
 //   - The checksum of an already-recorded file must match the file on disk.
 //     History is not edited in place; a changed historical migration is a
-//     deployment error, not something to replay over live data.
+//     deployment error, not something to replay over live data. The digest is
+//     taken over the body with line endings normalised, so the same commit
+//     yields the same checksum from a Windows checkout and a Linux one: a
+//     difference in newline style is not an edit to the migration.
 //   - A database that predates the table is replayed from the beginning —
 //     the migrations are written to be replay-safe — and the replayed schema
 //     is verified against the end-state baseline before anything is recorded,
@@ -70,7 +73,9 @@ type Migration struct {
 	Version int
 	// Filename is the base name, e.g. "0001_init.sql".
 	Filename string
-	// Checksum is the hex SHA-256 of the file body.
+	// Checksum is the hex SHA-256 of the file body with line endings
+	// normalised to LF. Normalising is what makes the digest a property of the
+	// migration rather than of the checkout that produced it.
 	Checksum string
 	// Body is the SQL text.
 	Body string
@@ -109,6 +114,63 @@ var (
 	// recorded, which would mean an out-of-order history.
 	ErrVersionGap = errors.New("migration versions are not contiguous")
 )
+
+// normalizeNewlines folds CRLF and lone CR to LF.
+//
+// The repository is checked out with CRLF on Windows and with LF elsewhere,
+// because git stores the blob with LF and core.autocrlf rewrites it on the way
+// out. SQL attaches no meaning to the difference, so hashing the raw bytes made
+// the checksum a property of the platform: the same commit produced two
+// digests, and an ordinary `git checkout` became a false "this migration was
+// edited" that refused to migrate at all.
+func normalizeNewlines(body []byte) []byte {
+	out := make([]byte, 0, len(body))
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\r' {
+			// A CRLF pair collapses to the LF that follows it; a lone CR
+			// becomes an LF, so both spellings of a line break agree.
+			if i+1 < len(body) && body[i+1] == '\n' {
+				continue
+			}
+			out = append(out, '\n')
+			continue
+		}
+		out = append(out, body[i])
+	}
+	return out
+}
+
+// checksumOf is the canonical digest: the body with line endings normalised to
+// LF. New rows are recorded in this form.
+func checksumOf(body []byte) string {
+	sum := sha256.Sum256(normalizeNewlines(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// crlfChecksumOf is the digest of the CRLF spelling of the same body.
+//
+// It exists to read rows written before the digest was normalised. Those hold
+// the hash of whatever bytes the checkout happened to produce, which on Windows
+// was CRLF. Accepting both spellings keeps an existing database migratable
+// without rewriting its history, and it still rejects a real edit, because an
+// edit changes both digests.
+func crlfChecksumOf(body []byte) string {
+	lf := normalizeNewlines(body)
+	crlf := make([]byte, 0, len(lf)+16)
+	for _, b := range lf {
+		if b == '\n' {
+			crlf = append(crlf, '\r')
+		}
+		crlf = append(crlf, b)
+	}
+	sum := sha256.Sum256(crlf)
+	return hex.EncodeToString(sum[:])
+}
+
+// checksumMatches reports whether a recorded digest describes this body.
+func checksumMatches(recorded string, body []byte) bool {
+	return recorded == checksumOf(body) || recorded == crlfChecksumOf(body)
+}
 
 // Load reads and parses the migrations directory.
 //
@@ -159,11 +221,10 @@ func Load(dir string) ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", name, err)
 		}
-		sum := sha256.Sum256(body)
 		out = append(out, Migration{
 			Version:  version,
 			Filename: name,
-			Checksum: hex.EncodeToString(sum[:]),
+			Checksum: checksumOf(body),
 			Body:     string(body),
 		})
 	}
@@ -208,6 +269,10 @@ type recorded struct {
 // answer: a changed file could mean either "the migration was edited" or "the
 // checksum column is wrong", and replaying over live data on a guess is how a
 // deployment loses its schema.
+//
+// A difference in line endings is not a disagreement. The digest is compared
+// against the normalised body, and against its CRLF spelling so that rows
+// recorded before that normalisation existed stay valid.
 func checkHistory(onDisk []Migration, inDB []recorded) (pending []Migration, err error) {
 	byVersion := make(map[int]Migration, len(onDisk))
 	for _, m := range onDisk {
@@ -220,7 +285,7 @@ func checkHistory(onDisk []Migration, inDB []recorded) (pending []Migration, err
 		if !ok {
 			return nil, fmt.Errorf("%w: version %d (%s) is recorded but not in the directory", ErrMissingMigration, r.Version, r.Filename)
 		}
-		if file.Checksum != r.Checksum {
+		if !checksumMatches(r.Checksum, []byte(file.Body)) {
 			return nil, fmt.Errorf("%w: %s has checksum %s, recorded %s", ErrChecksumMismatch, file.Filename, file.Checksum, r.Checksum)
 		}
 		if file.Filename != r.Filename {

@@ -77,6 +77,87 @@ func TestLoadOrdersByVersionAndChecksumsBody(t *testing.T) {
 	}
 }
 
+// A migration's identity is its SQL, not the newline style it arrived in. The
+// repository is checked out with CRLF on Windows and with LF elsewhere, so
+// hashing the raw bytes made the same commit produce two digests and turned an
+// ordinary `git checkout` into a checksum mismatch that refused to migrate.
+func TestChecksumIgnoresLineEndings(t *testing.T) {
+	lf := []byte("CREATE TABLE t (id int);\nCREATE INDEX i ON t (id);\n")
+	crlf := []byte("CREATE TABLE t (id int);\r\nCREATE INDEX i ON t (id);\r\n")
+	loneCR := []byte("CREATE TABLE t (id int);\rCREATE INDEX i ON t (id);\r")
+
+	want := checksumOf(lf)
+	for name, body := range map[string][]byte{"crlf": crlf, "lone-cr": loneCR} {
+		if got := checksumOf(body); got != want {
+			t.Errorf("%s: checksum = %s, want %s — same SQL, different line endings", name, got, want)
+		}
+		if !checksumMatches(want, body) {
+			t.Errorf("%s: the canonical digest did not match its own body", name)
+		}
+	}
+
+	// Rows written before the digest was normalised hold the hash of the CRLF
+	// bytes. They have to keep working, or every existing database stops
+	// migrating the moment the rule changes.
+	legacy := crlfChecksumOf(lf)
+	if legacy == want {
+		t.Fatal("the CRLF digest equals the normalised one, so this test proves nothing")
+	}
+	if !checksumMatches(legacy, lf) {
+		t.Error("a legacy CRLF digest must still match an LF checkout")
+	}
+	if !checksumMatches(legacy, crlf) {
+		t.Error("a legacy CRLF digest must still match a CRLF checkout")
+	}
+
+	// Normalising must not blunt the check: an edit is still an edit.
+	edited := []byte("CREATE TABLE t (id int);\nCREATE INDEX i ON t (id, 2);\n")
+	if checksumMatches(want, edited) {
+		t.Error("an edited body matched the recorded digest")
+	}
+}
+
+// Load records the normalised digest, so a migration applied from a Windows
+// checkout and the same migration applied from a Linux one agree afterwards.
+func TestLoadRecordsNormalisedChecksum(t *testing.T) {
+	dir := t.TempDir()
+	writeMigration(t, dir, "0001_crlf.sql", "SELECT 1;\r\nSELECT 2;\r\n")
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := checksumOf([]byte("SELECT 1;\nSELECT 2;\n")); got[0].Checksum != want {
+		t.Fatalf("checksum = %s, want the normalised digest %s", got[0].Checksum, want)
+	}
+	// The body is executed as read. PostgreSQL accepts either spelling, and
+	// rewriting the SQL would be a second place for the file to be changed.
+	if !strings.Contains(got[0].Body, "\r\n") {
+		t.Error("Load rewrote the body it executes")
+	}
+}
+
+// checkHistory has to accept a row recorded under the old raw-bytes rule. That
+// is the exact state of any database migrated before the rule changed.
+func TestCheckHistoryAcceptsLegacyCRLFChecksum(t *testing.T) {
+	body := "SELECT 1;\n"
+	onDisk := []Migration{{
+		Version:  1,
+		Filename: "0001_a.sql",
+		Checksum: checksumOf([]byte(body)),
+		Body:     body,
+	}}
+	legacy := []recorded{{
+		Version:  1,
+		Filename: "0001_a.sql",
+		Checksum: crlfChecksumOf([]byte(body)),
+	}}
+
+	if _, err := checkHistory(onDisk, legacy); err != nil {
+		t.Fatalf("legacy CRLF record rejected: %v", err)
+	}
+}
+
 func TestLoadRejectsNonContiguousVersions(t *testing.T) {
 	dir := t.TempDir()
 	writeMigration(t, dir, "0001_a.sql", "SELECT 1;")
