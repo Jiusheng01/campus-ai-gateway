@@ -38,12 +38,12 @@ export function ApiKeysPage() {
         method: v.id ? 'PUT' : 'POST',
         body: JSON.stringify(v),
       })
-      toast.success(v.id ? 'API Key 已更新' : 'API Key 已创建')
+      toast.success(v.id ? 'API 密钥已更新' : 'API 密钥已创建')
       setDraft(null)
       if (out.api_key) setSecret(out.api_key)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '保存 API Key 失败')
+      toast.error(e instanceof Error ? e.message : '保存 API 密钥失败')
     }
   }
 
@@ -56,7 +56,7 @@ export function ApiKeysPage() {
   const revoke = async (k: ApiKey) => {
     const ok = await confirm({
       title: `吊销「${k.name}」？`,
-      description: `吊销后 ${k.key_prefix}… 会立即失效，且无法恢复——重新启用也不会让旧 Key 再次可用。历史请求日志会保留，如需继续使用请创建新的 Key。`,
+      description: `吊销后 ${k.key_prefix}… 会立即失效，且无法恢复——重新启用也不会让旧 Key 再次可用。历史使用日志会保留，如需继续使用请创建新的 Key。`,
       confirmText: '确认吊销',
       danger: true,
     })
@@ -79,7 +79,7 @@ export function ApiKeysPage() {
   return (
     <>
       <Panel
-        title="API Key"
+        title="API 密钥"
         sub="业务系统调用 /v1/* 使用的虚拟凭证。完整 Key 只在创建时显示一次，数据库仅保存前缀与 HMAC 摘要。"
         actions={
           <Button
@@ -149,7 +149,7 @@ export function ApiKeysPage() {
         ) : (
           <EmptyState
             icon={<KeyRound />}
-            title="暂无 API Key"
+            title="暂无 API 密钥"
             description={canCreate ? '创建 Key 后，业务系统即可调用对外模型。' : '请先在「租户」页面创建租户。'}
             action={
               canCreate ? (
@@ -170,7 +170,7 @@ export function ApiKeysPage() {
 
       {draft && (
         <Drawer
-          title={draft.id ? '编辑 API Key' : '创建 API Key'}
+          title={draft.id ? '编辑 API 密钥' : '创建 API 密钥'}
           subtitle="限流与配额在 Key 与租户两级同时生效，取更严格的一方。"
           onClose={() => setDraft(null)}
         >

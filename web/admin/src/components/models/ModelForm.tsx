@@ -35,7 +35,7 @@ export function ModelForm({
         <input className="mono" value={v.alias || ''} onChange={e => setV({...v, alias: e.target.value})} />
       </Field>
 
-      <Field label="主供应商" hint="默认使用的模型供应商。">
+      <Field label="主渠道" hint="默认使用的模型渠道。">
         <select value={v.provider_id || providers[0]?.id || ''} onChange={e => setV({...v, provider_id: e.target.value})}>
           {providers.map(p => (
             <option key={p.id} value={p.id}>
@@ -45,7 +45,7 @@ export function ModelForm({
         </select>
       </Field>
 
-      <Field label="主线路模型" hint="该供应商实际调用的上游模型名称。">
+      <Field label="主线路模型" hint="该渠道实际调用的上游模型名称。">
         <input className="mono" value={v.upstream_model || ''} onChange={e => setV({...v, upstream_model: e.target.value})} />
       </Field>
 

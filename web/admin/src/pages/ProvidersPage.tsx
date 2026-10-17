@@ -26,11 +26,11 @@ export function ProvidersPage() {
         method: v.id ? 'PUT' : 'POST',
         body: JSON.stringify(v),
       })
-      toast.success('供应商已保存')
+      toast.success('渠道已保存')
       setDraft(null)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '保存供应商失败')
+      toast.error(e instanceof Error ? e.message : '保存渠道失败')
     }
   }
 
@@ -39,11 +39,11 @@ export function ProvidersPage() {
   return (
     <>
       <Panel
-        title="供应商管理"
-        sub="配置模型供应商的接入地址与凭据来源。此处只保存凭据环境变量名，不保存真实厂商 API Key。"
+        title="渠道管理"
+        sub="配置模型渠道的接入地址与凭据来源。此处只保存凭据环境变量名，不保存真实厂商 API 密钥。"
         actions={
           <Button variant="primary" icon={<Plus />} onClick={() => setDraft({status: 1, protocol: 'openai-chat'})}>
-            新增供应商
+            新增渠道
           </Button>
         }
       >
@@ -96,11 +96,11 @@ export function ProvidersPage() {
         ) : (
           <EmptyState
             icon={<Network />}
-            title="暂无供应商"
-            description="添加供应商后即可配置模型线路。"
+            title="暂无渠道"
+            description="添加渠道后即可配置模型线路。"
             action={
               <Button variant="primary" icon={<Plus />} onClick={() => setDraft({status: 1, protocol: 'openai-chat'})}>
-                新增供应商
+                新增渠道
               </Button>
             }
           />
@@ -109,7 +109,7 @@ export function ProvidersPage() {
 
       {draft && (
         <Drawer
-          title={draft.id ? '编辑供应商' : '新增供应商'}
+          title={draft.id ? '编辑渠道' : '新增渠道'}
           subtitle="凭据以环境变量名称引用，网关进程启动时读取。"
           onClose={() => setDraft(null)}
         >

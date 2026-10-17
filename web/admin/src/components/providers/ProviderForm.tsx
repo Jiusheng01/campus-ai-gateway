@@ -40,7 +40,7 @@ export function ProviderForm({
       {/* Editing an existing supplier must never silently overwrite its
           configuration, so the template picker only appears on create. */}
       {isNew && (
-        <Field label="供应商模板" hint="模板只用于预填默认值，选择后所有字段仍可手工修改。">
+        <Field label="渠道模板" hint="模板只用于预填默认值，选择后所有字段仍可手工修改。">
           <select value={templateId} onChange={e => applyTemplate(e.target.value)}>
             {providerTemplates.map(t => (
               <option key={t.id} value={t.id}>
@@ -51,7 +51,7 @@ export function ProviderForm({
         </Field>
       )}
 
-      <Field label="供应商名称" hint="配置标识，例如 qwen、deepseek、glm。">
+      <Field label="渠道名称" hint="配置标识，例如 qwen、deepseek、glm。">
         <input value={v.name || ''} onChange={e => setV({...v, name: e.target.value})} />
       </Field>
 
@@ -75,7 +75,7 @@ export function ProviderForm({
 
       <div className="notice info">
         <Info aria-hidden />
-        这里只保存凭据环境变量名称，不保存真实厂商 API Key。
+        这里只保存凭据环境变量名称，不保存真实厂商 API 密钥。
       </div>
 
       <Field label="状态">
@@ -88,7 +88,7 @@ export function ProviderForm({
       <div className="formActions">
         <Button onClick={onCancel}>取消</Button>
         <Button variant="primary" type="submit" icon={isNew ? <Plus /> : undefined}>
-          {isNew ? '创建供应商' : '保存修改'}
+          {isNew ? '创建渠道' : '保存修改'}
         </Button>
       </div>
     </form>

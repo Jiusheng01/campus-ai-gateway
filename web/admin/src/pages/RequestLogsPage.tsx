@@ -153,7 +153,7 @@ export function RequestLogsPage() {
   const exportCsv = async () => {
     try {
       await download(`/admin/request-logs/export?${query}`, 'campus-gateway-request-logs.csv')
-      toast.success('请求日志已导出')
+      toast.success('使用日志已导出')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '导出失败')
     }
@@ -178,7 +178,7 @@ export function RequestLogsPage() {
   return (
     <>
       <Panel
-        title="请求日志"
+        title="使用日志"
         sub="一次业务请求对应一行。点击任意一行查看路由、用量与时延详情。"
         actions={
           <Button icon={<Download />} onClick={() => void exportCsv()}>
@@ -190,8 +190,8 @@ export function RequestLogsPage() {
           <Filter label="模型">
             <input placeholder="全部模型" value={filters.model} onChange={f('model')} />
           </Filter>
-          <Filter label="供应商">
-            <input placeholder="全部供应商" value={filters.provider} onChange={f('provider')} />
+          <Filter label="渠道">
+            <input placeholder="全部渠道" value={filters.provider} onChange={f('provider')} />
           </Filter>
           <Filter label="HTTP 状态">
             <input placeholder="任意状态" value={filters.status} onChange={f('status')} />
@@ -225,9 +225,9 @@ export function RequestLogsPage() {
           )}
 
           {keyOptions.length ? (
-            <Filter label="API Key">
+            <Filter label="API 密钥">
               <select value={filters.api_key_id} onChange={f('api_key_id')}>
-                <option value="">全部 API Key</option>
+                <option value="">全部 API 密钥</option>
                 {keyOptions.map(k => (
                   <option key={k.id} value={k.id}>
                     {k.name}（{k.key_prefix}）
@@ -236,7 +236,7 @@ export function RequestLogsPage() {
               </select>
             </Filter>
           ) : (
-            <Filter label="API Key ID">
+            <Filter label="API 密钥 ID">
               <input placeholder="UUID" value={filters.api_key_id} onChange={f('api_key_id')} />
             </Filter>
           )}
@@ -260,7 +260,7 @@ export function RequestLogsPage() {
 
         {facets.error && (
           <p className="filterNote">
-            无法读取租户与 API Key 列表（{facets.error}），已改为直接填写 ID。
+            无法读取租户与 API 密钥列表（{facets.error}），已改为直接填写 ID。
           </p>
         )}
 
@@ -271,7 +271,7 @@ export function RequestLogsPage() {
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : rows.length ? (
-          <Table heads={['时间', '状态', '模型', '供应商', 'Tokens', '延迟', '故障切换', 'Request ID']} minWidth={1040}>
+          <Table heads={['时间', '状态', '模型', '渠道', 'Tokens', '延迟', '故障切换', 'Request ID']} minWidth={1040}>
             {rows.map(r => (
               <tr key={r.request_id} className="clickRow" onClick={() => setDetail(r)}>
                 <td>{when(r.created_at)}</td>

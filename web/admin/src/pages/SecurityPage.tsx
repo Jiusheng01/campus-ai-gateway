@@ -28,7 +28,7 @@ export function SecurityPage() {
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : rows.length ? (
-          <Table heads={['时间', '事件', '租户', 'API Key', '来源 IP', '模型', '详情']} minWidth={1120}>
+          <Table heads={['时间', '事件', '租户', 'API 密钥', '来源 IP', '模型', '详情']} minWidth={1120}>
             {rows.map(e => (
               <tr key={e.id} className="clickRow" onClick={() => setDetail(e)}>
                 <td>{when(e.created_at)}</td>
@@ -66,7 +66,7 @@ export function SecurityPage() {
               title="来源"
               rows={[
                 ['租户', detail.tenant_id || '—'],
-                ['API Key', detail.api_key_id || '—'],
+                ['API 密钥', detail.api_key_id || '—'],
                 ['来源 IP', detail.client_ip || '—'],
                 ['请求模型', detail.requested_model || '—'],
               ]}

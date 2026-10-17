@@ -16,7 +16,7 @@ import {ASSIGNABLE_ROLES, canonicalRoles, roleLabel} from '../lib/roles'
 import {ago, num, when} from '../lib/format'
 
 /**
- * 用户与权限.
+ * 用户.
  *
  * Super-admin only, and the gateway enforces that on its own: /admin/users is
  * absent from every other role's allow-list, so a gateway_admin who forges a
@@ -38,7 +38,7 @@ export function UsersPage() {
   return (
     <>
       <Panel
-        title="用户与权限"
+        title="用户"
         sub="管理注册用户和管理员角色。管理员角色只能由超级管理员授予。"
       >
         <div className="kpiGrid">
@@ -194,7 +194,7 @@ function UserDrawer({
         title: '授予超级管理员权限？',
         description: (
           <>
-            <b>{user.username}</b> 将拥有完整系统控制权限，包括管理所有供应商、租户与其它管理员。
+            <b>{user.username}</b> 将拥有完整系统控制权限，包括管理所有渠道、租户与其它管理员。
             此变更会立即撤销该账号的现有登录会话。
           </>
         ),

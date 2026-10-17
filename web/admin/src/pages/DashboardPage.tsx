@@ -12,7 +12,7 @@ import {
   ServerCog,
   Zap,
 } from 'lucide-react'
-import {api, listModelTestOptions, type DashboardStatus, type ModelTestOption} from '../api'
+import {api, listModelTestOptions, type DashboardStatus, type ModelTestOption, type RequestLog} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Table} from '../components/ui/Table'
@@ -21,13 +21,16 @@ import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
-import {TrendPanel} from '../components/charts/TrendPanel'
 import {useResource} from '../lib/useResource'
-import {fmt, ms, num, ratio} from '../lib/format'
+import {ago, fmt, ms, num, ratio} from '../lib/format'
 
 /**
- * Dashboard, arranged in three layers so the operator reads it top-down:
- * business KPIs, then infrastructure, then per-supplier telemetry.
+ * The overview answers "is it working right now", and nothing else.
+ *
+ * It used to also carry the trend charts and the per-channel telemetry table.
+ * Those belong to the data board: they answer a question with a time axis, and
+ * putting them here pushed the two things an operator checks first — the
+ * numbers and the four status lights — off the first screen.
  */
 export function DashboardPage({roles}: {roles: string[]}) {
   const toast = useToast()
@@ -42,18 +45,28 @@ export function DashboardPage({roles}: {roles: string[]}) {
   // read it too; neither may change the routing that produced it.
   const canSync = roles.includes('super_admin') || roles.includes('gateway_admin')
   const canTestModel = canSync || roles.includes('operator')
+  // The recent-requests strip reads the log endpoint, which is a narrower
+  // permission than the dashboard itself. A gateway_admin may see this page but
+  // not that endpoint, so the request is skipped rather than allowed to 403 and
+  // paint an error box onto an otherwise healthy overview.
+  const canReadLogs = roles.includes('super_admin') || roles.includes('auditor')
+  const recent = useResource(() =>
+    canReadLogs
+      ? api<{data: RequestLog[]}>('/admin/request-logs?limit=6')
+      : Promise.resolve({data: [] as RequestLog[]}),
+  )
 
   const sync = async () => {
     const ok = await confirm({
       title: '同步 ThinkWatch 配置？',
-      description: '将当前供应商、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
+      description: '将当前渠道、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
       confirmText: '确认同步',
     })
     if (!ok) return
     setSyncing(true)
     try {
       const out = await api<{providers: number; aliases: number}>('/admin/thinkwatch/sync', {method: 'POST'})
-      toast.success(`ThinkWatch 同步成功：${out.providers} 个供应商 / ${out.aliases} 个对外模型`)
+      toast.success(`ThinkWatch 同步成功：${out.providers} 个渠道 / ${out.aliases} 个对外模型`)
       reload()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'ThinkWatch 同步失败')
@@ -162,40 +175,44 @@ export function DashboardPage({roles}: {roles: string[]}) {
             </div>
           </Panel>
 
-          <TrendPanel />
-
-          <Panel
-            title="供应商状态"
-            sub="按供应商归因的请求量与成功率，数据来自线路遥测；未知数据不会被猜测。"
-            actions={
-              <span className="panelFootnote">
-                <Route aria-hidden />
-                故障切换 {num(stats?.failover_count)} 次
-              </span>
-            }
-          >
-            {loading && !data ? (
-              <SkeletonRows rows={3} columns={4} />
-            ) : data?.provider_stats?.length ? (
-              <Table heads={['供应商', '请求数', '成功率', '平均延迟']} minWidth={640}>
-                {data.provider_stats.map(p => (
-                  <tr key={p.provider}>
-                    <td>
-                      <b>{p.provider}</b>
-                    </td>
-                    <td className="numeric">{num(p.requests)}</td>
-                    <td className="numeric">{p.success_rate.toFixed(1)}%</td>
-                    <td className="numeric">{ms(p.avg_latency_ms)}</td>
-                  </tr>
-                ))}
-              </Table>
-            ) : (
-              <EmptyState
-                title="暂无可归因的供应商遥测数据"
-                description="产生业务请求后，这里会按供应商汇总请求量与成功率。"
-              />
-            )}
-          </Panel>
+          {canReadLogs && (
+            <Panel
+              title="最近请求"
+              sub="业务侧最新发生的调用，用来确认流量确实在进入网关。"
+              actions={
+                <Button size="sm" icon={<RefreshCw />} loading={recent.loading} onClick={recent.reload}>
+                  刷新
+                </Button>
+              }
+            >
+              {recent.loading && !recent.data ? (
+                <SkeletonRows rows={4} columns={5} />
+              ) : recent.data?.data.length ? (
+                <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={620}>
+                  {recent.data.data.map(r => (
+                    <tr key={r.request_id}>
+                      <td className="muted">{ago(r.created_at)}</td>
+                      <td>
+                        <b>{r.requested_model || '—'}</b>
+                      </td>
+                      <td>{r.provider || '—'}</td>
+                      <td>
+                        <span className={`badge ${r.status_code >= 400 ? 'danger' : 'success'}`}>
+                          {r.status_code}
+                        </span>
+                      </td>
+                      <td className="numeric">{ms(r.latency_ms)}</td>
+                    </tr>
+                  ))}
+                </Table>
+              ) : (
+                <EmptyState
+                  title="暂无调用记录"
+                  description="业务请求进入网关后，这里会显示最近几条调用。完整检索请到「使用日志」。"
+                />
+              )}
+            </Panel>
+          )}
         </>
       )}
 

@@ -22,6 +22,7 @@ import {IdentityRequired} from '../auth/IdentityRequired'
 import {LoginPage} from '../auth/LoginPage'
 import {SetupPage} from '../auth/SetupPage'
 import {DashboardPage} from '../pages/DashboardPage'
+import {AnalyticsPage} from '../pages/AnalyticsPage'
 import {ProvidersPage} from '../pages/ProvidersPage'
 import {ModelsPage} from '../pages/ModelsPage'
 import {TenantsPage} from '../pages/TenantsPage'
@@ -29,9 +30,11 @@ import {ApiKeysPage} from '../pages/ApiKeysPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
 import {SecurityPage} from '../pages/SecurityPage'
+import {TasksPage} from '../pages/TasksPage'
 import {UsersPage} from '../pages/UsersPage'
 import {SettingsPage} from '../pages/SettingsPage'
-import {AccountPage} from '../pages/AccountPage'
+import {ProfilePage} from '../pages/ProfilePage'
+import {AccessPage} from '../pages/AccessPage'
 
 // loading   — checking the auth config and trying to restore a session
 // setup     — no administrator exists yet, show the first-run form
@@ -249,6 +252,7 @@ function Console() {
       onSignOut={() => void signOut().catch(e => toast.error(e instanceof Error ? e.message : '退出登录失败'))}
     >
       {page === 'dashboard' && <DashboardPage roles={roles} />}
+      {page === 'analytics' && <AnalyticsPage />}
       {page === 'providers' && <ProvidersPage />}
       {page === 'models' && <ModelsPage />}
       {page === 'tenants' && <TenantsPage />}
@@ -256,9 +260,11 @@ function Console() {
       {page === 'logs' && <RequestLogsPage />}
       {page === 'audit' && <AuditPage />}
       {page === 'security' && <SecurityPage />}
+      {page === 'tasks' && <TasksPage />}
       {page === 'users' && <UsersPage />}
-      {page === 'settings' && <SettingsPage who={who} authConfig={authConfig} onSignedOut={() => void signOut()} />}
-      {page === 'account' && <AccountPage who={who} onSignedOut={() => void signOut()} />}
+      {page === 'settings' && <SettingsPage who={who} authConfig={authConfig} />}
+      {page === 'profile' && <ProfilePage who={who} />}
+      {page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
     </Shell>
   )
 }

@@ -1,11 +1,7 @@
 import {Fingerprint, KeyRound, ShieldCheck} from 'lucide-react'
-import {api, type AuthConfig, type WhoAmI} from '../api'
+import type {AuthConfig, WhoAmI} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Badge} from '../components/ui/Badge'
-import {SkeletonRows} from '../components/ui/Skeleton'
-import {ErrorState} from '../components/ui/EmptyState'
-import {AccountSecurity} from '../auth/AccountSecurity'
-import {useResource} from '../lib/useResource'
 
 const MODE_INFO: Record<string, {label: string; description: string; icon: typeof KeyRound; tone: 'success' | 'info' | 'warning'}> = {
   session: {
@@ -28,10 +24,15 @@ const MODE_INFO: Record<string, {label: string; description: string; icon: typeo
   },
 }
 
-export function SettingsPage({who, authConfig, onSignedOut}: {who: WhoAmI | null; authConfig: AuthConfig | null; onSignedOut: () => void}) {
-  const {data, loading, error, errorStatus, reload} = useResource(() => api<WhoAmI>('/admin/whoami', {}, false))
-  const identity = data || who
-  const mode = (authConfig?.auth_mode || identity?.auth_mode || '').toLowerCase()
+/**
+ * System settings describe the deployment, not the person using it.
+ *
+ * Password and device management moved to 安全与访问: they are the account's
+ * own credentials, and mixing them with the gateway's authentication mode made
+ * the page read as two unrelated halves.
+ */
+export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig: AuthConfig | null}) {
+  const mode = (authConfig?.auth_mode || who?.auth_mode || '').toLowerCase()
   const info = MODE_INFO[mode] || {
     label: authConfig?.auth_mode || '未知',
     description: '当前认证模式未在本控制台的已知模式列表中。请联系校园信息化管理部门确认网关配置。',
@@ -41,17 +42,7 @@ export function SettingsPage({who, authConfig, onSignedOut}: {who: WhoAmI | null
   const Icon = info.icon
 
   return (
-    <div className="settingsGrid">
-      {error ? (
-        <ErrorState message={error} status={errorStatus} onRetry={reload} />
-      ) : loading && !identity ? (
-        <Panel title="账号与安全">
-          <SkeletonRows rows={3} columns={2} />
-        </Panel>
-      ) : (
-        <AccountSecurity who={identity} onSignedOut={onSignedOut} />
-      )}
-
+    <div className="stack">
       <Panel title="认证方式" sub="由网关的 ADMIN_AUTH_MODE 决定，修改后需要重启网关生效。">
         <div className="authModeCard">
           <span className={`authModeIcon ${info.tone}`} aria-hidden>

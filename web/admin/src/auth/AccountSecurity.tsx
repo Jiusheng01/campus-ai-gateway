@@ -19,8 +19,20 @@ import {when} from '../lib/format'
  * Session mode owns a password and a device list; trusted-header mode owns
  * neither, because the campus identity platform holds the credential. Showing
  * those forms there would imply this console stores something it does not.
+ *
+ * `showIdentity` is off when the caller has already shown the account's
+ * identity — the 个人资料 page owns that block now, and repeating the username
+ * and roles one page away from it reads as two sources of truth.
  */
-export function AccountSecurity({who, onSignedOut}: {who: WhoAmI | null; onSignedOut: () => void}) {
+export function AccountSecurity({
+  who,
+  onSignedOut,
+  showIdentity = true,
+}: {
+  who: WhoAmI | null
+  onSignedOut: () => void
+  showIdentity?: boolean
+}) {
   const toast = useToast()
   const confirm = useConfirm()
   const sessionMode = (who?.auth_mode || '').toLowerCase() === 'session'
@@ -103,29 +115,31 @@ export function AccountSecurity({who, onSignedOut}: {who: WhoAmI | null; onSigne
 
   return (
     <>
-      <Panel title="当前管理员" sub="权限由账号角色决定，角色变更即时生效。">
-        <div className="kv">
-          {identityRows.map(([k, v]) => (
-            <div className="kvRow" key={k}>
-              <span>{k}</span>
-              <b>{v}</b>
-            </div>
-          ))}
+      {showIdentity && (
+        <Panel title="当前管理员" sub="权限由账号角色决定，角色变更即时生效。">
+          <div className="kv">
+            {identityRows.map(([k, v]) => (
+              <div className="kvRow" key={k}>
+                <span>{k}</span>
+                <b>{v}</b>
+              </div>
+            ))}
+            {sessionMode && (
+              <div className="kvRow">
+                <span>登录状态</span>
+                <b>安全会话 · 自动续期</b>
+              </div>
+            )}
+          </div>
           {sessionMode && (
-            <div className="kvRow">
-              <span>登录状态</span>
-              <b>安全会话 · 自动续期</b>
+            <div className="panelFoot">
+              <Button icon={<LogOut />} onClick={onSignedOut}>
+                退出登录
+              </Button>
             </div>
           )}
-        </div>
-        {sessionMode && (
-          <div className="panelFoot">
-            <Button icon={<LogOut />} onClick={onSignedOut}>
-              退出登录
-            </Button>
-          </div>
-        )}
-      </Panel>
+        </Panel>
+      )}
 
       {!sessionMode && (
         <Panel title="账号与安全" sub="密码与登录设备由校园统一身份认证平台管理。">

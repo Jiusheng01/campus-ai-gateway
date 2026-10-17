@@ -11,7 +11,7 @@ import {friendlyError} from '../lib/errors'
  * decodes it with DisallowUnknownFields, so a request that also mentions roles
  * or status is refused rather than quietly accepted. There is deliberately no
  * "become an administrator" option here — an administrator is made by a super
- * administrator, in 用户与权限, and nowhere else.
+ * administrator, in 用户, and nowhere else.
  *
  * On success the server signs the new account in, so this page calls onDone
  * with the account's roles and the caller decides where that account belongs.

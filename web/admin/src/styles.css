@@ -1206,7 +1206,6 @@ input:focus, select:focus, textarea:focus {
 
 /* --- settings ------------------------------------------------------------- */
 
-.settingsGrid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; align-items: start; }
 
 .authModeCard { display: flex; gap: 13px; padding: 18px; }
 .authModeIcon {
@@ -1308,7 +1307,6 @@ input:focus, select:focus, textarea:focus {
    same `repeat(n, 1fr)` here would just be a second place to keep in sync. */
 
 @media (max-width: 1180px) {
-  .settingsGrid { grid-template-columns: 1fr; }
   .skeletonCards { grid-template-columns: repeat(2, 1fr); }
 }
 

@@ -77,7 +77,7 @@ export function ModelTestDrawer({
       <div className="drawerStack">
         <Notice>
           <Route aria-hidden />
-          此测试直接通过 ThinkWatch 验证模型线路，<b>不会</b>经过业务 API Key、租户配额和请求日志。
+          此测试直接通过 ThinkWatch 验证模型线路，<b>不会</b>经过业务 API 密钥、租户配额和使用日志。
         </Notice>
 
         <div className="form">
@@ -112,7 +112,7 @@ export function ModelTestDrawer({
                 ['延迟', ms(result.latency_ms || 0)],
               ]}
             />
-            <p className="authHint">此结果不会出现在业务请求日志中。</p>
+            <p className="authHint">此结果不会出现在业务使用日志中。</p>
           </>
         )}
       </div>

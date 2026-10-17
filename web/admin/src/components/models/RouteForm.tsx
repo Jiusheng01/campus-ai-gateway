@@ -38,7 +38,7 @@ export function RouteForm({
         业务系统仍然调用 <b>{model.alias}</b>，这里只配置实际的上游线路。
       </div>
 
-      <Field label="供应商">
+      <Field label="渠道">
         <select value={v.provider_id || providers[0]?.id || ''} onChange={e => setV({...v, provider_id: e.target.value})}>
           {providers.map(p => (
             <option key={p.id} value={p.id}>
@@ -48,7 +48,7 @@ export function RouteForm({
         </select>
       </Field>
 
-      <Field label="上游模型" hint="该供应商实际调用的模型名称。">
+      <Field label="上游模型" hint="该渠道实际调用的模型名称。">
         <input className="mono" value={v.upstream_model || ''} onChange={e => setV({...v, upstream_model: e.target.value})} />
       </Field>
 

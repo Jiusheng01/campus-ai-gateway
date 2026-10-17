@@ -18,7 +18,7 @@ export function LogDetail({v}: {v: RequestLog}) {
           ['Request ID', <span key="rid" className="mono wrap">{v.request_id}</span>],
           ['时间', when(v.created_at)],
           ['租户', v.tenant_id],
-          ['API Key', v.api_key_id],
+          ['API 密钥', v.api_key_id],
           ['来源 IP', v.client_ip || '—'],
         ]}
       />
@@ -28,7 +28,7 @@ export function LogDetail({v}: {v: RequestLog}) {
           ['请求模型', v.requested_model],
           ['实际模型', TelemetryRow('实际模型', v.actual_model)[1]],
           ...([
-            TelemetryRow('供应商', v.provider),
+            TelemetryRow('渠道', v.provider),
             TelemetryRow('上游模型', v.upstream_model),
             TelemetryRow('线路优先级', v.route_priority),
             TelemetryRow('尝试次数', v.attempts),

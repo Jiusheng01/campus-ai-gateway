@@ -49,14 +49,14 @@ export function ModelsPage() {
   const sync = async () => {
     const ok = await confirm({
       title: '同步 ThinkWatch 配置？',
-      description: '将当前供应商、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
+      description: '将当前渠道、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
       confirmText: '确认同步',
     })
     if (!ok) return
     setSyncing(true)
     try {
       const out = await api<{providers: number; aliases: number}>('/admin/thinkwatch/sync', {method: 'POST'})
-      toast.success(`ThinkWatch 同步成功：${out.providers} 个供应商 / ${out.aliases} 个对外模型`)
+      toast.success(`ThinkWatch 同步成功：${out.providers} 个渠道 / ${out.aliases} 个对外模型`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'ThinkWatch 同步失败')
     } finally {
@@ -122,7 +122,7 @@ export function ModelsPage() {
 
       <Panel
         title="模型与路由"
-        sub="业务系统只使用统一的对外模型名称，实际供应商和上游模型可在这里配置并进行故障切换。"
+        sub="业务系统只使用统一的对外模型名称，实际渠道和上游模型可在这里配置并进行故障切换。"
         actions={
           <Button
             variant="primary"
@@ -227,7 +227,7 @@ export function ModelsPage() {
                       )
                     })}
                     {!rs.length && (
-                      <EmptyState title="该模型尚未配置线路" description="添加一条线路后，业务请求才能被路由到供应商。" />
+                      <EmptyState title="该模型尚未配置线路" description="添加一条线路后，业务请求才能被路由到渠道。" />
                     )}
                   </div>
 
@@ -252,7 +252,7 @@ export function ModelsPage() {
           <EmptyState
             icon={<Route />}
             title="暂无对外模型"
-            description={providers.length ? '创建第一个对外模型，业务系统即可开始调用。' : '请先添加供应商，再创建对外模型。'}
+            description={providers.length ? '创建第一个对外模型，业务系统即可开始调用。' : '请先添加渠道，再创建对外模型。'}
             action={
               providers.length ? (
                 <Button variant="primary" icon={<Plus />} onClick={() => setDrawer({kind: 'model', draft: {status: 1}})}>
