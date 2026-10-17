@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
@@ -29,13 +30,29 @@ import (
 const auditCaptureLimit = 1 << 20
 
 type Server struct {
-	cfg       Config
-	pg        *storage.Postgres
-	redis     *storage.Redis
-	limit     *ratelimit.Limiter
-	proxy     http.Handler
+	cfg   Config
+	pg    *storage.Postgres
+	redis *storage.Redis
+	limit *ratelimit.Limiter
+
+	// upstream is the data plane: either the ThinkWatch reverse proxy or the
+	// in-process handler in direct_proxy.go. Everything in front of it —
+	// authentication, quotas, rate limits, request logging — is identical in
+	// both modes, so this is the only place the two differ.
+	upstream  http.Handler
 	mux       *http.ServeMux
 	adminAuth *adminAuthService
+
+	// Direct data plane state. Unused when cfg.UsesThinkWatch().
+	//
+	// routeCache is rebuilt at most once per routeCacheTTL, so a saved change
+	// reaches business traffic within seconds without putting three queries on
+	// the hot path and without every write handler having to remember to
+	// invalidate anything.
+	routeMu    sync.Mutex
+	routeCache routeTable
+	routeAt    time.Time
+	transport  *transportPool
 }
 
 type requestEnvelope struct {
@@ -113,20 +130,30 @@ func NewServer(cfg Config) (*Server, error) {
 		pg.Close()
 		return nil, err
 	}
-	rp, err := proxy.NewThinkWatchProxy(cfg.ThinkWatchURL, cfg.ThinkWatchKey)
-	if err != nil {
-		pg.Close()
-		_ = rd.Close()
-		return nil, err
-	}
-
 	s := &Server{
 		cfg:   cfg,
 		pg:    pg,
 		redis: rd,
 		limit: ratelimit.New(rd.Client),
-		proxy: rp,
 		mux:   http.NewServeMux(),
+	}
+	if cfg.UsesThinkWatch() {
+		// Only built in this mode: an empty THINKWATCH_URL parses without
+		// error into a proxy with no host, so constructing it unconditionally
+		// would leave a handler that fails on first use instead of never
+		// existing at all.
+		rp, err := proxy.NewThinkWatchProxy(cfg.ThinkWatchURL, cfg.ThinkWatchKey)
+		if err != nil {
+			pg.Close()
+			_ = rd.Close()
+			return nil, err
+		}
+		s.upstream = rp
+		log.Printf("data plane: ThinkWatch Core at %s", cfg.ThinkWatchURL)
+	} else {
+		s.upstream = http.HandlerFunc(s.serveDirect)
+		s.transport = &transportPool{}
+		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
 	}
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
@@ -388,14 +415,18 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			writeAllowedModels(aw, id.AllowedModels)
 			return
 		}
-		s.proxy.ServeHTTP(aw, r)
+		if !s.cfg.UsesThinkWatch() {
+			// Nothing to proxy to. The honest answer is the set of models
+			// that can be routed right now, which is exactly the routing
+			// table the data plane will consult.
+			s.serveDirectModels(aw, r)
+			return
+		}
+		s.upstream.ServeHTTP(aw, r)
 		return
 	}
 
-	maxBody := int64(16 << 20)
-	if r.URL.Path == "/v1/audio/transcriptions" {
-		maxBody = 64 << 20
-	}
+	maxBody := maxRequestBody(r.URL.Path)
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		httpx.Error(aw, http.StatusBadRequest, "invalid_request", "Unable to read request body", reqID)
@@ -449,7 +480,19 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	s.proxy.ServeHTTP(aw, r)
+	s.upstream.ServeHTTP(aw, r)
+}
+
+// maxRequestBody bounds how much of a business request the gateway will buffer.
+//
+// Both data planes read the body — the direct one to rewrite the model field,
+// the ThinkWatch one because the request logger needs the usage block — so the
+// cap belongs to the route rather than to whichever plane is active.
+func maxRequestBody(path string) int64 {
+	if path == "/v1/audio/transcriptions" {
+		return 64 << 20
+	}
+	return 16 << 20
 }
 
 func parseRequestEnvelope(body []byte, contentType string) (requestEnvelope, error) {

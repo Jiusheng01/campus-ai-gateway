@@ -1,6 +1,6 @@
 import {useCallback, useState} from 'react'
 import {ChevronDown, FlaskConical, Pencil, Plus, RefreshCw, Route, Trash2} from 'lucide-react'
-import {api, type ModelConfig, type ModelRoute, type Provider} from '../api'
+import {api, type DashboardStatus, type ModelConfig, type ModelRoute, type Provider} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge, StatusBadge} from '../components/ui/Badge'
@@ -15,7 +15,7 @@ import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {friendlyProviderName} from '../components/providers/templates'
 import {useResource} from '../lib/useResource'
 
-type ModelBundle = {models: ModelConfig[]; providers: Provider[]; routes: Record<string, ModelRoute[]>}
+type ModelBundle = {models: ModelConfig[]; providers: Provider[]; routes: Record<string, ModelRoute[]>; dataPlane: 'direct' | 'thinkwatch'}
 
 type DrawerState =
   | {kind: 'model'; draft: ModelDraft}
@@ -30,9 +30,18 @@ export function ModelsPage() {
   const [syncing, setSyncing] = useState(false)
 
   const loader = useCallback(async (): Promise<ModelBundle> => {
-    const [m, p] = await Promise.all([
+    const [m, p, status] = await Promise.all([
       api<{data: ModelConfig[]}>('/admin/models'),
       api<{data: Provider[]}>('/admin/providers'),
+      // Which data plane is running decides whether 同步 ThinkWatch has
+      // anything to write to. /admin/status is the only endpoint that reports
+      // it, and every role that can open this page may read it.
+      //
+      // A failure here must not blank the page: the sync button is a
+      // convenience, the model list is the point. Falling back to "thinkwatch"
+      // matches the gateway's own default, so the worst case is a button that
+      // answers with a clear 409 instead of disappearing.
+      api<DashboardStatus>('/admin/status').catch(() => null),
     ])
     const models = m.data || []
     const routePairs = await Promise.all(
@@ -41,7 +50,12 @@ export function ModelsPage() {
         return [x.id, r.data || []] as const
       }),
     )
-    return {models, providers: p.data || [], routes: Object.fromEntries(routePairs)}
+    return {
+      models,
+      providers: p.data || [],
+      routes: Object.fromEntries(routePairs),
+      dataPlane: status?.data_plane === 'direct' ? 'direct' : 'thinkwatch',
+    }
   }, [])
 
   const {data, loading, error, errorStatus, reload} = useResource(loader)
@@ -108,13 +122,16 @@ export function ModelsPage() {
 
   const models = data?.models || []
   const providers = data?.providers || []
+  const direct = data?.dataPlane === 'direct'
 
   return (
     <div className="stack">
       <div className="quickActions">
-        <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
-          同步 ThinkWatch
-        </Button>
+        {!direct && (
+          <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
+            同步 ThinkWatch
+          </Button>
+        )}
         <Button variant="primary" icon={<FlaskConical />} onClick={() => setDrawer({kind: 'test'})}>
           模型连通测试
         </Button>
@@ -290,7 +307,7 @@ export function ModelsPage() {
         </Drawer>
       )}
 
-      {drawer?.kind === 'test' && <ModelTestDrawer models={models} initialModel={drawer.model} onClose={() => setDrawer(null)} />}
+      {drawer?.kind === 'test' && <ModelTestDrawer models={models} initialModel={drawer.model} direct={direct} onClose={() => setDrawer(null)} />}
     </div>
   )
 }

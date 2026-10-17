@@ -2,7 +2,7 @@
 
 校园大模型统一接入、模型路由、访问控制、限流与安全审计网关。
 
-Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
+Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过可选的 ThinkWatch Core 或网关自身的直连数据面接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
 > 当前状态（2026-10-16）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
 >
@@ -25,7 +25,8 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | SSE 透明代理 | ✅ | 流式响应不被 Gateway 缓冲 |
 | Provider 管理 | ✅ | CRUD、状态、Base URL、凭据环境变量名 |
 | 虚拟模型 / Route 管理 | ✅ | 一个虚拟模型可绑定多条 Provider 路线 |
-| ThinkWatch 配置同步 | ✅ | 校验、备份、原子替换 |
+| ThinkWatch 配置同步 | ✅ | 校验、备份、原子替换（仅 ThinkWatch 模式） |
+| 直连数据面 | ✅ | 未配置 `THINKWATCH_URL` 时网关自己解析模型、注入凭据、流式透传、按 priority 故障切换 |
 | Qwen 真实调用 | ✅ | `campus-smart` 已完成真实端到端调用 |
 | Volcengine Ark / 豆包 | ✅* | 真实模型测试已通过；完整业务数据面 Failover 仍待最终验收 |
 | 多 Provider Failover 控制面 | ✅ | Route 优先级 / 权重 / 超时 + ThinkWatch renderer |
@@ -77,6 +78,23 @@ Data:
 ```
 
 Go Gateway 是校园侧控制面和访问控制边界；ThinkWatch Core 负责底层模型路由与数据面能力。项目不复制 ThinkWatch Core 源码，而是通过配置同步和 API 契约集成。
+
+### 数据面：直连还是 ThinkWatch
+
+数据面是可选的。上面那张图里的 ThinkWatch Core 只在需要时才存在：
+
+| `DATA_PLANE` | `THINKWATCH_URL` | 实际行为 |
+| --- | --- | --- |
+| 未设置 / `auto` | 有值 | 业务请求全部代理给 ThinkWatch Core（默认，与既有部署一致） |
+| 未设置 / `auto` | 空 | **直连**：网关按 `gateway_model_route` 解析对外模型，自己注入渠道凭据、流式透传、按 priority 故障切换 |
+| `direct` | 任意 | 强制直连 |
+| `thinkwatch` | 空 | 启动失败（明确报错，不静默降级） |
+
+直连模式下网关只需要 PostgreSQL 和 Redis，不必再跑第二个进程；Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，同步 ThinkWatch 的入口自动隐藏（`POST /admin/thinkwatch/sync` 会返回 `409 data_plane_direct`），模型连通测试改为由网关直接向渠道发起请求并在结果中回报实际应答的渠道。
+
+两种模式的差异是真实的，不是实现细节：直连数据面做**按 priority 排序的故障切换**，但**不做加权路由和熔断**——那需要跨请求存活的按渠道状态，仍然由 ThinkWatch Core 负责。需要这两项能力的部署请继续配置 `THINKWATCH_URL`。
+
+直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
 
 ---
 
@@ -356,9 +374,9 @@ campus-smart
     └── priority 2 -> volcengine-ark
 ```
 
-管理后台修改 Provider / Model / Route 后，需要执行“同步 ThinkWatch”。
+管理后台修改 Provider / Model / Route 后，**ThinkWatch 模式下**需要执行“同步 ThinkWatch”；**直连模式下不需要**，网关最长 5 秒内自己读到新线路。
 
-同步流程：
+同步流程（仅 ThinkWatch 模式）：
 
 ```text
 PostgreSQL Provider / Model / Route
@@ -451,7 +469,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 业务请求会经过 Gateway 的 Tenant / Key / Allowlist / Quota / Audit 链路。
 
-> Admin UI 中的“模型测试”用于直接验证 ThinkWatch 模型连通性，它不是业务数据面请求，因此不会写入 `gateway_request_log`。需要验证完整 Gateway 数据面时，请使用 `/v1/*` + `sk-campus-*` 业务 Key。
+> Admin UI 中的“模型测试”用于验证对外模型的线路是否可用，它不是业务数据面请求，因此不会写入 `gateway_request_log`。ThinkWatch 模式下它经由 ThinkWatch 转发，直连模式下由网关直接向渠道发起请求并在结果中回报应答渠道。需要验证完整 Gateway 数据面时，请使用 `/v1/*` + `sk-campus-*` 业务 Key。
 
 ---
 
@@ -517,6 +535,7 @@ cmd/
 
 internal/
 ├── app/                    Server / Admin API / Auth / Embedded UI
+│   ├── direct_proxy.go     直连数据面（未配置 THINKWATCH_URL 时启用）
 │   └── adminui/dist/       Admin UI v3 构建产物
 ├── httpx/                  HTTP 公共能力
 ├── migrate/                迁移执行器（schema_migrations / 校验值 / advisory lock）
@@ -633,6 +652,7 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 ## 13. 当前已知限制
 
 - 完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
+- 直连数据面**不做加权路由和熔断**，只做按 priority / weight 排序的故障切换；需要这两项能力请继续使用 ThinkWatch。
 - ThinkWatch 最终 Provider / attempts / failover telemetry 仍取决于 Core 暴露的可信路由事实。
 - 学校真实 IdP 尚未完成现场集成验收。
 - 目前没有管理员自助“忘记密码”与完整管理员生命周期 UI。
@@ -657,6 +677,7 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - [x] RBAC
 - [x] trusted-header SSO 接入边界
 - [x] ThinkWatch 配置同步
+- [x] 直连数据面（ThinkWatch 可选）
 - [x] 多 Provider Route 控制面
 - [x] Qwen 真实调用
 - [x] Volcengine Ark 真实模型连通

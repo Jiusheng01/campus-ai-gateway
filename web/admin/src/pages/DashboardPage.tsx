@@ -94,18 +94,29 @@ export function DashboardPage({roles}: {roles: string[]}) {
   const stats = data?.stats
   const errorRate = stats && stats.today_requests > 0 ? ratio(stats.today_errors, stats.today_requests) : '0%'
 
+  // Which data plane is running changes what the fourth status light means.
+  // In direct mode there is no ThinkWatch process to be healthy or unhealthy —
+  // the gateway dials the channels itself — so reporting `thinkwatch: false`
+  // there would paint a red "异常" for something the deployment never started.
+  const direct = data?.data_plane === 'direct'
   const health = [
     {name: 'Gateway', ok: data?.gateway, icon: ServerCog, note: '控制面与数据面'},
     {name: 'PostgreSQL', ok: data?.postgres, icon: Database, note: '配置与日志存储'},
     {name: 'Redis', ok: data?.redis, icon: Boxes, note: '限流与配额计数'},
-    {name: 'ThinkWatch', ok: data?.thinkwatch, icon: Network, note: '模型路由与故障切换'},
+    direct
+      ? {name: '数据面', ok: data?.gateway, icon: Route, note: '直连渠道，无额外进程'}
+      : {name: 'ThinkWatch', ok: data?.thinkwatch, icon: Network, note: '模型路由与故障切换'},
   ]
+
+  // The sync action writes ThinkWatch's config file. In direct mode there is
+  // no such file, so the button is removed rather than left to fail.
+  const showSync = canSync && data !== undefined && !direct
 
   return (
     <div className="stack">
-      {(canSync || canTestModel) && (
+      {(showSync || canTestModel) && (
         <div className="quickActions">
-          {canSync && (
+          {showSync && (
             <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
               同步 ThinkWatch
             </Button>
@@ -145,7 +156,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
 
           <Panel
             title="基础设施状态"
-            sub="Gateway、存储与路由组件的实时可达性。"
+            sub={direct ? 'Gateway、存储与数据面的实时可达性。' : 'Gateway、存储与路由组件的实时可达性。'}
             actions={
               <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={reload}>
                 刷新
@@ -216,7 +227,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
         </>
       )}
 
-      {testing && <ModelTestDrawer models={testing} onClose={() => setTesting(null)} />}
+      {testing && <ModelTestDrawer models={testing} direct={direct} onClose={() => setTesting(null)} />}
     </div>
   )
 }

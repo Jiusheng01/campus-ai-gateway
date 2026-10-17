@@ -191,26 +191,36 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	thinkwatchOK := false
-	client := &http.Client{Timeout: 2 * time.Second}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(s.cfg.ThinkWatchURL, "/")+"/v1/models", nil)
-	if err == nil {
-		if s.cfg.ThinkWatchKey != "" {
-			req.Header.Set("Authorization", "Bearer "+s.cfg.ThinkWatchKey)
-		}
-		if resp, err := client.Do(req); err == nil {
-			thinkwatchOK = resp.StatusCode >= 200 && resp.StatusCode < 500
-			_ = resp.Body.Close()
+	if s.cfg.UsesThinkWatch() {
+		client := &http.Client{Timeout: 2 * time.Second}
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(s.cfg.ThinkWatchURL, "/")+"/v1/models", nil)
+		if err == nil {
+			if s.cfg.ThinkWatchKey != "" {
+				req.Header.Set("Authorization", "Bearer "+s.cfg.ThinkWatchKey)
+			}
+			if resp, err := client.Do(req); err == nil {
+				thinkwatchOK = resp.StatusCode >= 200 && resp.StatusCode < 500
+				_ = resp.Body.Close()
+			}
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"gateway":    true,
-		"postgres":   dbOK,
-		"redis":      redisOK,
-		"thinkwatch": thinkwatchOK,
-		"stats":      stats,
+	// data_plane is authoritative and always present. thinkwatch is reported
+	// only in the mode where it means something: a deployment running the
+	// direct plane would otherwise show a red "ThinkWatch 异常" for a process
+	// it never intended to run.
+	out := map[string]any{
+		"gateway":        true,
+		"postgres":       dbOK,
+		"redis":          redisOK,
+		"data_plane":     s.cfg.DataPlaneMode(),
+		"stats":          stats,
 		"provider_stats": providerStats,
-	})
+	}
+	if s.cfg.UsesThinkWatch() {
+		out["thinkwatch"] = thinkwatchOK
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
