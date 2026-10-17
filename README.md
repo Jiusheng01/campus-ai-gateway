@@ -307,6 +307,14 @@ ThinkWatch Core 不在常见目录时：
 .\scripts\dev.ps1 -ForceRestart -NoBrowser
 ```
 
+不启动 ThinkWatch，让网关自己直连渠道：
+
+```powershell
+.\scripts\dev.ps1 -Direct
+```
+
+`-Direct` 等价于 `DATA_PLANE=direct`，脚本会清空 `THINKWATCH_URL` 并跳过 `twcore.exe` 的检测与启动。直连模式下只需要 PostgreSQL 与 Redis。
+
 查看 / 停止：
 
 ```powershell
