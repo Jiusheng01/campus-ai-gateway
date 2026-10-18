@@ -228,8 +228,23 @@ func productionGoFiles(t *testing.T, root string) []string {
 			return err
 		}
 		if d.IsDir() {
+			// A source scan reads this repository's sources and nothing else. A
+			// working copy nested inside the tree - a second checkout, or a git
+			// worktree created for a parallel branch - is a different repository
+			// that merely happens to live here, and counting it makes the guard
+			// fail for reasons that have nothing to do with this code. Dot
+			// directories cover .git; the .git check covers a nested checkout
+			// under an ordinary name.
+			if path != root {
+				if strings.HasPrefix(d.Name(), ".") {
+					return fs.SkipDir
+				}
+				if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+					return fs.SkipDir
+				}
+			}
 			switch d.Name() {
-			case ".git", "node_modules", "dist", "vendor":
+			case "node_modules", "dist", "vendor":
 				return fs.SkipDir
 			}
 			return nil
