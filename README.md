@@ -184,8 +184,6 @@ PUBLIC_REGISTER_WINDOW=1h
 
 公开注册目前**不提供**邮箱验证、忘记密码、邀请码或管理员审批。
 
-完整说明见 `docs/ACCOUNTS.md`。
-
 ### 会话模型
 
 管理员认证采用：
@@ -248,13 +246,6 @@ Campus AI Gateway RBAC
 - `ADMIN_PROXY_CIDRS` 限定哪些对端地址可以尝试该认证。留空时保持旧行为（任何对端都可以试），启动日志会打印警告。
 
 `ADMIN_AUTH_MODE=token` 仅保留为应急模式，Admin UI 不提供 Token 输入框。
-
-详见：
-
-- `docs/ADMIN_UI.md`
-- `docs/ACCOUNTS.md`
-- `docs/SSO_RBAC.md`
-- `docs/PRODUCTION.md`
 
 ---
 
@@ -600,8 +591,6 @@ deploy/
 ├── nginx.production.example.conf
 └── monitoring/             Prometheus 示例配置
 
-docs/                       设计与验收文档（账户 / SSO / 生产 / Admin UI 等）
-
 loadtest/                   k6 压测脚本（k6-chat.js / k6-models.js）
 
 scripts/
@@ -649,12 +638,6 @@ bash scripts/e2e-admin-auth-v2.sh
 - trusted-header
 - 五角色 RBAC
 - 浏览器凭据不落持久化存储
-
-最终环境统一验收请参考：
-
-```text
-docs/FINAL_ACCEPTANCE.md
-```
 
 ---
 

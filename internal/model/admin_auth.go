@@ -20,7 +20,7 @@ const (
 // AdminUser whose roles are ["member"]. The table name is kept as-is on purpose
 // — renaming gateway_admin_user to gateway_user is a separate, mechanical
 // change that would put the already-verified session layer at risk for no
-// functional gain. See the technical-debt note in docs/ACCOUNTS.md.
+// functional gain.
 type AdminUser struct {
 	ID           string
 	Username     string
