@@ -171,7 +171,15 @@ func TestAllowedModelsMigrationRewritesOnlyTheEmptyList(t *testing.T) {
 // the production sources, a direct membership test on the allow-list or a
 // length comparison used as the answer is the reimplementation that must not
 // appear again.
-func TestAllowedModelsDecisionHasASingleEntryPoint(t *testing.T) {
+//
+// It is a source scan, and it is worth being honest about what that buys. It
+// catches the two spellings the inverted default has actually taken here; it
+// does not prove the absence of another, because a helper that copied the map
+// and answered from the copy would read correctly. What the scan is really for
+// is making the second reading expensive to reintroduce by accident, next to a
+// method that already answers the question. The two rules it asserts - one
+// entry point, and no length comparison - share a cause, so they share a test.
+func TestTheAllowListVerdictHasOneEntryPointAndNoLengthComparison(t *testing.T) {
 	root := filepath.Join("..", "..")
 	lengthComparison := regexp.MustCompile(`len\([^)]*AllowedModels[^)]*\)\s*(==|!=|>=|<=|>|<)`)
 

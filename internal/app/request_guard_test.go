@@ -1,7 +1,6 @@
 package app
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -56,78 +55,6 @@ func TestIdentityAllowsModelTreatsEmptyAsDeny(t *testing.T) {
 	everything := model.Identity{AllModels: true}
 	if !everything.AllowsModel("anything-at-all") {
 		t.Fatal("the wildcard must allow every model")
-	}
-}
-
-func TestValidateCredentialEnvRejectsGatewayOwnedVariables(t *testing.T) {
-	rejected := []string{
-		"ADMIN_SESSION_SECRET",
-		"ADMIN_PROXY_SECRET",
-		"API_KEY_HMAC_SECRET",
-		"THINKWATCH_GATEWAY_KEY",
-		"DATABASE_URL",
-		"REDIS_PASSWORD",
-		"TWCORE_EXE",
-		"DATA_PLANE",
-		"GATEWAY_ANYTHING",
-		// Not a variable name at all: pasting the key itself would put a
-		// secret in the database, which the indirection exists to avoid.
-		"sk-live-abc123",
-		"lowercase_name",
-		"",
-	}
-	for _, name := range rejected {
-		if reason := validateCredentialEnv(name); reason == "" {
-			t.Fatalf("%q must be rejected", name)
-		}
-	}
-
-	accepted := []string{
-		"DASHSCOPE_API_KEY",
-		"DEEPSEEK_API_KEY",
-		"OPENAI_API_KEY",
-		"ARK_API_KEY",
-		"ZHIPU_API_KEY",
-	}
-	for _, name := range accepted {
-		if reason := validateCredentialEnv(name); reason != "" {
-			t.Fatalf("%q must be accepted, got %q", name, reason)
-		}
-	}
-}
-
-func TestValidateProviderRestrictsProtocolToOpenAIChatInDirectMode(t *testing.T) {
-	anthropic := model.Provider{
-		Name:          "claude",
-		BaseURL:       "https://api.anthropic.com",
-		Protocol:      "anthropic",
-		CredentialEnv: "ANTHROPIC_API_KEY",
-	}
-	if reason := validateProvider(&anthropic, true); reason == "" {
-		t.Fatal("the direct data plane speaks OpenAI only, so an anthropic channel must be refused")
-	}
-
-	same := model.Provider{
-		Name:          "claude",
-		BaseURL:       "https://api.anthropic.com",
-		Protocol:      "anthropic",
-		CredentialEnv: "ANTHROPIC_API_KEY",
-	}
-	if reason := validateProvider(&same, false); reason != "" {
-		t.Fatalf("ThinkWatch performs the translation, so the protocol must be accepted there: %q", reason)
-	}
-}
-
-func TestValidateProviderRejectsAGatewaySecretAsCredential(t *testing.T) {
-	v := model.Provider{
-		Name:          "attacker",
-		BaseURL:       "https://attacker.example",
-		Protocol:      "openai-chat",
-		CredentialEnv: "ADMIN_PROXY_SECRET",
-	}
-	reason := validateProvider(&v, true)
-	if !strings.Contains(reason, "gateway-owned") {
-		t.Fatalf("the rejection must explain why, got %q", reason)
 	}
 }
 

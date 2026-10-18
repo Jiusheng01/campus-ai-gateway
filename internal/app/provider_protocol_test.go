@@ -6,7 +6,9 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-func anthropicChannel() model.Provider {
+// The glossary's word for this concept is Provider, and the console only says
+// 渠道 to operators; new code and new test names use the domain term.
+func anthropicProvider() model.Provider {
 	return model.Provider{
 		Name:          "claude",
 		BaseURL:       "https://api.anthropic.com",
@@ -16,21 +18,21 @@ func anthropicChannel() model.Provider {
 }
 
 // The direct data plane sends the OpenAI chat body it received straight to the
-// channel. A channel marked for another wire format therefore fails on the
+// provider. A provider marked for another wire format therefore fails on the
 // first real request, which is an outage; refusing it when it is saved is a
 // configuration error instead.
 func TestDirectPlaneRefusesAProtocolItCannotSpeak(t *testing.T) {
 	for _, protocol := range []string{"anthropic", "gemini", "openai-responses"} {
-		v := anthropicChannel()
+		v := anthropicProvider()
 		v.Protocol = protocol
 		if reason := validateProvider(&v, true); reason == "" {
-			t.Fatalf("%s must be refused when the gateway dials the channel itself", protocol)
+			t.Fatalf("%s must be refused when the gateway dials the provider itself", protocol)
 		}
 	}
 }
 
 func TestDirectPlaneAcceptsTheProtocolItDoesSpeak(t *testing.T) {
-	v := anthropicChannel()
+	v := anthropicProvider()
 	v.Protocol = "openai-chat"
 	if reason := validateProvider(&v, true); reason != "" {
 		t.Fatalf("openai-chat is what the direct plane speaks, got %q", reason)
@@ -38,12 +40,12 @@ func TestDirectPlaneAcceptsTheProtocolItDoesSpeak(t *testing.T) {
 }
 
 // ThinkWatch performs the translation, so the wider enum stays available there
-// - with the SAME channel definition the direct mode just refused. If the two
-// modes disagreed about the channel itself, the protocol field would mean two
+// - with the SAME provider definition the direct mode just refused. If the two
+// modes disagreed about the provider itself, the protocol field would mean two
 // different things depending on deployment.
 func TestThinkWatchModeAcceptsTheWiderProtocolEnum(t *testing.T) {
 	for _, protocol := range []string{"openai-chat", "openai-responses", "anthropic", "gemini"} {
-		v := anthropicChannel()
+		v := anthropicProvider()
 		v.Protocol = protocol
 		if reason := validateProvider(&v, false); reason != "" {
 			t.Fatalf("%s must be accepted when ThinkWatch translates, got %q", protocol, reason)
@@ -55,7 +57,7 @@ func TestThinkWatchModeAcceptsTheWiderProtocolEnum(t *testing.T) {
 // change the enum or the default. An empty protocol still means the OpenAI chat
 // format, and a value nobody defined is still refused in both modes.
 func TestProtocolEnumAndDefaultAreUnchanged(t *testing.T) {
-	empty := anthropicChannel()
+	empty := anthropicProvider()
 	empty.Protocol = ""
 	if reason := validateProvider(&empty, false); reason != "" {
 		t.Fatalf("an empty protocol must be defaulted rather than refused: %q", reason)
@@ -65,7 +67,7 @@ func TestProtocolEnumAndDefaultAreUnchanged(t *testing.T) {
 	}
 
 	for _, direct := range []bool{true, false} {
-		unknown := anthropicChannel()
+		unknown := anthropicProvider()
 		unknown.Protocol = "carrier-pigeon"
 		if reason := validateProvider(&unknown, direct); reason == "" {
 			t.Fatalf("an undefined protocol must be refused (direct=%v)", direct)
@@ -75,13 +77,13 @@ func TestProtocolEnumAndDefaultAreUnchanged(t *testing.T) {
 
 // The strictness has to follow the configured data plane rather than a
 // hard-coded value, which is what lets a ThinkWatch deployment keep saving an
-// anthropic channel. The decision is read from the same predicate the write
+// anthropic provider. The decision is read from the same predicate the write
 // handlers use, so the two cannot drift apart.
 func TestProtocolStrictnessFollowsTheConfiguredDataPlane(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		cfg      Config
-		refused  bool
+		name    string
+		cfg     Config
+		refused bool
 	}{
 		{name: "explicit direct", cfg: Config{DataPlane: DataPlaneDirect}, refused: true},
 		{name: "explicit thinkwatch", cfg: Config{DataPlane: DataPlaneThinkWatch}, refused: false},
@@ -90,13 +92,13 @@ func TestProtocolStrictnessFollowsTheConfiguredDataPlane(t *testing.T) {
 		{name: "zero value stays on ThinkWatch", cfg: Config{}, refused: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			v := anthropicChannel()
+			v := anthropicProvider()
 			reason := validateProvider(&v, !tc.cfg.UsesThinkWatch())
 			if tc.refused && reason == "" {
-				t.Fatal("expected the channel to be refused")
+				t.Fatal("expected the provider to be refused")
 			}
 			if !tc.refused && reason != "" {
-				t.Fatalf("expected the channel to be accepted, got %q", reason)
+				t.Fatalf("expected the provider to be accepted, got %q", reason)
 			}
 		})
 	}
