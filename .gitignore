@@ -21,10 +21,6 @@ Thumbs.db
 # `npm --prefix web/admin run build` before the Go build.
 internal/app/adminui/dist/assets/
 
-# Agent working state: local memory logs, scratch scripts and browser
-# profiles from acceptance runs. Machine-local, never shared.
-.workbuddy-ai/
-
 # Spec and ticket notes written by the issue-tracker workflow described in
 # docs/agents/issue-tracker.md. They quote local paths, audit notes and the
 # results of local verification runs, so they belong to the machine that wrote
