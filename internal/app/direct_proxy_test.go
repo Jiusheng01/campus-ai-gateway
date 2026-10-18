@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
@@ -198,22 +197,6 @@ func TestShouldFailover(t *testing.T) {
 		if got := shouldFailover(status); got != want {
 			t.Errorf("shouldFailover(%d) = %v, want %v", status, got, want)
 		}
-	}
-}
-
-func TestExcerptCutsOnARuneBoundary(t *testing.T) {
-	// 100 Chinese characters, three bytes each. Cutting at a byte offset would
-	// split one of them and produce invalid UTF-8.
-	body := strings.Repeat("渠道不可用", 25)
-	got := excerpt([]byte(body), 10)
-	if !utf8.ValidString(got) {
-		t.Fatalf("excerpt produced invalid UTF-8: %q", got)
-	}
-	if utf8.RuneCountInString(got) != 11 { // 10 runes plus the ellipsis
-		t.Fatalf("excerpt rune count = %d, want 11", utf8.RuneCountInString(got))
-	}
-	if got := excerpt([]byte("  short\n\nerror  "), 100); got != "short error" {
-		t.Fatalf("whitespace must be collapsed, got %q", got)
 	}
 }
 

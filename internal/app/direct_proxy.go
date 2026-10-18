@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -300,9 +299,20 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	// which reads as "nothing was attempted" rather than "everything was".
 	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
 
-	// The client gets a stable code and the attempt count; the detail goes to
-	// the server log. An upstream body or a dial error can carry internal
-	// addresses and upstream credentials, and the caller cannot act on either.
+	// The client gets a stable code and the attempt count; the server log gets
+	// the gateway's own facts about the failure. Neither carries upstream
+	// content.
+	//
+	// R4: the log used to quote the upstream error body and the raw transport
+	// error. Both are places a channel credential reaches. An upstream that
+	// reflects the Authorization header it was sent puts the gateway's channel
+	// key in its error body, and a url.Error quotes the dialled target, so a
+	// malformed base_url carrying userinfo has its password printed verbatim.
+	// The log is retained, shipped and read by people who are not entitled to
+	// the channel secret, so nothing upstream-derived is written to it. What
+	// stays is the gateway's own observation - request id, model, status,
+	// channel, attempt count and body size - plus a fixed phrase chosen from
+	// the error's type.
 	switch {
 	case lastStatus != 0:
 		// Every line answered, none usefully. Report the last status rather
@@ -310,14 +320,15 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		// gateway failure.
 		//
 		// The model name is client-supplied, so it is single-lined before it
-		// reaches the log; the request id ties the line to its log row.
-		log.Printf("direct: request %s model %q failed on every channel; last status %d from %s: %s",
-			reqID, oneLine(envelope.Model), lastStatus, oneLine(lastChannel), excerpt(lastBody, 500))
+		// reaches the log; the request id ties the line to its log row. The
+		// body is reported as a size, never quoted.
+		log.Printf("direct: request %s model %q failed on every channel after %d attempt(s); last status %d from %s, response body %d bytes",
+			reqID, oneLine(envelope.Model), attempts, lastStatus, oneLine(lastChannel), len(lastBody))
 		httpx.Error(w, lastStatus, "upstream_error",
 			fmt.Sprintf("all %d channel(s) failed; last status %d", attempts, lastStatus), reqID)
 	case lastErr != nil:
-		log.Printf("direct: request %s model %q could not reach channel %s: %v",
-			reqID, oneLine(envelope.Model), oneLine(lastChannel), lastErr)
+		log.Printf("direct: request %s model %q could not reach channel %s: %s",
+			reqID, oneLine(envelope.Model), oneLine(lastChannel), directFailureReason(lastErr))
 		if detail := clientSafeFailure(lastErr); detail != "" {
 			httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
 				"no channel could serve the request: "+detail, reqID)
@@ -358,6 +369,35 @@ type missingCredentialError struct {
 
 func (e missingCredentialError) Error() string {
 	return fmt.Sprintf("channel %s: %s is empty", e.Channel, e.Env)
+}
+
+// directFailureReason classifies a failed attempt for the server log.
+//
+// A transport error's text is not safe to write. net/http wraps a dial failure
+// in a url.Error that quotes the dialled URL, and a base_url the gateway cannot
+// parse is quoted verbatim - userinfo and password included - in the error the
+// direct plane builds from it. This returns a fixed phrase selected from the
+// error's type, never its message, so no credential that reached the error can
+// reach the log.
+//
+// A missing credential is the one case that keeps real text, and it is shared
+// with the caller-facing summary on purpose: it names an environment variable,
+// never its value, and it is the single failure an operator can fix from the
+// log line alone. Reusing clientSafeFailure keeps the two audiences from
+// drifting apart.
+func directFailureReason(err error) string {
+	if detail := clientSafeFailure(err); detail != "" {
+		return detail
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "the channel host could not be resolved"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "the channel did not answer in time"
+	}
+	return "the channel could not be reached"
 }
 
 // attemptDirect sends one request to one channel.
@@ -662,21 +702,6 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 		message += ": " + strings.Join(failures, "; ")
 	}
 	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", message, reqID)
-}
-
-// excerpt renders an upstream body for an error message: single line, bounded,
-// and cut on a rune boundary.
-//
-// The rune boundary is not pedantry. Upstream error bodies are routinely
-// Chinese, and slicing the byte string at an arbitrary offset produces invalid
-// UTF-8 that the console then renders as a replacement character — which reads
-// like a gateway bug rather than the upstream's message.
-func excerpt(body []byte, limit int) string {
-	text := strings.TrimSpace(strings.Join(strings.Fields(string(body)), " "))
-	if utf8.RuneCountInString(text) <= limit {
-		return text
-	}
-	return string([]rune(text)[:limit]) + "…"
 }
 
 // oneLine collapses a client-supplied value to a single line for logging, so a
