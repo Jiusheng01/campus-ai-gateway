@@ -40,7 +40,7 @@ export function ProviderForm({
       {/* Editing an existing supplier must never silently overwrite its
           configuration, so the template picker only appears on create. */}
       {isNew && (
-        <Field label="供应商模板" hint="模板只用于预填默认值，选择后所有字段仍可手工修改。">
+        <Field label="渠道模板" hint="模板只用于预填默认值，选择后所有字段仍可手工修改。">
           <select value={templateId} onChange={e => applyTemplate(e.target.value)}>
             {providerTemplates.map(t => (
               <option key={t.id} value={t.id}>
@@ -51,11 +51,11 @@ export function ProviderForm({
         </Field>
       )}
 
-      <Field label="供应商名称" hint="配置标识，例如 qwen、deepseek、glm。">
+      <Field label="渠道名称" hint="配置标识，例如 qwen、deepseek、glm。">
         <input value={v.name || ''} onChange={e => setV({...v, name: e.target.value})} />
       </Field>
 
-      <Field label="接口协议">
+      <Field label="接口协议" hint="直连数据面只支持 OpenAI Compatible；其他协议需要由 ThinkWatch 转换。">
         <select value={v.protocol || 'openai-chat'} onChange={e => setV({...v, protocol: e.target.value})}>
           {PROTOCOLS.map(p => (
             <option key={p} value={p}>
@@ -69,13 +69,16 @@ export function ProviderForm({
         <input className="mono" value={v.base_url || ''} onChange={e => setV({...v, base_url: e.target.value})} />
       </Field>
 
-      <Field label="凭据环境变量" hint="网关进程环境变量的名称，例如 DASHSCOPE_API_KEY。">
+      <Field
+        label="凭据环境变量"
+        hint="网关进程环境变量的名称，例如 DASHSCOPE_API_KEY。不能填网关自身的变量（ADMIN_、THINKWATCH_、DATABASE_、REDIS_ 等），否则等于把管理密钥交给这条渠道。"
+      >
         <input className="mono" value={v.credential_env || ''} onChange={e => setV({...v, credential_env: e.target.value})} />
       </Field>
 
       <div className="notice info">
         <Info aria-hidden />
-        这里只保存凭据环境变量名称，不保存真实厂商 API Key。
+        这里只保存凭据环境变量名称，不保存真实厂商 API 密钥。
       </div>
 
       <Field label="状态">
@@ -88,7 +91,7 @@ export function ProviderForm({
       <div className="formActions">
         <Button onClick={onCancel}>取消</Button>
         <Button variant="primary" type="submit" icon={isNew ? <Plus /> : undefined}>
-          {isNew ? '创建供应商' : '保存修改'}
+          {isNew ? '创建渠道' : '保存修改'}
         </Button>
       </div>
     </form>

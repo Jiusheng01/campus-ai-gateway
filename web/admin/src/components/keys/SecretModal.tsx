@@ -23,7 +23,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
   const copy = async () => {
     if (await copyText(value)) {
       setCopied(true)
-      toast.success('API Key 已复制到剪贴板')
+      toast.success('API 密钥已复制到剪贴板')
     } else {
       toast.error('复制失败，请手动选择并复制')
     }
@@ -35,7 +35,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
       return
     }
     const ok = await confirm({
-      title: '尚未确认已保存 API Key',
+      title: '尚未确认已保存 API 密钥',
       description: '完整 Key 只显示一次，关闭后无法再次查看。确定要关闭吗？',
       confirmText: '仍然关闭',
       cancelText: '返回保存',
@@ -46,7 +46,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
 
   return (
     <Modal
-      title="API Key 创建成功"
+      title="API 密钥创建成功"
       subtitle="完整 Key 只显示一次，关闭后无法再次查看。"
       dismissable={false}
       onClose={() => void guardedClose()}
@@ -64,7 +64,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
         <p>请立即复制并妥善保存到业务系统的密钥管理位置。</p>
         <code className="secretValue">{value}</code>
         <Button icon={<Copy />} onClick={() => void copy()}>
-          {copied ? '已复制' : '复制 API Key'}
+          {copied ? '已复制' : '复制 API 密钥'}
         </Button>
       </div>
 

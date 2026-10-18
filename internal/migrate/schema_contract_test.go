@@ -2,6 +2,10 @@ package migrate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -308,6 +312,39 @@ func TestFinalSchemaRejectsWrongUsernameIndexDefinition(t *testing.T) {
 	}
 }
 
+// declaredIndexPattern matches the index names the migration files create. The
+// name is the only thing this reads; the definition is checked against the live
+// catalog below, which is where a wrong expression would show up.
+var declaredIndexPattern = regexp.MustCompile(`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)`)
+
+// declaredIndexNames returns every index the migration set declares, in
+// filename order.
+func declaredIndexNames(t *testing.T) []string {
+	t.Helper()
+	files := listMigrationFiles(t, repoMigrations)
+	sort.Strings(files)
+	var out []string
+	for _, name := range files {
+		body, err := os.ReadFile(filepath.Join(repoMigrations, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, m := range declaredIndexPattern.FindAllStringSubmatch(string(body), -1) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// TestFinalSchemaDetectsEveryDeclaredRuntimeIndex keeps the contract and the
+// migrations in step in both directions.
+//
+// It compares the two *sets* rather than counting entries against a constant.
+// A hand-maintained number cannot tell a missing contract entry from a
+// miscount: it fails the same way whichever side is wrong, and the person
+// reading the failure has to work out which. Naming the discrepancy does that
+// work for them. It also means this test never has to be edited when a
+// migration is added — which is the moment it most needs to still be correct.
 func TestFinalSchemaDetectsEveryDeclaredRuntimeIndex(t *testing.T) {
 	url := isolatedDatabase(t)
 	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
@@ -317,9 +354,24 @@ func TestFinalSchemaDetectsEveryDeclaredRuntimeIndex(t *testing.T) {
 	defer conn.Close(context.Background())
 
 	_, _, _, indexes, _ := finalSchemaContract()
-	if len(indexes) != 18 {
-		t.Fatalf("contract covers %d named indexes, migrations declare 18", len(indexes))
+	inContract := make(map[string]bool, len(indexes))
+	for _, idx := range indexes {
+		inContract[idx.Name] = true
 	}
+	declared := declaredIndexNames(t)
+	isDeclared := make(map[string]bool, len(declared))
+	for _, name := range declared {
+		isDeclared[name] = true
+		if !inContract[name] {
+			t.Errorf("migration declares index %s but the contract does not cover it", name)
+		}
+	}
+	for _, idx := range indexes {
+		if !isDeclared[idx.Name] {
+			t.Errorf("the contract covers index %s that no migration declares", idx.Name)
+		}
+	}
+
 	for _, idx := range indexes {
 		t.Run(idx.Name, func(t *testing.T) {
 			if _, err := conn.Exec(context.Background(), `DROP INDEX `+quoteIdent(idx.Name)); err != nil {

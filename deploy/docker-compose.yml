@@ -56,6 +56,11 @@ services:
       DATABASE_URL: "postgres://campus:campus@postgres:5432/campus_gateway?sslmode=disable"
       REDIS_ADDR: "redis:6379"
       API_KEY_HMAC_SECRET: "change-me-in-production"
+      # Which data plane to run. "auto" means: ThinkWatch if THINKWATCH_URL is
+      # set, otherwise the gateway dials the channels itself. Delete
+      # THINKWATCH_URL (and the extra_hosts entry below) for a single-process
+      # deployment that needs only PostgreSQL and Redis.
+      DATA_PLANE: "auto"
       THINKWATCH_URL: "http://host.docker.internal:8788"
       THINKWATCH_GATEWAY_KEY: ""
       ADMIN_TOKEN: "change-me-in-production"

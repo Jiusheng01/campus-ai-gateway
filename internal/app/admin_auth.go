@@ -85,6 +85,16 @@ func (s *Server) authenticateAdminTrustedHeader(r *http.Request) (adminPrincipal
 	if s.cfg.AdminProxySecret == "" {
 		return adminPrincipal{}, ErrAdminAuthDisabled
 	}
+	// The shared secret is the whole of the authentication in this mode, so
+	// the peer address is checked before it: a caller outside ADMIN_PROXY_CIDRS
+	// is refused without the secret ever being compared, which keeps an
+	// internet-facing port from turning a leaked string into an administrator.
+	//
+	// An empty list keeps the historical behaviour of accepting any peer. That
+	// is the compatible choice, not the safe one, and startup says so.
+	if len(s.cfg.AdminProxyCIDRs) > 0 && !s.peerInAdminProxyCIDRs(r) {
+		return adminPrincipal{}, ErrAdminUnauthenticated
+	}
 	got := strings.TrimSpace(r.Header.Get("X-Campus-Auth-Secret"))
 	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminProxySecret)) != 1 {
 		return adminPrincipal{}, ErrAdminUnauthenticated
@@ -166,6 +176,12 @@ func (p adminPrincipal) can(r *http.Request) bool {
 	if p.Roles[RoleAuditor] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
+			// The trend is the same telemetry /admin/status already returns,
+			// grouped by time, so a role that may read the status page may read
+			// the chart of it. It is named explicitly rather than covered by a
+			// prefix rule on /admin/status so a future endpoint under that path
+			// has to justify its own grant.
+			path == "/admin/status/trend",
 			strings.HasPrefix(path, "/admin/request-logs"),
 			path == "/admin/admin-audit",
 			path == "/admin/security-events":
@@ -173,7 +189,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		}
 	}
 	if p.Roles[RoleOperator] {
-		if method == http.MethodGet && path == "/admin/status" {
+		if method == http.MethodGet && (path == "/admin/status" || path == "/admin/status/trend") {
 			return true
 		}
 		// The connectivity test is a diagnostic, not an edit: an operator may
@@ -194,7 +210,8 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			path == "/admin/thinkwatch/sync",
 			path == "/admin/model-test",
 			path == "/admin/model-test-options",
-			path == "/admin/status":
+			path == "/admin/status",
+			path == "/admin/status/trend":
 			return true
 		}
 	}
@@ -264,11 +281,27 @@ func (s *Server) isTrustedProxy(ip string) bool {
 	if len(s.cfg.TrustedProxyCIDRs) == 0 || ip == "" {
 		return false
 	}
+	return s.ipInCIDRs(ip, s.cfg.TrustedProxyCIDRs)
+}
+
+// peerInAdminProxyCIDRs reports whether the direct peer may use trusted-header
+// authentication. It deliberately looks at RemoteAddr and not at any forwarding
+// header: the header is written by the caller, and the point of the list is to
+// be the one thing the caller cannot choose.
+func (s *Server) peerInAdminProxyCIDRs(r *http.Request) bool {
+	peer := remoteHost(r.RemoteAddr)
+	if peer == "" {
+		return false
+	}
+	return s.ipInCIDRs(peer, s.cfg.AdminProxyCIDRs)
+}
+
+func (s *Server) ipInCIDRs(ip string, cidrs []string) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return false
 	}
-	for _, entry := range s.cfg.TrustedProxyCIDRs {
+	for _, entry := range cidrs {
 		ipNet, _, err := parseCIDROrIP(entry)
 		if err != nil {
 			continue

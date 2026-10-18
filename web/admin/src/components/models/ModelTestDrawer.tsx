@@ -11,6 +11,8 @@ import {ms} from '../../lib/format'
 type TestResult = {
   content?: string
   model?: string
+  /** Which channel answered. Only reported by the direct data plane. */
+  channel?: string
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
@@ -20,19 +22,24 @@ type TestResult = {
 /**
  * 模型连通测试.
  *
- * This calls the admin API, which forwards through ThinkWatch straight to the
- * provider. It is NOT a business data-plane request: no virtual API key, no
- * tenant quota, and nothing lands in gateway_request_log. The copy says so
- * explicitly, because an operator debugging "why is production failing" would
- * otherwise read a green result as proof the data plane works.
+ * This calls the admin API, which reaches the provider along whichever data
+ * plane the gateway is running: through ThinkWatch, or — when ThinkWatch is not
+ * configured — straight to the channel. Either way it is NOT a business
+ * data-plane request: no virtual API key, no tenant quota, and nothing lands in
+ * gateway_request_log. The copy says so explicitly, because an operator
+ * debugging "why is production failing" would otherwise read a green result as
+ * proof the business path works.
  */
 export function ModelTestDrawer({
   models,
   initialModel,
+  direct = false,
   onClose,
 }: {
   models: ModelTestOption[]
   initialModel?: string
+  /** Whether the gateway is running the direct data plane. */
+  direct?: boolean
   onClose: () => void
 }) {
   const enabled = models.filter(m => m.status === 1)
@@ -77,7 +84,15 @@ export function ModelTestDrawer({
       <div className="drawerStack">
         <Notice>
           <Route aria-hidden />
-          此测试直接通过 ThinkWatch 验证模型线路，<b>不会</b>经过业务 API Key、租户配额和请求日志。
+          {direct ? (
+            <>
+              此测试由网关直接向渠道发起请求，<b>不会</b>经过业务 API 密钥、租户配额和使用日志。
+            </>
+          ) : (
+            <>
+              此测试通过 ThinkWatch 验证模型线路，<b>不会</b>经过业务 API 密钥、租户配额和使用日志。
+            </>
+          )}
         </Notice>
 
         <div className="form">
@@ -106,13 +121,14 @@ export function ModelTestDrawer({
               title="调用指标"
               rows={[
                 ['模型', result.model || model],
+                ...(result.channel ? ([['渠道', result.channel]] as [string, string][]) : []),
                 ['Input Tokens', result.input_tokens ?? 0],
                 ['Output Tokens', result.output_tokens ?? 0],
                 ['Total Tokens', result.total_tokens ?? 0],
                 ['延迟', ms(result.latency_ms || 0)],
               ]}
             />
-            <p className="authHint">此结果不会出现在业务请求日志中。</p>
+            <p className="authHint">此结果不会出现在业务使用日志中。</p>
           </>
         )}
       </div>

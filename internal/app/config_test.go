@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,5 +137,218 @@ func TestRefreshReplayGraceDefaultAndOverride(t *testing.T) {
 		if cfg.AdminRefreshReplayGrace != adminRefreshReplayGraceDefault {
 			t.Fatalf("ADMIN_REFRESH_REPLAY_GRACE=%q -> %s, want the %s default", raw, cfg.AdminRefreshReplayGrace, adminRefreshReplayGraceDefault)
 		}
+	}
+}
+
+// loadConfigWithPublicOrigin runs the real environment-parsing path with
+// ADMIN_PUBLIC_ORIGIN set to the given value.
+func loadConfigWithPublicOrigin(t *testing.T, value string) (Config, error) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("ADMIN_PUBLIC_ORIGIN", value)
+	return LoadConfig()
+}
+
+// ADMIN_PUBLIC_ORIGIN is reduced to the scheme://authority the same-origin check
+// compares against. An operator pasting the console URL is doing the obvious
+// thing, so the path is dropped rather than treated as an error; a value that
+// is not an http(s) origin is a real mistake and must fail startup instead of
+// quietly disconnecting the CSRF check.
+func TestAdminPublicOriginNormalisation(t *testing.T) {
+	cfg, err := loadConfigWithPublicOrigin(t, "https://gateway.example.edu/admin-ui/")
+	if err != nil {
+		t.Fatalf("a console URL must be accepted: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "https://gateway.example.edu" {
+		t.Fatalf("the path must be dropped, got %q", cfg.AdminPublicOrigin)
+	}
+
+	cfg, err = loadConfigWithPublicOrigin(t, "http://gateway.example.edu:8088")
+	if err != nil {
+		t.Fatalf("a non-default port must be accepted: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "http://gateway.example.edu:8088" {
+		t.Fatalf("the port must be preserved, got %q", cfg.AdminPublicOrigin)
+	}
+}
+
+func TestAdminPublicOriginRejectsWhatItCannotUse(t *testing.T) {
+	for _, raw := range []string{"gateway.example.edu", "ftp://gateway.example.edu", "https://"} {
+		if _, err := loadConfigWithPublicOrigin(t, raw); err == nil {
+			t.Fatalf("ADMIN_PUBLIC_ORIGIN=%q must be refused", raw)
+		}
+	}
+}
+
+// Unset is the common case and must stay a no-op: the check then rests on the
+// request's own authority.
+func TestAdminPublicOriginDefaultsToUnset(t *testing.T) {
+	cfg, err := loadConfigWithPublicOrigin(t, "")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AdminPublicOrigin != "" {
+		t.Fatalf("an unset ADMIN_PUBLIC_ORIGIN must stay empty, got %q", cfg.AdminPublicOrigin)
+	}
+}
+
+// --- data plane selection --------------------------------------------------
+
+// loadConfigWithDataPlane exercises the real environment-parsing path for the
+// two variables that decide which data plane the gateway runs.
+func loadConfigWithDataPlane(t *testing.T, dataPlane, thinkWatchURL string) (Config, error) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("DATA_PLANE", dataPlane)
+	t.Setenv("THINKWATCH_URL", thinkWatchURL)
+	return LoadConfig()
+}
+
+// The default is a rule, not a value: configuring THINKWATCH_URL keeps routing
+// through it, and not configuring it gets the in-process plane. Every entry
+// point in this repository sets THINKWATCH_URL, so existing deployments are
+// unchanged; a bare binary stops needing a second process.
+func TestDataPlaneAutoFollowsThinkWatchURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		dataPlane string
+		url       string
+		want      string
+		wantThink bool
+	}{
+		{name: "nothing configured means direct", dataPlane: "", url: "", want: DataPlaneDirect},
+		{name: "a configured URL means ThinkWatch", dataPlane: "", url: "http://127.0.0.1:8788", want: DataPlaneThinkWatch, wantThink: true},
+		{name: "auto is spelled out", dataPlane: "auto", url: "http://127.0.0.1:8788", want: DataPlaneThinkWatch, wantThink: true},
+		{name: "auto without a URL means direct", dataPlane: "AUTO", url: "  ", want: DataPlaneDirect},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadConfigWithDataPlane(t, tc.dataPlane, tc.url)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.DataPlane != tc.want {
+				t.Fatalf("DataPlane = %q, want %q", cfg.DataPlane, tc.want)
+			}
+			if cfg.UsesThinkWatch() != tc.wantThink {
+				t.Fatalf("UsesThinkWatch() = %v, want %v", cfg.UsesThinkWatch(), tc.wantThink)
+			}
+			if cfg.DataPlaneMode() != tc.want {
+				t.Fatalf("DataPlaneMode() = %q, want %q", cfg.DataPlaneMode(), tc.want)
+			}
+		})
+	}
+}
+
+// Naming the plane you want must win over the presence of a URL, otherwise an
+// operator could not opt out of ThinkWatch without deleting configuration other
+// tooling still reads.
+func TestDataPlaneExplicitDirectWinsOverAConfiguredURL(t *testing.T) {
+	cfg, err := loadConfigWithDataPlane(t, "direct", "http://127.0.0.1:8788")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.UsesThinkWatch() {
+		t.Fatalf("DATA_PLANE=direct must be honoured even when THINKWATCH_URL is set")
+	}
+}
+
+func TestDataPlaneThinkWatchRequiresAURL(t *testing.T) {
+	if _, err := loadConfigWithDataPlane(t, "thinkwatch", ""); err == nil {
+		t.Fatal("DATA_PLANE=thinkwatch without THINKWATCH_URL must fail startup rather than fall back")
+	}
+}
+
+func TestDataPlaneRejectsAnUnknownValue(t *testing.T) {
+	if _, err := loadConfigWithDataPlane(t, "thinkwatch-direct", "http://127.0.0.1:8788"); err == nil {
+		t.Fatal("an unknown DATA_PLANE must be rejected")
+	}
+}
+
+// url.Parse accepts "127.0.0.1:8788" and calls "127.0.0.1" the scheme, which
+// would surface as a dial error on the first business request instead of a
+// startup failure.
+func TestDataPlaneRejectsAThinkWatchURLWithoutAScheme(t *testing.T) {
+	if _, err := loadConfigWithDataPlane(t, "thinkwatch", "127.0.0.1:8788"); err == nil {
+		t.Fatal("a THINKWATCH_URL without an http(s) scheme must be rejected")
+	}
+}
+
+// A Config built as a literal — in a test, or by a caller that predates this
+// field — must keep the old behaviour. Opting out of a routing process has to
+// be deliberate, never the consequence of a field nobody set.
+func TestZeroValueConfigKeepsThinkWatch(t *testing.T) {
+	var cfg Config
+	if !cfg.UsesThinkWatch() {
+		t.Fatal("a zero-value Config must not switch the deployment onto the direct plane")
+	}
+	if cfg.DataPlaneMode() != DataPlaneThinkWatch {
+		t.Fatalf("DataPlaneMode() = %q, want %q", cfg.DataPlaneMode(), DataPlaneThinkWatch)
+	}
+}
+
+// setConfigEnv applies the environment LoadConfig needs to get as far as the
+// Admin UI settings. The cases that care about a particular field override it
+// after calling this, so the five values that only have to be present are
+// stated once.
+func setConfigEnv(t *testing.T, adminAuthMode string) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "phase1-session-signing-secret-value")
+	t.Setenv("DATA_PLANE", "direct")
+	t.Setenv("THINKWATCH_URL", "")
+	t.Setenv("ADMIN_AUTH_MODE", adminAuthMode)
+}
+
+// trusted-header trusts one shared string for the entire control plane, so a
+// short one is not a weak setting — it is an open door. Refusing to start is
+// the only response that cannot be ignored by accident.
+func TestTrustedHeaderRequiresALongProxySecret(t *testing.T) {
+	base := func(t *testing.T) {
+		setConfigEnv(t, "trusted-header")
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", "short")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("a short ADMIN_PROXY_SECRET must stop startup in trusted-header mode")
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("a full-length secret must be accepted: %v", err)
+	}
+	if !cfg.AdminAuthModeTrustedHeader() {
+		t.Fatal("AdminAuthModeTrustedHeader must agree with the configured mode")
+	}
+	if len(cfg.AdminProxyCIDRs) != 0 {
+		t.Fatalf("an unset ADMIN_PROXY_CIDRS must stay empty, got %#v", cfg.AdminProxyCIDRs)
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	t.Setenv("ADMIN_PROXY_CIDRS", "10.0.0.0/8, 127.0.0.1")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatalf("valid CIDRs must be accepted: %v", err)
+	}
+	if len(cfg.AdminProxyCIDRs) != 2 {
+		t.Fatalf("want two parsed entries, got %#v", cfg.AdminProxyCIDRs)
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	t.Setenv("ADMIN_PROXY_CIDRS", "not-an-address")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("an invalid ADMIN_PROXY_CIDRS entry must be rejected at startup")
 	}
 }

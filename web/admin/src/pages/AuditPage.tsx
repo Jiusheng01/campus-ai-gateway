@@ -17,7 +17,7 @@ export function AuditPage() {
   const rows = data || []
 
   return (
-    <Panel title="管理审计" sub="记录管理员对控制面发起的修改操作与登录事件，最多显示最近 200 条。">
+    <Panel title="审计日志" sub="记录管理员对控制面发起的修改操作与登录事件，最多显示最近 200 条。">
       {loading && !data ? (
         <SkeletonRows rows={8} columns={7} />
       ) : error ? (
@@ -45,7 +45,7 @@ export function AuditPage() {
           ))}
         </Table>
       ) : (
-        <EmptyState icon={<Database />} title="暂无管理审计记录" description="管理员执行修改操作后会在此留下记录。" />
+        <EmptyState icon={<Database />} title="暂无审计日志记录" description="管理员执行修改操作后会在此留下记录。" />
       )}
     </Panel>
   )

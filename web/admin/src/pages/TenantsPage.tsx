@@ -130,7 +130,7 @@ export function TenantsPage() {
           <EmptyState
             icon={<Users />}
             title="暂无租户"
-            description="创建租户后即可为业务系统签发 API Key 并设置配额。"
+            description="创建租户后即可为业务系统签发 API 密钥并设置配额。"
             action={
               <Button variant="primary" icon={<Plus />} onClick={() => setDraft({status: 1})}>
                 新增租户

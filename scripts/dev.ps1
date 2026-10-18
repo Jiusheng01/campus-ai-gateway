@@ -2,6 +2,9 @@ param(
     [switch]$ForceRestart,
     [switch]$SkipTests,
     [switch]$NoBrowser,
+    # Run the gateway's own data plane instead of ThinkWatch. Equivalent to
+    # setting DATA_PLANE=direct, and it stops this script from starting twcore.
+    [switch]$Direct,
     [string]$AdminToken = "campus-admin-local-secret",
     [string]$HmacSecret = "campus-local-test-secret"
 )
@@ -233,7 +236,32 @@ if (-not $env:API_KEY_HMAC_SECRET) {
     $env:API_KEY_HMAC_SECRET = $HmacSecret
 }
 $env:REDIS_ADDR = "127.0.0.1:6379"
-$env:THINKWATCH_URL = "http://127.0.0.1:8788"
+
+# ThinkWatch is optional. The gateway runs the direct data plane when
+# THINKWATCH_URL is empty, so an operator who does not want a second process
+# sets DATA_PLANE=direct (or just leaves THINKWATCH_URL blank) and this script
+# stops trying to start twcore. The default stays "use ThinkWatch if it is
+# configured", which is what every existing local setup expects.
+if (-not $env:DATA_PLANE) {
+    $env:DATA_PLANE = "auto"
+}
+if ($Direct) {
+    $env:DATA_PLANE = "direct"
+}
+if ($env:DATA_PLANE -eq "direct") {
+    $env:THINKWATCH_URL = ""
+}
+elseif (-not $env:THINKWATCH_URL) {
+    $env:THINKWATCH_URL = "http://127.0.0.1:8788"
+}
+
+$useThinkWatch = $env:DATA_PLANE -ne "direct" -and [bool]$env:THINKWATCH_URL
+if ($useThinkWatch) {
+    Write-Host ("       Data plane: ThinkWatch (" + $env:THINKWATCH_URL + ")")
+}
+else {
+    Write-Host "       Data plane: direct (channels are dialled in-process)"
+}
 
 if (-not $env:THINKWATCH_CONFIG_PATH) {
     if ($env:APPDATA) {
@@ -252,8 +280,11 @@ if (-not $env:TWCORE_EXE) {
     }
 }
 
-$thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 1
-if (-not $thinkWatchRunning) {
+$thinkWatchRunning = $false
+if ($useThinkWatch) {
+    $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 1
+}
+if ($useThinkWatch -and -not $thinkWatchRunning) {
     $twExe = $env:TWCORE_EXE
     if ($twExe -and (Test-Path $twExe)) {
         if (-not $env:DASHSCOPE_API_KEY) {
@@ -291,12 +322,12 @@ if (-not $thinkWatchRunning) {
 if ($thinkWatchRunning) {
     Write-Ok "ThinkWatch is listening on :8788"
 }
-else {
+elseif ($useThinkWatch) {
     Write-Warn "ThinkWatch is not running on :8788 and twcore.exe could not be started automatically."
     Write-Warn "Set TWCORE_EXE once if automatic detection cannot find your installation."
 }
 
-if (-not $env:THINKWATCH_GATEWAY_KEY) {
+if ($useThinkWatch -and -not $env:THINKWATCH_GATEWAY_KEY) {
     Write-Warn "THINKWATCH_GATEWAY_KEY is not set. The admin UI can still open, but real model proxy requests may fail."
 }
 

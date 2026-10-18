@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -42,6 +43,23 @@ const adminSessionDerivationLabel = "campus-admin-session-v1"
 // deliberately; zero would turn ordinary races into account-wide lockouts.
 const adminRefreshReplayGraceDefault = 5 * time.Second
 
+// The two data planes.
+//
+// "thinkwatch" hands every business request to ThinkWatch Core, which owns
+// model resolution, failover and upstream credentials. "direct" resolves the
+// model against gateway_model_route and dials the channel in-process, so a
+// deployment that has exactly one API key does not have to run a second
+// process to make a single call.
+//
+// They are not equivalent, and the difference is deliberate rather than
+// incidental: ThinkWatch adds weighted routing and circuit breaking, which
+// need per-channel state that outlives a request. A deployment that needs
+// those keeps THINKWATCH_URL set.
+const (
+	DataPlaneThinkWatch = "thinkwatch"
+	DataPlaneDirect     = "direct"
+)
+
 type Config struct {
 	HTTPAddr             string
 	DatabaseURL          string
@@ -54,6 +72,16 @@ type Config struct {
 	ThinkWatchConfigPath string
 	ThinkWatchExe        string
 
+	// DataPlane is the resolved data plane: DataPlaneThinkWatch or
+	// DataPlaneDirect. It is derived in LoadConfig from DATA_PLANE and
+	// THINKWATCH_URL so no caller has to re-derive the rule, and so an
+	// unset THINKWATCH_URL means one thing everywhere.
+	//
+	// A zero value reads as ThinkWatch: a Config literal that predates this
+	// field must not silently switch a deployment onto a data plane nobody
+	// configured.
+	DataPlane string
+
 	// AdminToken is the break-glass credential. It only takes effect when
 	// ADMIN_AUTH_MODE is "token"; in "session" mode it is ignored so a stale
 	// environment variable cannot silently bypass the login system.
@@ -63,6 +91,17 @@ type Config struct {
 	AdminUserHeader  string
 	AdminRolesHeader string
 
+	// AdminProxyCIDRs limits which peers may present the trusted-header
+	// credentials at all.
+	//
+	// In trusted-header mode the only thing standing between an anonymous
+	// caller and super_admin is one shared string. Anyone who can reach the
+	// port and learns that string is an administrator, so the peer address is
+	// a second, independent condition rather than a nicety. Leaving the list
+	// empty keeps the historical behaviour — any peer may try — which is why
+	// startup says so out loud instead of failing.
+	AdminProxyCIDRs []string
+
 	// Admin session authentication.
 	AdminAccessTTL         time.Duration // lifetime of an access token
 	AdminRefreshTTL        time.Duration // lifetime of a session and its refresh cookie
@@ -71,6 +110,17 @@ type Config struct {
 	AdminCookieSecure      bool          // add Secure to the refresh cookie (needs HTTPS)
 	AdminSetupLocalOnly    bool          // first-run setup is localhost-only
 	TrustedProxyCIDRs      []string      // proxies whose X-Forwarded-For we trust
+
+	// AdminPublicOrigin is the browser-facing origin of the console, such as
+	// "https://gateway.example.edu". It is optional and only consulted by the
+	// same-origin check that guards the cookie-authenticated endpoints.
+	//
+	// It exists for proxies that rewrite Host to something the browser never
+	// said — an internal service name, an upstream port — where comparing the
+	// Origin header against the request's own authority can never match and
+	// every refresh would look like a cross-site request. Setting it gives the
+	// gateway a second, explicit authority to accept.
+	AdminPublicOrigin string
 	AdminBootstrapUsername string        // optional non-interactive bootstrap
 	AdminBootstrapPassword string
 
@@ -116,7 +166,7 @@ func LoadConfig() (Config, error) {
 		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
 		RedisDB:              int(getenvInt64("REDIS_DB", 0)),
 		KeyHMACSecret:        os.Getenv("API_KEY_HMAC_SECRET"),
-		ThinkWatchURL:        getenv("THINKWATCH_URL", "http://127.0.0.1:8788"),
+		ThinkWatchURL:        strings.TrimSpace(os.Getenv("THINKWATCH_URL")),
 		ThinkWatchKey:        os.Getenv("THINKWATCH_GATEWAY_KEY"),
 		ThinkWatchConfigPath: getenv("THINKWATCH_CONFIG_PATH", defaultThinkWatchConfigPath()),
 		ThinkWatchExe:        os.Getenv("TWCORE_EXE"),
@@ -126,6 +176,7 @@ func LoadConfig() (Config, error) {
 		AdminProxySecret: os.Getenv("ADMIN_PROXY_SECRET"),
 		AdminUserHeader:  getenv("ADMIN_USER_HEADER", "X-Forwarded-User"),
 		AdminRolesHeader: getenv("ADMIN_ROLES_HEADER", "X-Forwarded-Groups"),
+		AdminProxyCIDRs:  splitCSV(os.Getenv("ADMIN_PROXY_CIDRS")),
 
 		AdminAccessTTL:         getenvDuration("ADMIN_ACCESS_TTL", 15*time.Minute),
 		AdminRefreshTTL:        getenvDuration("ADMIN_REFRESH_TTL", 30*24*time.Hour),
@@ -151,8 +202,20 @@ func LoadConfig() (Config, error) {
 	if cfg.KeyHMACSecret == "" {
 		return Config{}, errors.New("API_KEY_HMAC_SECRET is required")
 	}
+	dataPlane, err := resolveDataPlane(os.Getenv("DATA_PLANE"), cfg.ThinkWatchURL)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DataPlane = dataPlane
 	if s := strings.TrimSpace(cfg.AdminSessionSecret); s != "" && len(s) < AdminSessionSecretMinBytes {
 		return Config{}, errors.New("ADMIN_SESSION_SECRET must be at least 32 bytes of entropy")
+	}
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_PUBLIC_ORIGIN")); raw != "" {
+		origin, err := normalizePublicOrigin(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.AdminPublicOrigin = origin
 	}
 	if cfg.AdminRefreshReplayGrace <= 0 {
 		return Config{}, errors.New("ADMIN_REFRESH_REPLAY_GRACE must be positive")
@@ -187,7 +250,53 @@ func LoadConfig() (Config, error) {
 			return Config{}, errors.New("TRUSTED_PROXY_CIDRS contains an invalid entry: " + cidr)
 		}
 	}
+	for _, cidr := range cfg.AdminProxyCIDRs {
+		if _, _, err := parseCIDROrIP(cidr); err != nil {
+			return Config{}, errors.New("ADMIN_PROXY_CIDRS contains an invalid entry: " + cidr)
+		}
+	}
+	// The same predicate the request path uses, so the rule applied at load
+	// time and the rule applied per request cannot disagree about what this
+	// mode is.
+	if cfg.AdminAuthModeTrustedHeader() {
+		// This mode trusts one shared string for the whole control plane. A
+		// short or absent secret is not a weak configuration, it is an open
+		// door, and it is worth refusing to start over — an operator who
+		// meant to enable the mode will read the error, while one who set it
+		// by accident gets a loud stop instead of a silent takeover.
+		if len(cfg.AdminProxySecret) < minAdminProxySecretLen {
+			return Config{}, errors.New("ADMIN_PROXY_SECRET must be at least " + strconv.Itoa(minAdminProxySecretLen) + " characters in trusted-header mode")
+		}
+	}
 	return cfg, nil
+}
+
+// minAdminProxySecretLen is the shortest shared secret trusted-header mode will
+// accept. It matches the length a generated 128-bit hex token occupies, so the
+// documented way of producing one always satisfies it.
+const minAdminProxySecretLen = 32
+
+// normalizePublicOrigin validates an ADMIN_PUBLIC_ORIGIN value and reduces it
+// to the scheme://authority form the same-origin check compares against.
+//
+// A path, query or fragment is dropped rather than rejected: an operator who
+// pastes the console URL — "https://gateway.example.edu/admin-ui/" — means the
+// origin of that URL, and refusing it would be a trap. A missing scheme or
+// authority is a real mistake and fails startup instead of silently
+// disconnecting the CSRF check from what the operator intended.
+func normalizePublicOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN is not a valid URL")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return "", errors.New("ADMIN_PUBLIC_ORIGIN must include a host")
+	}
+	return scheme + "://" + u.Host, nil
 }
 
 // parseCIDROrIP accepts either a CIDR block or a bare address. A bare address is
@@ -217,6 +326,91 @@ func parseCIDROrIP(raw string) (*net.IPNet, net.IP, error) {
 // for existing deployments and are treated as opt-in legacy paths.
 func (c Config) SessionAuthEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "session")
+}
+
+// AdminAuthModeTrustedHeader reports whether identities come from an
+// authenticating reverse proxy rather than from the gateway's own login.
+func (c Config) AdminAuthModeTrustedHeader() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "trusted-header")
+}
+
+// UsesThinkWatch reports whether business traffic is proxied to ThinkWatch Core.
+//
+// Anything other than an explicit "direct" means yes, so a Config that never
+// went through LoadConfig keeps the behaviour it had before the direct data
+// plane existed. Opting out of a routing process has to be a deliberate act,
+// never the consequence of a field nobody set.
+func (c Config) UsesThinkWatch() bool {
+	return c.DataPlane != DataPlaneDirect
+}
+
+// DataPlaneMode returns the resolved mode, defaulting to ThinkWatch for the
+// same reason UsesThinkWatch does.
+func (c Config) DataPlaneMode() string {
+	if c.UsesThinkWatch() {
+		return DataPlaneThinkWatch
+	}
+	return DataPlaneDirect
+}
+
+// resolveDataPlane turns DATA_PLANE and THINKWATCH_URL into one answer.
+//
+// The default is "auto", which is a rule rather than a value: a deployment that
+// configured THINKWATCH_URL keeps routing through it, and a deployment that did
+// not gets the in-process plane. That keeps existing installations unchanged —
+// every entry point in this repository sets THINKWATCH_URL — while making the
+// single-process setup the thing you get by doing nothing.
+//
+// "thinkwatch" without a URL is a startup error rather than a silent fallback:
+// an operator who named the data plane they wanted and got a different one
+// would have no way to notice until a request behaved differently than
+// expected.
+func resolveDataPlane(requested, thinkWatchURL string) (string, error) {
+	thinkWatchURL = strings.TrimSpace(thinkWatchURL)
+	switch strings.ToLower(strings.TrimSpace(requested)) {
+	case "", "auto":
+		if thinkWatchURL == "" {
+			return DataPlaneDirect, nil
+		}
+		// The same validation the explicit branch applies. Auto is the
+		// default for every deployment that sets THINKWATCH_URL, so leaving
+		// it unchecked would make the malformed-URL failure depend on whether
+		// the operator happened to name the mode.
+		if err := validateUpstreamURL(thinkWatchURL); err != nil {
+			return "", err
+		}
+		return DataPlaneThinkWatch, nil
+	case DataPlaneDirect:
+		return DataPlaneDirect, nil
+	case DataPlaneThinkWatch:
+		if thinkWatchURL == "" {
+			return "", errors.New("DATA_PLANE=thinkwatch requires THINKWATCH_URL")
+		}
+		if err := validateUpstreamURL(thinkWatchURL); err != nil {
+			return "", err
+		}
+		return DataPlaneThinkWatch, nil
+	default:
+		return "", errors.New("DATA_PLANE must be one of auto, direct or thinkwatch")
+	}
+}
+
+// validateUpstreamURL rejects a THINKWATCH_URL the reverse proxy could only
+// fail on later. url.Parse accepts "127.0.0.1:8788" and reports "127.0.0.1" as
+// the scheme, which would turn into a confusing dial error on the first
+// business request instead of a startup failure.
+func validateUpstreamURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("THINKWATCH_URL is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("THINKWATCH_URL must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return errors.New("THINKWATCH_URL must include a host")
+	}
+	return nil
 }
 
 // PublicRegistrationOpen reports whether local account registration is served

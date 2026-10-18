@@ -2,13 +2,13 @@
 
 校园大模型统一接入、模型路由、访问控制、限流与安全审计网关。
 
-Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过 ThinkWatch Core 接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
+Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过可选的 ThinkWatch Core 或网关自身的直连数据面接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-13）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
+> 当前状态（2026-10-17）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`；本日完成一轮全项目逻辑审计与修复，封堵了权限提升链、修正了模型白名单语义、让租户停用真正生效，并加固了 trusted-header 边界。
 >
-> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
+> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言。
 >
-> 仍需最终环境验收：完整业务数据面的双 Provider Failover、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
+> 仍未做：完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
 
 ---
 
@@ -25,12 +25,13 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | SSE 透明代理 | ✅ | 流式响应不被 Gateway 缓冲 |
 | Provider 管理 | ✅ | CRUD、状态、Base URL、凭据环境变量名 |
 | 虚拟模型 / Route 管理 | ✅ | 一个虚拟模型可绑定多条 Provider 路线 |
-| ThinkWatch 配置同步 | ✅ | 校验、备份、原子替换 |
+| ThinkWatch 配置同步 | ✅ | 校验、备份、原子替换（仅 ThinkWatch 模式） |
+| 直连数据面 | ✅ | 未配置 `THINKWATCH_URL` 时网关自己解析模型、注入凭据、流式透传、按 priority 故障切换 |
 | Qwen 真实调用 | ✅ | `campus-smart` 已完成真实端到端调用 |
 | Volcengine Ark / 豆包 | ✅* | 真实模型测试已通过；完整业务数据面 Failover 仍待最终验收 |
 | 多 Provider Failover 控制面 | ✅ | Route 优先级 / 权重 / 超时 + ThinkWatch renderer |
 | 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成；最终 Provider / attempts 取决于 ThinkWatch 实际 telemetry |
-| Admin UI v2 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
+| Admin UI v3 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
 | 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
 | 统一账户与开放注册 | ✅ | 公开注册创建 member、super_admin 授予管理角色、用户与权限管理 |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
@@ -78,6 +79,23 @@ Data:
 
 Go Gateway 是校园侧控制面和访问控制边界；ThinkWatch Core 负责底层模型路由与数据面能力。项目不复制 ThinkWatch Core 源码，而是通过配置同步和 API 契约集成。
 
+### 数据面：直连还是 ThinkWatch
+
+数据面是可选的。上面那张图里的 ThinkWatch Core 只在需要时才存在：
+
+| `DATA_PLANE` | `THINKWATCH_URL` | 实际行为 |
+| --- | --- | --- |
+| 未设置 / `auto` | 有值 | 业务请求全部代理给 ThinkWatch Core（默认，与既有部署一致） |
+| 未设置 / `auto` | 空 | **直连**：网关按 `gateway_model_route` 解析对外模型，自己注入渠道凭据、流式透传、按 priority 故障切换 |
+| `direct` | 任意 | 强制直连 |
+| `thinkwatch` | 空 | 启动失败（明确报错，不静默降级） |
+
+直连模式下网关只需要 PostgreSQL 和 Redis，不必再跑第二个进程；Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，同步 ThinkWatch 的入口自动隐藏（`POST /admin/thinkwatch/sync` 会返回 `409 data_plane_direct`），模型连通测试改为由网关直接向渠道发起请求并在结果中回报实际应答的渠道。
+
+两种模式的差异是真实的，不是实现细节：直连数据面做**按 priority 排序的故障切换**，但**不做加权路由和熔断**——那需要跨请求存活的按渠道状态，仍然由 ThinkWatch Core 负责。需要这两项能力的部署请继续配置 `THINKWATCH_URL`。
+
+直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
+
 ---
 
 ## 3. Admin UI 与管理员认证
@@ -90,15 +108,17 @@ http://127.0.0.1:8080/admin-ui
 
 主要页面包括：
 
-- 总览与系统健康状态
-- 供应商管理
+- 总览（KPI、基础设施状态、最近请求）
+- 数据看板（流量 / Token / 延迟趋势、渠道状态）
+- 渠道管理
 - 模型与路由（线路 / 故障切换）
 - ThinkWatch 同步与模型连通测试
-- 租户 / API Key 管理
-- 用户与权限（super_admin）
-- 请求日志筛选、分页、CSV 与详情
-- 管理审计与安全事件
-- 我的账号、修改密码、登录设备与退出登录
+- 租户 / API 密钥管理
+- 用户（super_admin）
+- 使用日志筛选、分页、CSV 与详情
+- 审计日志与安全事件
+- 任务日志（占位：网关为同步代理，暂无异步任务数据源）
+- 个人资料、安全与访问（修改密码、登录设备、退出登录）
 
 默认：
 
@@ -110,9 +130,21 @@ ADMIN_AUTH_MODE=session
 
 数据库中没有管理员时，Admin UI 会显示“创建管理员账号”。
 
-首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。
+**项目不存在内置的默认账号或默认密码。** 首个 `super_admin` 完全由部署者自己创建，有两条路径：
+
+1. **交互式（默认）**：打开 `http://127.0.0.1:8080/admin-ui`，首次会引导填写用户名 / 密码 / 确认密码。密码策略为 Argon2id、至少 10 位、不能等于用户名、字母 / 数字 / 符号至少包含两类。
+2. **无人值守**：启动前设置以下两个变量，网关会在启动时自动创建首个管理员。仅当系统中**尚不存在 `super_admin`** 时生效；留空则回落到上面的交互式流程。
+
+   ```text
+   ADMIN_BOOTSTRAP_USERNAME=admin
+   ADMIN_BOOTSTRAP_PASSWORD=<强密码>
+   ```
+
+首次 Web Setup 默认只允许真实客户端地址为 loopback 的请求。部署在 Nginx / oauth2-proxy 等反向代理后时，必须正确设置 `TRUSTED_PROXY_CIDRS`；Gateway 不会因为最后一跳代理来自 `127.0.0.1` 就把远程访问者当成本机。**因此在反向代理后部署时，远程访问者无法通过代理创建第一个管理员**：运维必须先在本机完成初始化，或改用上面的 `ADMIN_BOOTSTRAP_*` 无人值守方式。
 
 创建首个管理员时使用数据库事务 + advisory lock，避免多实例并发初始化出多个首管理员。守卫条件是“是否已存在 super_admin”，而不是“账号表是否为空”。
+
+**如果复用已有的数据库**（`DATABASE_URL` 指向一个已经初始化过的库），则不会再出现创建引导，必须直接使用该库中已有的账号登录——这些凭据不在仓库里，只有最初创建账号的人知道。
 
 ### 统一用户账户体系与开放注册
 
@@ -124,7 +156,7 @@ User
 ├── auditor         只读观测
 ├── operator        运行状态与模型连通测试
 ├── tenant_admin    Phase 1 起不授予任何权限（全局形态已撤回，等同 member）
-├── gateway_admin   供应商、模型与线路、ThinkWatch 同步
+├── gateway_admin   渠道、模型与线路、ThinkWatch 同步
 └── super_admin      只能通过首次 Setup 创建，或由现有 super_admin 授予
 ```
 
@@ -151,8 +183,6 @@ PUBLIC_REGISTER_WINDOW=1h
 ```
 
 公开注册目前**不提供**邮箱验证、忘记密码、邀请码或管理员审批。
-
-完整说明见 `docs/ACCOUNTS.md`。
 
 ### 会话模型
 
@@ -210,14 +240,12 @@ Campus AI Gateway RBAC
 
 `ADMIN_AUTH_MODE=trusted-header` 时，Admin UI 不显示本地账号密码登录，而是直接使用可信代理注入的身份。
 
+该模式下整个控制面的认证就是一个共享字符串，所以有两道额外约束：
+
+- `ADMIN_PROXY_SECRET` 至少 32 个字符，不足会在启动时直接失败；
+- `ADMIN_PROXY_CIDRS` 限定哪些对端地址可以尝试该认证。留空时保持旧行为（任何对端都可以试），启动日志会打印警告。
+
 `ADMIN_AUTH_MODE=token` 仅保留为应急模式，Admin UI 不提供 Token 输入框。
-
-详见：
-
-- `docs/ADMIN_UI.md`
-- `docs/ACCOUNTS.md`
-- `docs/SSO_RBAC.md`
-- `docs/PRODUCTION.md`
 
 ---
 
@@ -229,6 +257,14 @@ Campus AI Gateway RBAC
 - Docker Desktop
 - Node.js 22+（仅 Admin UI 构建阶段）
 - ThinkWatch Core
+
+### 配置来源
+
+网关的全部配置都通过**进程环境变量**注入，项目本身**不加载 `.env` 文件**（没有 dotenv 依赖，`scripts/` 与 Docker Compose 都不会读它）。仓库根目录的 `.env.example` 是**变量参考清单**，把它复制成 `.env` 不会被自动读取。
+
+- Windows 本地开发：`scripts/setup.ps1` 会把 ThinkWatch 相关值写入 Windows **User 环境变量**；其余变量在启动前用 `$env:NAME = "value"` 设置。
+- Docker Compose：在 `deploy/docker-compose.yml` 的 `environment` 段配置。
+- 生产：使用 Secret Manager / KMS / Vault 注入，不要提交到仓库。
 
 ### 第一次初始化
 
@@ -267,6 +303,14 @@ ThinkWatch Core 不在常见目录时：
 .\scripts\dev.ps1 -ForceRestart -NoBrowser
 ```
 
+不启动 ThinkWatch，让网关自己直连渠道：
+
+```powershell
+.\scripts\dev.ps1 -Direct
+```
+
+`-Direct` 等价于 `DATA_PLANE=direct`，脚本会清空 `THINKWATCH_URL` 并跳过 `twcore.exe` 的检测与启动。直连模式下只需要 PostgreSQL 与 Redis。
+
 查看 / 停止：
 
 ```powershell
@@ -303,6 +347,10 @@ Provider 只保存：
 
 **真实 Provider API Key 不写入 PostgreSQL，也不通过 Admin UI 保存。**
 
+凭据环境变量名有命名空间约束：`ADMIN_*`、`API_KEY_*`、`THINKWATCH_*`、`DATABASE_*`、`REDIS_*`、`TWCORE_*`、`TRUSTED_*`、`HTTP_*` 等网关自用的变量一律拒绝。原因是数据面在发请求时才用 `os.Getenv(credential_env)` 取值并发往渠道的 `base_url`——如果允许指向网关自己的密钥，那么"能编辑渠道"就等于"能读走任意密钥"。该约束由 `validateCredentialEnv` 强制，前缀列表而非固定名单，因此以后新增的 `ADMIN_*` 变量自动受保护。
+
+协议字段：`openai-chat` 之外的值只有 ThinkWatch 模式接受（由 ThinkWatch 做协议转换）。直连数据面只讲 OpenAI 格式，保存 `anthropic` / `gemini` 渠道会被拒绝。
+
 内置模板包括：
 
 | Provider | Base URL | Credential Env |
@@ -334,9 +382,9 @@ campus-smart
     └── priority 2 -> volcengine-ark
 ```
 
-管理后台修改 Provider / Model / Route 后，需要执行“同步 ThinkWatch”。
+管理后台修改 Provider / Model / Route 后，**ThinkWatch 模式下**需要执行“同步 ThinkWatch”；**直连模式下不需要**，网关最长 5 秒内自己读到新线路。
 
-同步流程：
+同步流程（仅 ThinkWatch 模式）：
 
 ```text
 PostgreSQL Provider / Model / Route
@@ -393,6 +441,20 @@ Tenant
 - 有效期
 - 启用 / 停用
 
+模型白名单有两种写法，语义是互斥的：
+
+| `allowed_models` | 含义 |
+|---|---|
+| `[]` | 不允许调用任何对外模型 |
+| `["*"]` | 允许全部对外模型，包括以后新增的 |
+| `["a","b"]` | 只允许这两个 |
+
+空数组**不是**"不限制"。之前代码把空数组当成全允许，而界面写的是"不勾选则不允许调用任何对外模型"，两者正好相反；迁移 `0011` 把存量的 `[]` 与 `null`（字段被整体省略时写入的形状）改写成 `["*"]`，所以已经存在的 Key 行为不变，但"全允许"从此是一个需要明确勾选的选项。
+
+`/v1/` 下除 `/v1/models` 外的所有路径都必须带 `model` 字段，否则返回 `400 model_required`。这条规则是白名单而不是黑名单，新增的上游端点会自动受约束——否则一个没有 `model` 的请求会绕过模型白名单。
+
+停用租户会立即让其下所有 Key 停止服务（`403 tenant_disabled`），不只是打一个标签。
+
 完整 Key：
 
 ```text
@@ -429,7 +491,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 业务请求会经过 Gateway 的 Tenant / Key / Allowlist / Quota / Audit 链路。
 
-> Admin UI 中的“模型测试”用于直接验证 ThinkWatch 模型连通性，它不是业务数据面请求，因此不会写入 `gateway_request_log`。需要验证完整 Gateway 数据面时，请使用 `/v1/*` + `sk-campus-*` 业务 Key。
+> Admin UI 中的“模型测试”用于验证对外模型的线路是否可用，它不是业务数据面请求，因此不会写入 `gateway_request_log`。ThinkWatch 模式下它经由 ThinkWatch 转发，直连模式下由网关直接向渠道发起请求并在结果中回报应答渠道。需要验证完整 Gateway 数据面时，请使用 `/v1/*` + `sk-campus-*` 业务 Key。
 
 ---
 
@@ -495,7 +557,8 @@ cmd/
 
 internal/
 ├── app/                    Server / Admin API / Auth / Embedded UI
-│   └── adminui/dist/       Admin UI v2 构建产物
+│   ├── direct_proxy.go     直连数据面（未配置 THINKWATCH_URL 时启用）
+│   └── adminui/dist/       Admin UI v3 构建产物
 ├── httpx/                  HTTP 公共能力
 ├── migrate/                迁移执行器（schema_migrations / 校验值 / advisory lock）
 ├── model/                  数据结构
@@ -513,15 +576,22 @@ migrations/
 ├── 0006_quota.sql
 ├── 0007_admin_users.sql
 ├── 0008_admin_sessions.sql
-└── 0009_admin_session_refresh_rotation.sql
+├── 0009_admin_session_refresh_rotation.sql
+├── 0010_analytics_indexes.sql
+└── 0011_allowed_models_explicit.sql
 
 web/
 └── admin/                  React + TypeScript + Vite
 
 deploy/
+├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
-└── nginx/
+├── nginx.conf
+├── nginx.production.example.conf
+└── monitoring/             Prometheus 示例配置
+
+loadtest/                   k6 压测脚本（k6-chat.js / k6-models.js）
 
 scripts/
 ├── setup.ps1
@@ -569,12 +639,6 @@ bash scripts/e2e-admin-auth-v2.sh
 - 五角色 RBAC
 - 浏览器凭据不落持久化存储
 
-最终环境统一验收请参考：
-
-```text
-docs/FINAL_ACCEPTANCE.md
-```
-
 ---
 
 ## 12. 安全与生产部署
@@ -595,7 +659,14 @@ docs/FINAL_ACCEPTANCE.md
 - Secret Manager / KMS / Vault
 - PostgreSQL / Redis / Gateway HA
 
+使用 `ADMIN_AUTH_MODE=trusted-header` 时还需：
+
+- `ADMIN_PROXY_SECRET` 不少于 32 个字符（不足时**启动直接失败**，不是警告）；
+- `ADMIN_PROXY_CIDRS` 写明可信代理的地址段。留空会退化为"任何知道该字符串的对端都能以 super_admin 身份操作控制面"，启动日志会打印这条警告。
+
 Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓库或业务数据库。
+
+渠道的"凭据环境变量名"只允许指向第三方凭据，**不允许指向网关自用的变量**（`ADMIN_*` / `API_KEY_*` / `THINKWATCH_*` / `DATABASE_*` / `REDIS_*` 等）。数据面在请求时才用 `os.Getenv(名字)` 取值并发往渠道 `base_url`，因此一个能编辑渠道的人如果可以把名字指成网关自己的密钥，就等于可以读走该密钥；这条约束在保存渠道时就拒绝（`validateCredentialEnv`）。
 
 管理员认证不依赖浏览器 localStorage。
 
@@ -604,6 +675,7 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 ## 13. 当前已知限制
 
 - 完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
+- 直连数据面**不做加权路由和熔断**，只做按 priority / weight 排序的故障切换；需要这两项能力请继续使用 ThinkWatch。
 - ThinkWatch 最终 Provider / attempts / failover telemetry 仍取决于 Core 暴露的可信路由事实。
 - 学校真实 IdP 尚未完成现场集成验收。
 - 目前没有管理员自助“忘记密码”与完整管理员生命周期 UI。
@@ -612,6 +684,10 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - Multi-Gateway / PostgreSQL / Redis HA 尚未做目标环境故障切换验收。
 - Embedding / ASR 的真实 Provider 尚未完成最终验收。
 - 30,000 RPM 仍必须在代表性生产拓扑实测，不能仅凭代码或本地压测标记通过。
+- `/v1/*` 中除 `/v1/models` 以外的路径一律要求请求体带 `model` 字段，否则 `400 model_required`。这是为了不让"没有 model 的请求"绕过模型白名单；如果将来接入确实不含 `model` 的上游端点（如部分 ASR 接口），需要把该路径加入 `modelFreePaths` 例外表。
+- 线路分组（`route_group`）字段保留在库表与 API 中但**两个数据面都不读取**，因此已从 Admin UI 摘除；在直连模式实现它会让两个数据面的行为不一致，故暂不实现。
+- 月度预算（`monthly_budget_micros`）同样是**存而不执行**——没有单价数据就无法把 Token 用量折算成金额，字段保留会继续接受写入，但已从 Admin UI 摘除。真正的额度控制目前由 RPM / TPM / 最大并发承担。
+- `allowed_models` 的语义在 2026-10-17 才修正为"`[]` = 一个都不允许"。迁移 `0011` 会把存量 `[]` 与 `null` 改写成 `["*"]` 以免影响已在用的 Key，但这意味着**升级后需要人工复核**：如果某个存量 Key 本意就是"不允许任何模型"，升级后它会变成"允许全部"。新建的 Key 不受影响。
 
 ---
 
@@ -623,16 +699,23 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - [x] Tenant / 业务 API Key
 - [x] RPM / TPM / 最大并发
 - [x] 请求日志 / 管理审计 / 安全事件
-- [x] Admin UI v2
+- [x] Admin UI v3
 - [x] 管理员 Session Auth v2
 - [x] RBAC
 - [x] trusted-header SSO 接入边界
 - [x] ThinkWatch 配置同步
+- [x] 直连数据面（ThinkWatch 可选）
 - [x] 多 Provider Route 控制面
 - [x] Qwen 真实调用
 - [x] Volcengine Ark 真实模型连通
 - [x] Prometheus / readiness / production 示例
 - [x] k6 性能验收工具
+- [x] 渠道凭据变量命名空间约束（封堵 `gateway_admin` → `super_admin` 凭据读取提权链）
+- [x] `allowed_models` 语义修正（`[]` = 全拒绝，`["*"]` = 全允许）+ 迁移 `0011` 存量回填
+- [x] 租户停用真正生效（`403 tenant_disabled`）
+- [x] `/v1/*` 模型字段改为 fail-closed 白名单，不再依赖端点黑名单
+- [x] trusted-header 加固（`ADMIN_PROXY_SECRET` 最短长度 + `ADMIN_PROXY_CIDRS` 对端限制）
+- [x] 直连数据面协议约束（只接受 `openai-chat`）
 
 ### 下一阶段
 

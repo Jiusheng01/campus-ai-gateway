@@ -29,6 +29,7 @@ type thinkWatchTestRequest struct {
 
 type thinkWatchTestResult struct {
 	Model            string `json:"model"`
+	Channel          string `json:"channel,omitempty"`
 	Content          string `json:"content"`
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -41,6 +42,14 @@ func (s *Server) handleThinkWatchSync(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	if r.Method != http.MethodPost {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	if !s.cfg.UsesThinkWatch() {
+		// Nothing to write to. Saying so beats "THINKWATCH_CONFIG_PATH is not
+		// configured", which would send an operator looking for a file that
+		// this deployment is never going to read.
+		httpx.Error(w, http.StatusConflict, "data_plane_direct",
+			"This gateway runs the direct data plane: routing is read from the database on every request, so there is no ThinkWatch configuration to synchronise", reqID)
 		return
 	}
 	if strings.TrimSpace(s.cfg.ThinkWatchConfigPath) == "" {
@@ -110,7 +119,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	if strings.TrimSpace(s.cfg.ThinkWatchKey) == "" {
+	if strings.TrimSpace(s.cfg.ThinkWatchKey) == "" && s.cfg.UsesThinkWatch() {
 		httpx.Error(w, http.StatusServiceUnavailable, "thinkwatch_key_missing", "THINKWATCH_GATEWAY_KEY is not configured", reqID)
 		return
 	}
@@ -134,6 +143,11 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		},
 		"stream": false,
 	})
+
+	if !s.cfg.UsesThinkWatch() {
+		s.serveModelTestDirect(w, r, in, payload, reqID)
+		return
+	}
 
 	ctx := r.Context()
 	upstreamURL := strings.TrimRight(s.cfg.ThinkWatchURL, "/") + "/v1/chat/completions"
@@ -168,6 +182,21 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	result, err := parseProbeResponse(body, time.Since(started))
+	if err != nil {
+		httpx.Error(w, http.StatusBadGateway, "thinkwatch_response_invalid", "ThinkWatch returned invalid JSON", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// parseProbeResponse reduces an OpenAI-compatible completion to the fields the
+// connectivity test reports.
+//
+// It is shared by both data planes on purpose: the operator-visible meaning of
+// "the test passed" must not depend on which plane happens to be configured, so
+// the token accounting and the content extraction are written once.
+func parseProbeResponse(body []byte, latency time.Duration) (thinkWatchTestResult, error) {
 	var out struct {
 		Model   string `json:"model"`
 		Choices []struct {
@@ -185,8 +214,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		httpx.Error(w, http.StatusBadGateway, "thinkwatch_response_invalid", "ThinkWatch returned invalid JSON", reqID)
-		return
+		return thinkWatchTestResult{}, err
 	}
 
 	result := thinkWatchTestResult{
@@ -194,7 +222,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		InputTokens: out.Usage.PromptTokens,
 		OutputTokens: out.Usage.CompletionTokens,
 		TotalTokens: out.Usage.TotalTokens,
-		LatencyMS:   time.Since(started).Milliseconds(),
+		LatencyMS:   latency.Milliseconds(),
 	}
 	if out.Usage.InputTokens > result.InputTokens {
 		result.InputTokens = out.Usage.InputTokens
@@ -209,8 +237,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		result.Content = out.Choices[0].Message.Content
 		result.ReasoningContent = out.Choices[0].Message.ReasoningContent
 	}
-
-	writeJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 // managedModel pairs an enabled virtual model with its enabled routes.

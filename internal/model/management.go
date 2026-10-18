@@ -47,7 +47,12 @@ type Tenant struct {
 	DailyTokenLimit     int64  `json:"daily_token_limit"`
 	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
 	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
-	MonthlyBudgetMicros int64  `json:"monthly_budget_micros"`
+	// MonthlyBudgetMicros is stored but not enforced: no price data exists, so
+	// there is nothing to charge against it. It is no longer offered in the
+	// console — a quota field an operator can set and nothing reads is worse
+	// than an absent one, because it reads as a guarantee. Kept so the column
+	// and any historical value survive until real metering lands.
+	MonthlyBudgetMicros int64 `json:"monthly_budget_micros"`
 }
 
 type TenantUsageStats struct {
@@ -73,8 +78,19 @@ type APIKeyAdmin struct {
 	RPMLimit       int64      `json:"rpm_limit"`
 	TPMLimit       int64      `json:"tpm_limit"`
 	MaxConcurrency int64      `json:"max_concurrency"`
+	// RouteGroup is reserved. Neither data plane consults it, and the console
+	// no longer offers it for editing, because an input that stores a value
+	// nothing reads tells the operator a constraint is in force when it is not.
+	// It is still accepted on write so that editing an existing key cannot fail
+	// on a field the operator never touched.
 	RouteGroup     string     `json:"route_group"`
 	CreatedAt      time.Time  `json:"created_at"`
+	// Usage is the key's cumulative consumption, aggregated from the request
+	// log rather than stored on the key. Keeping it derived means the number
+	// cannot drift from the log it claims to summarise, and a revoked key
+	// keeps reporting the traffic it actually served.
+	UsageRequests int64 `json:"usage_requests"`
+	UsageTokens   int64 `json:"usage_tokens"`
 }
 
 type APIKeyCreateResult struct {
@@ -118,4 +134,65 @@ type ProviderStats struct {
 	Requests    int64   `json:"requests"`
 	SuccessRate float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
+}
+
+// RequestLogSummary is the aggregate for one filter selection. It answers the
+// question the paginated table cannot: "how much traffic does this filter
+// actually cover", without the operator having to page through it.
+//
+// Every field is computed by the database over the whole filtered set, not over
+// the returned page, so the numbers do not change when the page does.
+type RequestLogSummary struct {
+	Requests      int64   `json:"requests"`
+	Errors        int64   `json:"errors"`
+	InputTokens   int64   `json:"input_tokens"`
+	OutputTokens  int64   `json:"output_tokens"`
+	TotalTokens   int64   `json:"total_tokens"`
+	AvgLatencyMS  float64 `json:"avg_latency_ms"`
+	P95LatencyMS  float64 `json:"p95_latency_ms"`
+	FailoverCount int64   `json:"failover_count"`
+}
+
+// RequestLogBucket is one point of the traffic trend.
+//
+// Bucket is a wall-clock label produced by the database in the caller's UTC
+// offset, not an instant: it is rendered verbatim on the chart axis, so a
+// timestamp the browser would re-shift into another hour is exactly what must
+// not be returned here.
+type RequestLogBucket struct {
+	Bucket       string  `json:"bucket"`
+	Requests     int64   `json:"requests"`
+	Tokens       int64   `json:"tokens"`
+	Errors       int64   `json:"errors"`
+	AvgLatencyMS float64 `json:"avg_latency_ms"`
+	P95LatencyMS float64 `json:"p95_latency_ms"`
+}
+
+// TenantFacet is a tenant that appears in the request log.
+type TenantFacet struct {
+	ID   string `json:"id"`
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+// APIKeyFacet is an API key that appears in the request log. TenantID lets the
+// console narrow the key list once a tenant is chosen.
+type APIKeyFacet struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	KeyPrefix string `json:"key_prefix"`
+	TenantID  string `json:"tenant_id"`
+}
+
+// RequestLogFacets is the set of values a request-log filter can take.
+//
+// It is derived from the log rather than from the tenant and key tables, for
+// two reasons. The list stays short enough to be usable — a deployment with
+// hundreds of keys would otherwise offer every one of them, most of which have
+// never served a request — and the access it needs is exactly the access the
+// log itself needs, so a role that may read logs can filter them without also
+// being granted the tenant and key management APIs.
+type RequestLogFacets struct {
+	Tenants []TenantFacet `json:"tenants"`
+	Keys    []APIKeyFacet `json:"keys"`
 }

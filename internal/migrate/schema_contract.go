@@ -11,7 +11,7 @@ package migrate
 // current.
 //
 // The contract below is the complete set of objects the current migration set
-// is supposed to leave behind, derived by hand from migrations/0001..0009. It
+// is supposed to leave behind, derived by hand from migrations/0001..0010. It
 // covers, per table: every column with its PostgreSQL data type, bounded length,
 // nullability and default; each primary key, unique constraint, foreign key and
 // CHECK definition; and every named index including uniqueness, key expression
@@ -287,6 +287,8 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_model_route", "idx_gateway_model_route_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_route_provider ON gateway_model_route(provider_id)`},
 		{"gateway_request_log", "idx_gateway_request_log_provider_created", false, []string{"provider", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_provider_created ON gateway_request_log(provider, created_at DESC)`},
 		{"gateway_request_log", "idx_gateway_request_log_failover_created", false, []string{"failover", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_failover_created ON gateway_request_log(failover, created_at DESC)`},
+		{"gateway_request_log", "idx_gateway_request_log_tenant_created", false, []string{"tenant_id", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_tenant_created ON gateway_request_log(tenant_id, created_at DESC)`},
+		{"gateway_request_log", "idx_gateway_request_log_api_key_created", false, []string{"api_key_id", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_api_key_created ON gateway_request_log(api_key_id, created_at DESC)`},
 		{"gateway_admin_audit_log", "idx_gateway_admin_audit_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_gateway_admin_audit_created ON gateway_admin_audit_log(created_at DESC)`},
 		{"gateway_admin_audit_log", "idx_gateway_admin_audit_actor_created", false, []string{"actor", "created_at DESC"}, `CREATE INDEX idx_gateway_admin_audit_actor_created ON gateway_admin_audit_log(actor, created_at DESC)`},
 		{"gateway_security_event", "idx_gateway_security_event_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_gateway_security_event_created ON gateway_security_event(created_at DESC)`},

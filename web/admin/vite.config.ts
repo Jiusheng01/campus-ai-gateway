@@ -13,10 +13,15 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/admin': 'http://127.0.0.1:8080',
-      '/metrics': 'http://127.0.0.1:8080',
-      '/healthz': 'http://127.0.0.1:8080',
-      '/readyz': 'http://127.0.0.1:8080',
+      // changeOrigin must stay false. The gateway's same-origin check compares
+      // the browser's Origin header with the Host it receives; rewriting Host
+      // to the target (Vite's default for a string shorthand) made /admin
+      // look cross-site, so the refresh call was refused and `npm run dev`
+      // dropped to the login screen on every reload.
+      '/admin': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+      '/metrics': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+      '/healthz': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+      '/readyz': { target: 'http://127.0.0.1:8080', changeOrigin: false },
     },
   },
 })

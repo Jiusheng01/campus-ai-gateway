@@ -232,6 +232,11 @@ func TestIsLocalSetupRequest(t *testing.T) {
 
 // --- CSRF ------------------------------------------------------------------
 
+// The table is a contract with the deployment, not just with the browser. The
+// rows that matter most are the ones describing what a proxy does to the
+// authority: nginx's `proxy_set_header Host $host` drops the client's port, and
+// a check that insisted on the port signed every operator out on their first
+// reload. Each row below therefore names which side states the port.
 func TestCheckSameOrigin(t *testing.T) {
 	s, _ := newTestServer(t, testConfig())
 	cases := []struct {
@@ -245,9 +250,15 @@ func TestCheckSameOrigin(t *testing.T) {
 		{"matching origin", "gateway.local", "http://gateway.local", "", false},
 		{"matching origin with port", "gateway.local:8080", "http://gateway.local:8080", "", false},
 		{"case-insensitive host", "gateway.local", "http://GATEWAY.LOCAL", "", false},
-		{"port mismatch", "gateway.local", "http://gateway.local:8080", "", true},
+		// The proxy stripped the port from Host; the browser still reports it.
+		{"port stripped by the proxy is not a different site", "gateway.local", "http://gateway.local:8088", "", false},
+		{"port stripped by the proxy over https", "gateway.example.edu", "https://gateway.example.edu:8443", "", false},
+		// Both sides state a port, and they disagree: still refused.
+		{"stated ports must agree", "gateway.local:8080", "http://gateway.local:9090", "", true},
 		{"foreign origin", "gateway.local", "http://evil.example", "", true},
+		{"foreign origin with a matching port is still foreign", "gateway.local", "http://evil.example:8080", "", true},
 		{"matching referer", "gateway.local", "", "http://gateway.local/admin-ui/", false},
+		{"referer with a port the proxy stripped", "gateway.local", "", "http://gateway.local:8088/admin-ui/", false},
 		{"foreign referer", "gateway.local", "", "http://evil.example/page", true},
 		{"garbage origin", "gateway.local", "::::", "", true},
 	}
@@ -265,6 +276,71 @@ func TestCheckSameOrigin(t *testing.T) {
 		}
 		if !tc.wantErr && err != nil {
 			t.Fatalf("%s: unexpected rejection: %v", tc.name, err)
+		}
+	}
+}
+
+// A proxy that rewrites Host to an authority the browser never used cannot be
+// salvaged by normalisation, which is what ADMIN_PUBLIC_ORIGIN is for.
+func TestCheckSameOriginHonoursConfiguredPublicOrigin(t *testing.T) {
+	cfg := testConfig()
+	cfg.AdminPublicOrigin = "https://gateway.example.edu"
+	s, _ := newTestServer(t, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "http://gateway-server:8080/admin/auth/refresh", nil)
+	req.Header.Set("Origin", "https://gateway.example.edu")
+	if err := s.checkSameOrigin(req); err != nil {
+		t.Fatalf("the configured public origin must be accepted: %v", err)
+	}
+
+	// A different host is still refused, so the setting widens the check to one
+	// named authority rather than switching it off.
+	other := httptest.NewRequest(http.MethodPost, "http://gateway-server:8080/admin/auth/refresh", nil)
+	other.Header.Set("Origin", "https://evil.example")
+	if err := s.checkSameOrigin(other); err == nil {
+		t.Fatal("the configured origin must not admit a different host")
+	}
+
+	// And it does not shadow the request's own authority: an operator on the
+	// host itself keeps working.
+	local := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/admin/auth/refresh", nil)
+	local.Header.Set("Origin", "http://127.0.0.1:8080")
+	if err := s.checkSameOrigin(local); err != nil {
+		t.Fatalf("a direct visit must keep working alongside the configured origin: %v", err)
+	}
+}
+
+// The regression this whole change exists for: the shipped compose stack
+// publishes nginx on 8088, nginx forwards `Host $host` without the port, and
+// the browser's Origin keeps it. A refresh in that shape must succeed.
+func TestCheckSameOriginAcceptsComposeNginxShape(t *testing.T) {
+	s, _ := newTestServer(t, testConfig())
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/admin/auth/refresh", nil)
+	req.Header.Set("Origin", "http://localhost:8088")
+	if err := s.checkSameOrigin(req); err != nil {
+		t.Fatalf("the shipped nginx deployment must be able to refresh: %v", err)
+	}
+}
+
+// splitAuthority is the parser the comparison rests on; the shapes it must not
+// choke on are the ones a browser and a proxy actually emit.
+func TestSplitAuthority(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantHost string
+		wantPort string
+	}{
+		{"gateway.local", "gateway.local", ""},
+		{"gateway.local:8088", "gateway.local", "8088"},
+		{"GATEWAY.LOCAL:8088", "GATEWAY.LOCAL", "8088"},
+		{"[::1]:8088", "::1", "8088"},
+		{"[::1]", "::1", ""},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		host, port := splitAuthority(tc.in)
+		if host != tc.wantHost || port != tc.wantPort {
+			t.Fatalf("splitAuthority(%q) = (%q, %q), want (%q, %q)", tc.in, host, port, tc.wantHost, tc.wantPort)
 		}
 	}
 }
