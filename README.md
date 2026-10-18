@@ -4,11 +4,11 @@
 
 Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过可选的 ThinkWatch Core 或网关自身的直连数据面接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-16）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`。
+> 当前状态（2026-10-17）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`；本日完成一轮全项目逻辑审计与修复，封堵了权限提升链、修正了模型白名单语义、让租户停用真正生效，并加固了 trusted-header 边界。
 >
-> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界。
+> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言。
 >
-> 仍需最终环境验收：完整业务数据面的双 Provider Failover、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
+> 仍未做：完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
 
 ---
 
@@ -242,6 +242,11 @@ Campus AI Gateway RBAC
 
 `ADMIN_AUTH_MODE=trusted-header` 时，Admin UI 不显示本地账号密码登录，而是直接使用可信代理注入的身份。
 
+该模式下整个控制面的认证就是一个共享字符串，所以有两道额外约束：
+
+- `ADMIN_PROXY_SECRET` 至少 32 个字符，不足会在启动时直接失败；
+- `ADMIN_PROXY_CIDRS` 限定哪些对端地址可以尝试该认证。留空时保持旧行为（任何对端都可以试），启动日志会打印警告。
+
 `ADMIN_AUTH_MODE=token` 仅保留为应急模式，Admin UI 不提供 Token 输入框。
 
 详见：
@@ -351,6 +356,10 @@ Provider 只保存：
 
 **真实 Provider API Key 不写入 PostgreSQL，也不通过 Admin UI 保存。**
 
+凭据环境变量名有命名空间约束：`ADMIN_*`、`API_KEY_*`、`THINKWATCH_*`、`DATABASE_*`、`REDIS_*`、`TWCORE_*`、`TRUSTED_*`、`HTTP_*` 等网关自用的变量一律拒绝。原因是数据面在发请求时才用 `os.Getenv(credential_env)` 取值并发往渠道的 `base_url`——如果允许指向网关自己的密钥，那么"能编辑渠道"就等于"能读走任意密钥"。该约束由 `validateCredentialEnv` 强制，前缀列表而非固定名单，因此以后新增的 `ADMIN_*` 变量自动受保护。
+
+协议字段：`openai-chat` 之外的值只有 ThinkWatch 模式接受（由 ThinkWatch 做协议转换）。直连数据面只讲 OpenAI 格式，保存 `anthropic` / `gemini` 渠道会被拒绝。
+
 内置模板包括：
 
 | Provider | Base URL | Credential Env |
@@ -440,6 +449,20 @@ Tenant
 - 最大并发
 - 有效期
 - 启用 / 停用
+
+模型白名单有两种写法，语义是互斥的：
+
+| `allowed_models` | 含义 |
+|---|---|
+| `[]` | 不允许调用任何对外模型 |
+| `["*"]` | 允许全部对外模型，包括以后新增的 |
+| `["a","b"]` | 只允许这两个 |
+
+空数组**不是**"不限制"。之前代码把空数组当成全允许，而界面写的是"不勾选则不允许调用任何对外模型"，两者正好相反；迁移 `0011` 把存量的 `[]` 改写成 `["*"]`，所以已经存在的 Key 行为不变，但"全允许"从此是一个需要明确勾选的选项。
+
+`/v1/` 下除 `/v1/models` 外的所有路径都必须带 `model` 字段，否则返回 `400 model_required`。这条规则是白名单而不是黑名单，新增的上游端点会自动受约束——否则一个没有 `model` 的请求会绕过模型白名单。
+
+停用租户会立即让其下所有 Key 停止服务（`403 tenant_disabled`），不只是打一个标签。
 
 完整 Key：
 
@@ -562,7 +585,9 @@ migrations/
 ├── 0006_quota.sql
 ├── 0007_admin_users.sql
 ├── 0008_admin_sessions.sql
-└── 0009_admin_session_refresh_rotation.sql
+├── 0009_admin_session_refresh_rotation.sql
+├── 0010_analytics_indexes.sql
+└── 0011_allowed_models_explicit.sql
 
 web/
 └── admin/                  React + TypeScript + Vite
@@ -651,7 +676,14 @@ docs/FINAL_ACCEPTANCE.md
 - Secret Manager / KMS / Vault
 - PostgreSQL / Redis / Gateway HA
 
+使用 `ADMIN_AUTH_MODE=trusted-header` 时还需：
+
+- `ADMIN_PROXY_SECRET` 不少于 32 个字符（不足时**启动直接失败**，不是警告）；
+- `ADMIN_PROXY_CIDRS` 写明可信代理的地址段。留空会退化为"任何知道该字符串的对端都能以 super_admin 身份操作控制面"，启动日志会打印这条警告。
+
 Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓库或业务数据库。
+
+渠道的"凭据环境变量名"只允许指向第三方凭据，**不允许指向网关自用的变量**（`ADMIN_*` / `API_KEY_*` / `THINKWATCH_*` / `DATABASE_*` / `REDIS_*` 等）。数据面在请求时才用 `os.Getenv(名字)` 取值并发往渠道 `base_url`，因此一个能编辑渠道的人如果可以把名字指成网关自己的密钥，就等于可以读走该密钥；这条约束在保存渠道时就拒绝（`validateCredentialEnv`）。
 
 管理员认证不依赖浏览器 localStorage。
 
@@ -669,6 +701,10 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - Multi-Gateway / PostgreSQL / Redis HA 尚未做目标环境故障切换验收。
 - Embedding / ASR 的真实 Provider 尚未完成最终验收。
 - 30,000 RPM 仍必须在代表性生产拓扑实测，不能仅凭代码或本地压测标记通过。
+- `/v1/*` 中除 `/v1/models` 以外的路径一律要求请求体带 `model` 字段，否则 `400 model_required`。这是为了不让"没有 model 的请求"绕过模型白名单；如果将来接入确实不含 `model` 的上游端点（如部分 ASR 接口），需要把该路径加入 `modelFreePaths` 例外表。
+- 线路分组（`route_group`）字段保留在库表与 API 中但**两个数据面都不读取**，因此已从 Admin UI 摘除；在直连模式实现它会让两个数据面的行为不一致，故暂不实现。
+- 月度预算（`monthly_budget_micros`）同样是**存而不执行**——没有单价数据就无法把 Token 用量折算成金额，字段保留会继续接受写入，但已从 Admin UI 摘除。真正的额度控制目前由 RPM / TPM / 最大并发承担。
+- `allowed_models` 的语义在 2026-10-17 才修正为"`[]` = 一个都不允许"。迁移 `0011` 会把存量 `[]` 改写成 `["*"]` 以免影响已在用的 Key，但这意味着**升级后需要人工复核**：如果某个存量 Key 本意就是"不允许任何模型"，升级后它会变成"允许全部"。新建的 Key 不受影响。
 
 ---
 
@@ -691,6 +727,13 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - [x] Volcengine Ark 真实模型连通
 - [x] Prometheus / readiness / production 示例
 - [x] k6 性能验收工具
+- [x] 渠道凭据变量命名空间约束（封堵 `gateway_admin` → `super_admin` 凭据读取提权链）
+- [x] `allowed_models` 语义修正（`[]` = 全拒绝，`["*"]` = 全允许）+ 迁移 `0011` 存量回填
+- [x] 租户停用真正生效（`403 tenant_disabled`）
+- [x] `/v1/*` 模型字段改为 fail-closed 白名单，不再依赖端点黑名单
+- [x] trusted-header 加固（`ADMIN_PROXY_SECRET` 最短长度 + `ADMIN_PROXY_CIDRS` 对端限制）
+- [x] 直连数据面协议约束（只接受 `openai-chat`）
+- [x] 日志查询 / 聚合统一谓词与派生用量（`requestLogWhere` 单一事实来源）
 
 ### 下一阶段
 

@@ -47,7 +47,12 @@ type Tenant struct {
 	DailyTokenLimit     int64  `json:"daily_token_limit"`
 	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
 	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
-	MonthlyBudgetMicros int64  `json:"monthly_budget_micros"`
+	// MonthlyBudgetMicros is stored but not enforced: no price data exists, so
+	// there is nothing to charge against it. It is no longer offered in the
+	// console — a quota field an operator can set and nothing reads is worse
+	// than an absent one, because it reads as a guarantee. Kept so the column
+	// and any historical value survive until real metering lands.
+	MonthlyBudgetMicros int64 `json:"monthly_budget_micros"`
 }
 
 type TenantUsageStats struct {
@@ -73,6 +78,11 @@ type APIKeyAdmin struct {
 	RPMLimit       int64      `json:"rpm_limit"`
 	TPMLimit       int64      `json:"tpm_limit"`
 	MaxConcurrency int64      `json:"max_concurrency"`
+	// RouteGroup is reserved. Neither data plane consults it, and the console
+	// no longer offers it for editing, because an input that stores a value
+	// nothing reads tells the operator a constraint is in force when it is not.
+	// It is still accepted on write so that editing an existing key cannot fail
+	// on a field the operator never touched.
 	RouteGroup     string     `json:"route_group"`
 	CreatedAt      time.Time  `json:"created_at"`
 	// Usage is the key's cumulative consumption, aggregated from the request

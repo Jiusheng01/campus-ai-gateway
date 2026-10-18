@@ -15,6 +15,13 @@ import (
 func main() {
 	cfg, err := app.LoadConfig()
 	if err != nil { log.Fatal(err) }
+	if cfg.AdminAuthModeTrustedHeader() && len(cfg.AdminProxyCIDRs) == 0 {
+		// Not fatal, because the mode predates the list and existing
+		// deployments must keep starting. Silence would be worse: an operator
+		// reading the logs should be able to tell that the only condition on
+		// administrator access is a string they share with a proxy.
+		log.Printf("WARNING: ADMIN_AUTH_MODE=trusted-header without ADMIN_PROXY_CIDRS; any peer that knows ADMIN_PROXY_SECRET can act as super_admin")
+	}
 	server, err := app.NewServer(cfg)
 	if err != nil { log.Fatal(err) }
 	defer server.Close()

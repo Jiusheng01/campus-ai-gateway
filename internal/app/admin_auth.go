@@ -85,6 +85,16 @@ func (s *Server) authenticateAdminTrustedHeader(r *http.Request) (adminPrincipal
 	if s.cfg.AdminProxySecret == "" {
 		return adminPrincipal{}, ErrAdminAuthDisabled
 	}
+	// The shared secret is the whole of the authentication in this mode, so
+	// the peer address is checked before it: a caller outside ADMIN_PROXY_CIDRS
+	// is refused without the secret ever being compared, which keeps an
+	// internet-facing port from turning a leaked string into an administrator.
+	//
+	// An empty list keeps the historical behaviour of accepting any peer. That
+	// is the compatible choice, not the safe one, and startup says so.
+	if len(s.cfg.AdminProxyCIDRs) > 0 && !s.peerInAdminProxyCIDRs(r) {
+		return adminPrincipal{}, ErrAdminUnauthenticated
+	}
 	got := strings.TrimSpace(r.Header.Get("X-Campus-Auth-Secret"))
 	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminProxySecret)) != 1 {
 		return adminPrincipal{}, ErrAdminUnauthenticated
@@ -271,11 +281,27 @@ func (s *Server) isTrustedProxy(ip string) bool {
 	if len(s.cfg.TrustedProxyCIDRs) == 0 || ip == "" {
 		return false
 	}
+	return s.ipInCIDRs(ip, s.cfg.TrustedProxyCIDRs)
+}
+
+// peerInAdminProxyCIDRs reports whether the direct peer may use trusted-header
+// authentication. It deliberately looks at RemoteAddr and not at any forwarding
+// header: the header is written by the caller, and the point of the list is to
+// be the one thing the caller cannot choose.
+func (s *Server) peerInAdminProxyCIDRs(r *http.Request) bool {
+	peer := remoteHost(r.RemoteAddr)
+	if peer == "" {
+		return false
+	}
+	return s.ipInCIDRs(peer, s.cfg.AdminProxyCIDRs)
+}
+
+func (s *Server) ipInCIDRs(ip string, cidrs []string) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return false
 	}
-	for _, entry := range s.cfg.TrustedProxyCIDRs {
+	for _, entry := range cidrs {
 		ipNet, _, err := parseCIDROrIP(entry)
 		if err != nil {
 			continue

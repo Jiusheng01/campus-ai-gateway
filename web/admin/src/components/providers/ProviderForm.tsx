@@ -55,7 +55,7 @@ export function ProviderForm({
         <input value={v.name || ''} onChange={e => setV({...v, name: e.target.value})} />
       </Field>
 
-      <Field label="接口协议">
+      <Field label="接口协议" hint="直连数据面只支持 OpenAI Compatible；其他协议需要由 ThinkWatch 转换。">
         <select value={v.protocol || 'openai-chat'} onChange={e => setV({...v, protocol: e.target.value})}>
           {PROTOCOLS.map(p => (
             <option key={p} value={p}>
@@ -69,7 +69,10 @@ export function ProviderForm({
         <input className="mono" value={v.base_url || ''} onChange={e => setV({...v, base_url: e.target.value})} />
       </Field>
 
-      <Field label="凭据环境变量" hint="网关进程环境变量的名称，例如 DASHSCOPE_API_KEY。">
+      <Field
+        label="凭据环境变量"
+        hint="网关进程环境变量的名称，例如 DASHSCOPE_API_KEY。不能填网关自身的变量（ADMIN_、THINKWATCH_、DATABASE_、REDIS_ 等），否则等于把管理密钥交给这条渠道。"
+      >
         <input className="mono" value={v.credential_env || ''} onChange={e => setV({...v, credential_env: e.target.value})} />
       </Field>
 

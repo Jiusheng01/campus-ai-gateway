@@ -305,6 +305,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key", reqID)
 			return
 		}
+		// A key belongs to a tenant, and switching a tenant off has to switch
+		// off everything under it. Checking only the key's own status made
+		// "停用租户" a label with no effect: the keys kept serving.
+		if k.TenantStatus != 1 {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "tenant_disabled", ClientIP: s.clientIPFrom(r)})
+			httpx.Error(w, http.StatusForbidden, "tenant_disabled", "Tenant is disabled", reqID)
+			return
+		}
 		if k.ExpireAt != nil && time.Now().After(*k.ExpireAt) {
 			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "api_key_expired", ClientIP: s.clientIPFrom(r)})
 			httpx.Error(w, http.StatusUnauthorized, "api_key_expired", "API key expired", reqID)
@@ -317,13 +325,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		allowed := make(map[string]struct{}, len(k.AllowedModels))
+		allModels := false
 		for _, m := range k.AllowedModels {
+			if m == model.AllModelsWildcard {
+				allModels = true
+				continue
+			}
 			allowed[m] = struct{}{}
 		}
 		id := model.Identity{
 			TenantID:       k.TenantID,
 			APIKeyID:       k.ID,
 			AllowedModels:  allowed,
+			AllModels:      allModels,
 			AllowedIPs:     k.AllowedIPs,
 			RPMLimit:       k.RPMLimit,
 			TPMLimit:       k.TPMLimit,
@@ -410,8 +424,20 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-		if len(id.AllowedModels) > 0 {
+	if r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || strings.HasPrefix(r.URL.Path, "/v1/models/")) {
+		if r.URL.Path != "/v1/models" {
+			// There is no per-model metadata endpoint here, and pretending
+			// otherwise would mean forwarding a request whose meaning depends
+			// on which data plane is active. Answering 404 is the same answer
+			// in both modes.
+			httpx.Error(aw, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
+			return
+		}
+		if !id.AllModels {
+			// The key is restricted — possibly to nothing at all. Falling
+			// through to the routing table would advertise models this key
+			// cannot call, which is the same mistake as answering 200 for a
+			// request that will be refused a line later.
 			writeAllowedModels(aw, id.AllowedModels)
 			return
 		}
@@ -447,12 +473,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
 		return
 	}
-	if envelope.Model != "" && len(id.AllowedModels) > 0 {
-		if _, ok := id.AllowedModels[envelope.Model]; !ok {
-			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
-			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
-			return
-		}
+	if !id.AllowsModel(envelope.Model) {
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
+		httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
+		return
 	}
 
 	reserveAmount := estimateTPM(body, envelope)
@@ -531,13 +555,25 @@ func parseRequestEnvelope(body []byte, contentType string) (requestEnvelope, err
 	return out, nil
 }
 
+// modelFreePaths are the /v1 endpoints that legitimately carry no model field.
+//
+// This is an exception list, and that direction matters. It used to be an
+// allow-list of four paths, which meant every other endpoint under /v1 was
+// forwarded without a model name and therefore without the per-key model
+// allow-list: a key restricted to one model could reach any other route. Naming
+// the exceptions instead makes the check cover endpoints that do not exist yet,
+// which is the only way it keeps holding. The cost of failing closed is a 400
+// on a route this gateway cannot route anyway; the cost of failing open is the
+// allow-list.
+var modelFreePaths = map[string]bool{
+	"/v1/models": true,
+}
+
 func requiresModel(path string) bool {
-	switch path {
-	case "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions":
-		return true
-	default:
+	if !strings.HasPrefix(path, "/v1/") {
 		return false
 	}
+	return !modelFreePaths[path]
 }
 
 func estimateTPM(body []byte, envelope requestEnvelope) int64 {

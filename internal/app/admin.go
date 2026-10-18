@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,7 +240,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateProvider(&in); err != "" {
+		if err := validateProvider(&in, !s.cfg.UsesThinkWatch()); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 			return
 		}
@@ -272,7 +273,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateProvider(&in); err != "" {
+	if err := validateProvider(&in, !s.cfg.UsesThinkWatch()); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 		return
 	}
@@ -815,7 +816,58 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	}
 	cw.Flush()
 }
-func validateProvider(v *model.Provider) string {
+// reservedCredentialEnvPrefixes names the environment-variable families the
+// gateway process itself owns.
+//
+// A channel credential is an outbound secret the operator is already entitled
+// to use. The gateway's own keys are not: `credential_env` is a *name*, and the
+// data plane resolves it at request time with os.Getenv and sends the value to
+// whatever base_url the same operator supplied. Without this guard, "may edit
+// channels" silently means "may read every secret in the process environment",
+// because a channel pointing at an attacker-controlled base_url with
+// credential_env=ADMIN_SESSION_SECRET simply echoes the signing key back in the
+// connectivity test. That is a full management-plane takeover, and it was
+// reachable by gateway_admin, which is not supposed to be able to touch
+// administrators at all.
+//
+// The list is prefixes rather than exact names on purpose: a new ADMIN_*
+// variable added later must be protected without anyone remembering to update
+// this function.
+var reservedCredentialEnvPrefixes = []string{
+	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "DATABASE_", "DATA_PLANE",
+	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "KUBERNETES_",
+	"PG", "PUBLIC_", "REDIS_", "TEST_", "THINKWATCH_", "TRUSTED_", "TWCORE_",
+}
+
+// credentialEnvNamePattern is the shape a channel credential may take: an
+// ordinary upper-case environment variable name. Rejecting everything else also
+// rules out values that are not variable names at all, such as a literal key
+// pasted into the field — which would put a secret in the database, the one
+// thing the credential_env indirection exists to prevent.
+var credentialEnvNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,127}$`)
+
+// validateCredentialEnv rejects a credential_env that names something the
+// gateway owns. It returns an operator-facing reason, or "" when acceptable.
+func validateCredentialEnv(name string) string {
+	if !credentialEnvNamePattern.MatchString(name) {
+		return "credential_env must be an upper-case environment variable name (A-Z, 0-9, _)"
+	}
+	for _, prefix := range reservedCredentialEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return "credential_env must not name a gateway-owned variable (" + prefix + "*); use a dedicated variable for this channel"
+		}
+	}
+	return ""
+}
+
+// validateProvider validates a channel.
+//
+// direct selects the stricter protocol rule: the in-process data plane speaks
+// the OpenAI wire format only, so a channel marked anthropic or gemini would be
+// sent an OpenAI body and fail at request time. ThinkWatch mode keeps the wider
+// enum because the protocol is written into its configuration and ThinkWatch
+// performs the translation.
+func validateProvider(v *model.Provider, direct bool) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
@@ -823,12 +875,18 @@ func validateProvider(v *model.Provider) string {
 	if v.Name == "" || v.BaseURL == "" || v.CredentialEnv == "" {
 		return "name, base_url and credential_env are required"
 	}
+	if reason := validateCredentialEnv(v.CredentialEnv); reason != "" {
+		return reason
+	}
 	switch v.Protocol {
 	case "":
 		v.Protocol = "openai-chat"
 	case "openai-chat", "openai-responses", "anthropic", "gemini":
 	default:
 		return "unsupported protocol"
+	}
+	if direct && v.Protocol != "openai-chat" {
+		return "the direct data plane only speaks the OpenAI chat format; set protocol to openai-chat or run with ThinkWatch"
 	}
 	if v.Status == 0 {
 		v.Status = 1
@@ -873,12 +931,57 @@ func validateTenant(v *model.Tenant) string {
 	return ""
 }
 
+// normalizeAllowedModels validates and canonicalises a key's model allow-list.
+//
+// An empty list is a decision, not an omission: it means the key may call no
+// model. The wildcard is the opposite decision and has to be spelled out, so it
+// may not be mixed with named models — a list that says both "everything" and
+// "these two" has no single reading, and picking one of the two readings is
+// exactly how the code and the console came to disagree.
+func normalizeAllowedModels(list *[]string) string {
+	if list == nil || *list == nil {
+		*list = []string{}
+		return ""
+	}
+	seen := make(map[string]struct{}, len(*list))
+	out := make([]string, 0, len(*list))
+	wildcard := false
+	for _, raw := range *list {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return "allowed_models must not contain an empty entry"
+		}
+		if name == model.AllModelsWildcard {
+			wildcard = true
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if wildcard {
+		if len(out) > 0 {
+			return `allowed_models must be either the "*" wildcard or a list of models, not both`
+		}
+		*list = []string{model.AllModelsWildcard}
+		return ""
+	}
+	sort.Strings(out)
+	*list = out
+	return ""
+}
+
 func validateAPIKey(v *model.APIKeyAdmin) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.TenantID = strings.TrimSpace(v.TenantID)
 	v.RouteGroup = strings.TrimSpace(v.RouteGroup)
 	if v.Name == "" || v.TenantID == "" {
 		return "name and tenant_id are required"
+	}
+	if reason := normalizeAllowedModels(&v.AllowedModels); reason != "" {
+		return reason
 	}
 	if v.Status == 0 {
 		v.Status = 1

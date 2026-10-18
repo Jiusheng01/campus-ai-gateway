@@ -21,7 +21,12 @@ export function KeyForm({
   const [v, setV] = useState<KeyDraft>(() => ({...value, tenant_id: value.tenant_id || tenants[0]?.id || ''}))
   const isNew = !value.id
   const allowed = v.allowed_models || []
+  // "*" is the only way to grant every model. It is a checkbox of its own
+  // rather than "tick them all" so that a model added later is not silently
+  // outside a key that was meant to have everything.
+  const allModels = allowed.includes('*')
 
+  const setAllModels = (on: boolean) => setV({...v, allowed_models: on ? ['*'] : []})
   const toggleModel = (alias: string, on: boolean) =>
     setV({...v, allowed_models: on ? [...allowed, alias] : allowed.filter(x => x !== alias)})
 
@@ -47,11 +52,23 @@ export function KeyForm({
         </select>
       </Field>
 
-      <Field label="允许模型" hint="不勾选则不允许调用任何对外模型。">
+      <Field
+        label="允许模型"
+        hint={allModels ? '当前允许全部对外模型，包括以后新增的。' : '不勾选则不允许调用任何对外模型。'}
+      >
         <div className="checks">
+          <label>
+            <input type="checkbox" checked={allModels} onChange={e => setAllModels(e.target.checked)} />
+            全部对外模型（含以后新增）
+          </label>
           {models.map(m => (
             <label key={m.id}>
-              <input type="checkbox" checked={allowed.includes(m.alias)} onChange={e => toggleModel(m.alias, e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={allowed.includes(m.alias)}
+                disabled={allModels}
+                onChange={e => toggleModel(m.alias, e.target.checked)}
+              />
               {m.alias}
             </label>
           ))}
@@ -84,9 +101,6 @@ export function KeyForm({
         </Field>
         <Field label="最大并发">
           <input type="number" min="0" value={v.max_concurrency ?? 0} onChange={e => setV({...v, max_concurrency: +e.target.value})} />
-        </Field>
-        <Field label="线路分组" hint="可选，用于把请求约束到指定线路分组。">
-          <input value={v.route_group || ''} onChange={e => setV({...v, route_group: e.target.value})} />
         </Field>
       </div>
 

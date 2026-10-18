@@ -37,9 +37,6 @@ export function TenantForm({value, onSave, onCancel}: {value: TenantDraft; onSav
         <Field label="每月请求上限" hint="0 表示不限。">
           <input type="number" min="0" value={v.monthly_request_limit || 0} onChange={e => set('monthly_request_limit', +e.target.value)} />
         </Field>
-        <Field label="每月预算（micros）" hint="0 表示不限。">
-          <input type="number" min="0" value={v.monthly_budget_micros || 0} onChange={e => set('monthly_budget_micros', +e.target.value)} />
-        </Field>
       </div>
 
       <Field label="状态">

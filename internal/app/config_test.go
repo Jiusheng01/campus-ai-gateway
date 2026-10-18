@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -289,5 +290,56 @@ func TestZeroValueConfigKeepsThinkWatch(t *testing.T) {
 	}
 	if cfg.DataPlaneMode() != DataPlaneThinkWatch {
 		t.Fatalf("DataPlaneMode() = %q, want %q", cfg.DataPlaneMode(), DataPlaneThinkWatch)
+	}
+}
+
+// trusted-header trusts one shared string for the entire control plane, so a
+// short one is not a weak setting — it is an open door. Refusing to start is
+// the only response that cannot be ignored by accident.
+func TestTrustedHeaderRequiresALongProxySecret(t *testing.T) {
+	base := func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+		t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+		t.Setenv("ADMIN_SESSION_SECRET", "")
+		t.Setenv("DATA_PLANE", "direct")
+		t.Setenv("THINKWATCH_URL", "")
+		t.Setenv("ADMIN_AUTH_MODE", "trusted-header")
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", "short")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("a short ADMIN_PROXY_SECRET must stop startup in trusted-header mode")
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("a full-length secret must be accepted: %v", err)
+	}
+	if !cfg.AdminAuthModeTrustedHeader() {
+		t.Fatal("AdminAuthModeTrustedHeader must agree with the configured mode")
+	}
+	if len(cfg.AdminProxyCIDRs) != 0 {
+		t.Fatalf("an unset ADMIN_PROXY_CIDRS must stay empty, got %#v", cfg.AdminProxyCIDRs)
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	t.Setenv("ADMIN_PROXY_CIDRS", "10.0.0.0/8, 127.0.0.1")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatalf("valid CIDRs must be accepted: %v", err)
+	}
+	if len(cfg.AdminProxyCIDRs) != 2 {
+		t.Fatalf("want two parsed entries, got %#v", cfg.AdminProxyCIDRs)
+	}
+
+	base(t)
+	t.Setenv("ADMIN_PROXY_SECRET", strings.Repeat("s", minAdminProxySecretLen))
+	t.Setenv("ADMIN_PROXY_CIDRS", "not-an-address")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("an invalid ADMIN_PROXY_CIDRS entry must be rejected at startup")
 	}
 }

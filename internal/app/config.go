@@ -91,6 +91,17 @@ type Config struct {
 	AdminUserHeader  string
 	AdminRolesHeader string
 
+	// AdminProxyCIDRs limits which peers may present the trusted-header
+	// credentials at all.
+	//
+	// In trusted-header mode the only thing standing between an anonymous
+	// caller and super_admin is one shared string. Anyone who can reach the
+	// port and learns that string is an administrator, so the peer address is
+	// a second, independent condition rather than a nicety. Leaving the list
+	// empty keeps the historical behaviour — any peer may try — which is why
+	// startup says so out loud instead of failing.
+	AdminProxyCIDRs []string
+
 	// Admin session authentication.
 	AdminAccessTTL         time.Duration // lifetime of an access token
 	AdminRefreshTTL        time.Duration // lifetime of a session and its refresh cookie
@@ -165,6 +176,7 @@ func LoadConfig() (Config, error) {
 		AdminProxySecret: os.Getenv("ADMIN_PROXY_SECRET"),
 		AdminUserHeader:  getenv("ADMIN_USER_HEADER", "X-Forwarded-User"),
 		AdminRolesHeader: getenv("ADMIN_ROLES_HEADER", "X-Forwarded-Groups"),
+		AdminProxyCIDRs:  splitCSV(os.Getenv("ADMIN_PROXY_CIDRS")),
 
 		AdminAccessTTL:         getenvDuration("ADMIN_ACCESS_TTL", 15*time.Minute),
 		AdminRefreshTTL:        getenvDuration("ADMIN_REFRESH_TTL", 30*24*time.Hour),
@@ -238,8 +250,28 @@ func LoadConfig() (Config, error) {
 			return Config{}, errors.New("TRUSTED_PROXY_CIDRS contains an invalid entry: " + cidr)
 		}
 	}
+	for _, cidr := range cfg.AdminProxyCIDRs {
+		if _, _, err := parseCIDROrIP(cidr); err != nil {
+			return Config{}, errors.New("ADMIN_PROXY_CIDRS contains an invalid entry: " + cidr)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AdminAuthMode), "trusted-header") {
+		// This mode trusts one shared string for the whole control plane. A
+		// short or absent secret is not a weak configuration, it is an open
+		// door, and it is worth refusing to start over — an operator who
+		// meant to enable the mode will read the error, while one who set it
+		// by accident gets a loud stop instead of a silent takeover.
+		if len(cfg.AdminProxySecret) < minAdminProxySecretLen {
+			return Config{}, errors.New("ADMIN_PROXY_SECRET must be at least " + strconv.Itoa(minAdminProxySecretLen) + " characters in trusted-header mode")
+		}
+	}
 	return cfg, nil
 }
+
+// minAdminProxySecretLen is the shortest shared secret trusted-header mode will
+// accept. It matches the length a generated 128-bit hex token occupies, so the
+// documented way of producing one always satisfies it.
+const minAdminProxySecretLen = 32
 
 // normalizePublicOrigin validates an ADMIN_PUBLIC_ORIGIN value and reduces it
 // to the scheme://authority form the same-origin check compares against.
@@ -291,6 +323,12 @@ func parseCIDROrIP(raw string) (*net.IPNet, net.IP, error) {
 // for existing deployments and are treated as opt-in legacy paths.
 func (c Config) SessionAuthEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "session")
+}
+
+// AdminAuthModeTrustedHeader reports whether identities come from an
+// authenticating reverse proxy rather than from the gateway's own login.
+func (c Config) AdminAuthModeTrustedHeader() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "trusted-header")
 }
 
 // UsesThinkWatch reports whether business traffic is proxied to ThinkWatch Core.
