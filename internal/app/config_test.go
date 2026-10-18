@@ -293,17 +293,26 @@ func TestZeroValueConfigKeepsThinkWatch(t *testing.T) {
 	}
 }
 
+// setConfigEnv applies the environment LoadConfig needs to get as far as the
+// Admin UI settings. The cases that care about a particular field override it
+// after calling this, so the five values that only have to be present are
+// stated once.
+func setConfigEnv(t *testing.T, adminAuthMode string) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "phase1-session-signing-secret-value")
+	t.Setenv("DATA_PLANE", "direct")
+	t.Setenv("THINKWATCH_URL", "")
+	t.Setenv("ADMIN_AUTH_MODE", adminAuthMode)
+}
+
 // trusted-header trusts one shared string for the entire control plane, so a
 // short one is not a weak setting — it is an open door. Refusing to start is
 // the only response that cannot be ignored by accident.
 func TestTrustedHeaderRequiresALongProxySecret(t *testing.T) {
 	base := func(t *testing.T) {
-		t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
-		t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
-		t.Setenv("ADMIN_SESSION_SECRET", "")
-		t.Setenv("DATA_PLANE", "direct")
-		t.Setenv("THINKWATCH_URL", "")
-		t.Setenv("ADMIN_AUTH_MODE", "trusted-header")
+		setConfigEnv(t, "trusted-header")
 	}
 
 	base(t)

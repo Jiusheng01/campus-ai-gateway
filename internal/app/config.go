@@ -255,7 +255,10 @@ func LoadConfig() (Config, error) {
 			return Config{}, errors.New("ADMIN_PROXY_CIDRS contains an invalid entry: " + cidr)
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(cfg.AdminAuthMode), "trusted-header") {
+	// The same predicate the request path uses, so the rule applied at load
+	// time and the rule applied per request cannot disagree about what this
+	// mode is.
+	if cfg.AdminAuthModeTrustedHeader() {
 		// This mode trusts one shared string for the whole control plane. A
 		// short or absent secret is not a weak configuration, it is an open
 		// door, and it is worth refusing to start over — an operator who

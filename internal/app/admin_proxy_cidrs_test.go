@@ -136,11 +136,7 @@ func TestTrustedHeaderPeerComesFromTheConnectionNotAHeader(t *testing.T) {
 // stop the gateway from starting.
 func TestProxySecretLengthFloorAppliesOnlyToTrustedHeaderMode(t *testing.T) {
 	base := func(t *testing.T) {
-		t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
-		t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
-		t.Setenv("ADMIN_SESSION_SECRET", "phase1-session-signing-secret-value")
-		t.Setenv("DATA_PLANE", "direct")
-		t.Setenv("THINKWATCH_URL", "")
+		setConfigEnv(t, "")
 		t.Setenv("ADMIN_PROXY_SECRET", "short")
 	}
 
