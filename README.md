@@ -4,9 +4,9 @@
 
 Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 OpenAI-compatible API，对下通过可选的 ThinkWatch Core 或网关自身的直连数据面接入不同模型供应商，并由 Go Gateway 统一承担租户、业务 API Key、模型权限、配额、管理员认证、RBAC、审计和运维能力。
 
-> 当前状态（2026-10-17）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`；本日完成一轮全项目逻辑审计与修复，封堵了权限提升链、修正了模型白名单语义、让租户停用真正生效，并加固了 trusted-header 边界。
+> 当前状态（2026-10-18）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`；2026-10-17 完成一轮全项目逻辑审计与修复，封堵了权限提升链、修正了模型白名单语义、让租户停用真正生效，并加固了 trusted-header 边界。
 >
-> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言。
+> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言；2026-10-18 在临时 PostgreSQL 17 与 Redis 7 上重跑 `go test ./...` 全绿、无 SKIP，CI 通过。
 >
 > 仍未做：完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
 
