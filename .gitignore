@@ -24,3 +24,19 @@ internal/app/adminui/dist/assets/
 # Agent working state: local memory logs, scratch scripts and browser
 # profiles from acceptance runs. Machine-local, never shared.
 .workbuddy-ai/
+
+# Spec and ticket notes written by the issue-tracker workflow described in
+# docs/agents/issue-tracker.md. They quote local paths, audit notes and the
+# results of local verification runs, so they belong to the machine that wrote
+# them and are not published with the repository.
+.scratch/
+
+# Agent instructions, the domain glossary and the design records written while
+# implementing a feature. They are working material for the machine that wrote
+# them rather than part of the gateway, so they stay local too.
+#
+# Documents that the repository already tracks are not affected by these
+# entries: an ignore rule only stops untracked files here from being added.
+AGENTS.md
+GLOSSARY.md
+docs/
