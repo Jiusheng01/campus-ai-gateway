@@ -733,7 +733,6 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 - [x] `/v1/*` 模型字段改为 fail-closed 白名单，不再依赖端点黑名单
 - [x] trusted-header 加固（`ADMIN_PROXY_SECRET` 最短长度 + `ADMIN_PROXY_CIDRS` 对端限制）
 - [x] 直连数据面协议约束（只接受 `openai-chat`）
-- [x] 日志查询 / 聚合统一谓词与派生用量（`requestLogWhere` 单一事实来源）
 
 ### 下一阶段
 
