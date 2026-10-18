@@ -35,6 +35,13 @@ type APIKey struct {
 	MonthlyRequestLimit int64
 }
 
+// Enabled reports whether the key itself may serve traffic, independent of the
+// tenant that owns it. Like the tenant's status it is 1 or 2, so the zero value
+// is a third case again, and the same rule applies: grant on one value only.
+func (k APIKey) Enabled() bool {
+	return k.Status == 1
+}
+
 // TenantEnabled reports whether the key's owning tenant may serve traffic.
 //
 // Status is stored as 1 for enabled and 2 for disabled, which leaves the zero

@@ -42,3 +42,27 @@ func TestTenantVerdictIgnoresTheKeysOwnStatus(t *testing.T) {
 		}
 	}
 }
+
+// The middleware asks the same question of the key itself, first. It is stored
+// the same way — 1 for enabled, 2 for disabled — so it inherits the same rule:
+// grant on the one value that means enabled and refuse everything else,
+// including a status that was never loaded.
+func TestKeyEnabledOnlyAcceptsTheEnabledStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{"enabled", 1, true},
+		{"disabled", 2, false},
+		{"never loaded, i.e. the zero value", 0, false},
+		{"a value nobody defined", 9, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := model.APIKey{Status: tc.status}
+			if got := k.Enabled(); got != tc.want {
+				t.Fatalf("Enabled() with key status %d = %v, want %v", tc.status, got, tc.want)
+			}
+		})
+	}
+}

@@ -300,7 +300,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		plain := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		k, err := s.pg.FindAPIKeyByDigest(r.Context(), security.Digest(s.cfg.KeyHMACSecret, plain))
-		if err != nil || k.Status != 1 {
+		if err != nil || !k.Enabled() {
 			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, EventType: "invalid_api_key", ClientIP: s.clientIPFrom(r), Detail: "unknown or disabled key"})
 			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key", reqID)
 			return
