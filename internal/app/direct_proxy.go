@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -261,24 +263,32 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		lastStatus int
-		lastBody   []byte
-		lastErr    error
-		attempts   int
+		lastStatus  int
+		lastBody    []byte
+		lastErr     error
+		lastChannel string // the channel that produced whichever outcome is reported
+		attempts    int
 	)
 	for _, route := range routes {
 		attempts++
 		resp, err := s.attemptDirect(r, body, envelope, route)
 		if err != nil {
 			lastErr = err
+			lastStatus = 0
+			lastBody = nil
+			lastChannel = route.Provider
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
 			// Drain a little of the body so the connection can be reused, and
-			// keep it in case this was the last line.
+			// keep it for the server-side log. It is never copied to the client:
+			// an upstream body is not a trusted place to quote operator-facing
+			// text from.
 			lastBody, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 			_ = resp.Body.Close()
 			lastStatus = resp.StatusCode
+			lastErr = nil
+			lastChannel = route.Provider
 			continue
 		}
 		writeDirectResponse(w, resp, route, attempts)
@@ -290,26 +300,71 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	// which reads as "nothing was attempted" rather than "everything was".
 	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
 
+	// The client gets a stable code and the attempt count; the detail goes to
+	// the server log. An upstream body or a dial error can carry internal
+	// addresses and upstream credentials, and the caller cannot act on either.
 	switch {
 	case lastStatus != 0:
 		// Every line answered, none usefully. Report the last status rather
 		// than inventing a 502: the client can then tell an upstream 429 from a
 		// gateway failure.
+		//
+		// The model name is client-supplied, so it is single-lined before it
+		// reaches the log; the request id ties the line to its log row.
+		log.Printf("direct: request %s model %q failed on every channel; last status %d from %s: %s",
+			reqID, oneLine(envelope.Model), lastStatus, oneLine(lastChannel), excerpt(lastBody, 500))
 		httpx.Error(w, lastStatus, "upstream_error",
-			fmt.Sprintf("all %d channel(s) failed; last status %d: %s", attempts, lastStatus, excerpt(lastBody, 500)), reqID)
+			fmt.Sprintf("all %d channel(s) failed; last status %d", attempts, lastStatus), reqID)
 	case lastErr != nil:
+		log.Printf("direct: request %s model %q could not reach channel %s: %v",
+			reqID, oneLine(envelope.Model), oneLine(lastChannel), lastErr)
+		if detail := clientSafeFailure(lastErr); detail != "" {
+			httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
+				"no channel could serve the request: "+detail, reqID)
+			return
+		}
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
-			"no channel could serve the request: "+lastErr.Error(), reqID)
+			"no channel could serve the request", reqID)
 	default:
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", "no channel could serve the request", reqID)
 	}
+}
+
+// clientSafeFailure returns the part of an attempt error that is safe to show
+// the caller, or "" when nothing is.
+//
+// A missing credential is a configuration mistake the operator can fix, and it
+// names an environment variable rather than its value. Transport and upstream
+// errors can carry internal addresses and upstream credentials, so they stay
+// in the log.
+func clientSafeFailure(err error) string {
+	var missing missingCredentialError
+	if errors.As(err, &missing) {
+		return missing.Error()
+	}
+	return ""
+}
+
+// missingCredentialError says a channel has no credential configured.
+//
+// It is safe to show the caller: it names an environment variable, never its
+// value. Transport and upstream errors are not safe, because they can carry
+// internal addresses and upstream credentials, so the caller-facing code
+// distinguishes the two by type rather than by matching message text.
+type missingCredentialError struct {
+	Channel string
+	Env     string
+}
+
+func (e missingCredentialError) Error() string {
+	return fmt.Sprintf("channel %s: %s is empty", e.Channel, e.Env)
 }
 
 // attemptDirect sends one request to one channel.
 func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnvelope, route directRoute) (*http.Response, error) {
 	credential := strings.TrimSpace(os.Getenv(route.CredentialEnv))
 	if credential == "" {
-		return nil, fmt.Errorf("channel %s: %s is empty", route.Provider, route.CredentialEnv)
+		return nil, missingCredentialError{Channel: route.Provider, Env: route.CredentialEnv}
 	}
 
 	target, err := directTargetURL(route.BaseURL, r.URL)
@@ -356,6 +411,36 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	return client.Do(req)
 }
 
+// forwardableResponseHeaders is the allow list ADR-0012 names for response
+// headers: content type, caching, retry and standard rate-limit metadata. W3C
+// trace context is included so a client can correlate the request with the
+// upstream's trace, and the internal request id so the console can link a
+// failed response to its log row.
+//
+// Content-Length is copied because the body is streamed unchanged; leaving it
+// off would switch every non-streaming response to chunked encoding.
+var forwardableResponseHeaders = map[string]bool{
+	"Content-Type":         true,
+	"Content-Length":       true,
+	"Content-Encoding":     true,
+	"Cache-Control":        true,
+	"ETag":                 true,
+	"Last-Modified":        true,
+	"Expires":              true,
+	"Vary":                 true,
+	"Retry-After":          true,
+	"RateLimit-Limit":      true,
+	"RateLimit-Remaining":  true,
+	"RateLimit-Reset":      true,
+	"X-RateLimit-Limit":    true,
+	"X-RateLimit-Remaining": true,
+	"X-RateLimit-Reset":    true,
+	"Traceparent":          true,
+	"Tracestate":           true,
+	"Request-Id":           true,
+	"X-Request-Id":         true,
+}
+
 // writeDirectResponse copies the upstream response to the client and stamps the
 // telemetry headers the request logger reads.
 //
@@ -366,10 +451,20 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route directRoute, attempts int) {
 	defer resp.Body.Close()
 
+	// Copying headers is a security boundary, not a formality. The gateway
+	// injects the channel credential on the way out, so an upstream that
+	// reflects its request headers back (some proxies and debugging gateways
+	// do) would hand the caller the gateway's own credential. Cookies and
+	// challenges are likewise the upstream's business, not the tenant's.
+	//
+	// ADR-0009 and ADR-0012 require an explicit allow list here rather than a
+	// deny list: content type, caching, retry and rate-limit metadata, plus
+	// W3C trace context. A deny list has to anticipate every credential-bearing
+	// header an upstream might invent; an allow list only has to name the ones
+	// a client can legitimately use. Redirects, server identity, upstream CORS
+	// headers and connection-scoped headers are therefore excluded by default.
 	for k, values := range resp.Header {
-		switch http.CanonicalHeaderKey(k) {
-		case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
-			"Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		if !forwardableResponseHeaders[http.CanonicalHeaderKey(k)] {
 			continue
 		}
 		for _, v := range values {
@@ -527,21 +622,29 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 
 	envelope := requestEnvelope{Model: in.Model}
 	started := time.Now()
+	// The failure summary names the channel and the status; it never carries
+	// the upstream body or the dial error, which is where internal detail
+	// lives. The operator needs to know which line failed, not what the
+	// upstream wrote to its own log.
 	var failures []string
 	for _, route := range routes {
 		resp, err := s.attemptDirect(probe, payload, envelope, route)
 		if err != nil {
-			failures = append(failures, err.Error())
+			if detail := clientSafeFailure(err); detail != "" {
+				failures = append(failures, detail)
+			} else {
+				failures = append(failures, fmt.Sprintf("%s: unreachable", route.Provider))
+			}
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", route.Provider, readErr))
+			failures = append(failures, fmt.Sprintf("%s: response could not be read", route.Provider))
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
-			failures = append(failures, fmt.Sprintf("%s: HTTP %d %s", route.Provider, resp.StatusCode, excerpt(body, 200)))
+			failures = append(failures, fmt.Sprintf("%s: HTTP %d", route.Provider, resp.StatusCode))
 			continue
 		}
 		result, err := parseProbeResponse(body, time.Since(started))
@@ -558,7 +661,7 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 	if len(failures) > 0 {
 		message += ": " + strings.Join(failures, "; ")
 	}
-	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", excerpt([]byte(message), 900), reqID)
+	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", message, reqID)
 }
 
 // excerpt renders an upstream body for an error message: single line, bounded,
@@ -574,4 +677,10 @@ func excerpt(body []byte, limit int) string {
 		return text
 	}
 	return string([]rune(text)[:limit]) + "…"
+}
+
+// oneLine collapses a client-supplied value to a single line for logging, so a
+// model name containing newlines cannot forge a log entry.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

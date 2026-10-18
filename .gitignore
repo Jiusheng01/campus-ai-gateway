@@ -35,4 +35,5 @@ internal/app/adminui/dist/assets/
 # entries: an ignore rule only stops untracked files here from being added.
 AGENTS.md
 GLOSSARY.md
+CLAUDE.md
 docs/

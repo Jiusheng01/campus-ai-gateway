@@ -833,10 +833,15 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 // The list is prefixes rather than exact names on purpose: a new ADMIN_*
 // variable added later must be protected without anyone remembering to update
 // this function.
+// The proxy entries are separate because the direct data plane builds its
+// transport with http.ProxyFromEnvironment, which reads HTTPS_PROXY, NO_PROXY
+// and ALL_PROXY as well as HTTP_PROXY. Those values routinely embed
+// "user:password@proxy", and "HTTPS_" is not covered by "HTTP_".
 var reservedCredentialEnvPrefixes = []string{
 	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "DATABASE_", "DATA_PLANE",
-	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "KUBERNETES_",
-	"PG", "PUBLIC_", "REDIS_", "TEST_", "THINKWATCH_", "TRUSTED_", "TWCORE_",
+	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "HTTPS_", "KUBERNETES_",
+	"NO_PROXY", "ALL_PROXY", "PG", "PUBLIC_", "REDIS_", "TEST_", "THINKWATCH_",
+	"TRUSTED_", "TWCORE_",
 }
 
 // credentialEnvNamePattern is the shape a channel credential may take: an

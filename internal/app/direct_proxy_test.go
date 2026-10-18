@@ -467,8 +467,14 @@ func TestServeDirectRecordsAttemptsWhenEveryLineFails(t *testing.T) {
 	if got := rec.Header().Get("X-ThinkWatch-Attempts"); got != "2" {
 		t.Fatalf("attempts header = %q, want 2", got)
 	}
-	if !strings.Contains(rec.Body.String(), "模型暂时不可用") {
-		t.Fatalf("the upstream message must survive: %s", rec.Body.String())
+	// The upstream body is not copied to the caller: it can carry internal
+	// addresses and upstream credentials. The client gets the stable code and
+	// the attempt count; the body is logged server-side.
+	if strings.Contains(rec.Body.String(), "模型暂时不可用") {
+		t.Fatalf("the upstream body must not be echoed to the caller: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_error") {
+		t.Fatalf("the stable error code must remain: %s", rec.Body.String())
 	}
 }
 

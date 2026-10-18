@@ -372,6 +372,13 @@ func resolveDataPlane(requested, thinkWatchURL string) (string, error) {
 		if thinkWatchURL == "" {
 			return DataPlaneDirect, nil
 		}
+		// The same validation the explicit branch applies. Auto is the
+		// default for every deployment that sets THINKWATCH_URL, so leaving
+		// it unchecked would make the malformed-URL failure depend on whether
+		// the operator happened to name the mode.
+		if err := validateUpstreamURL(thinkWatchURL); err != nil {
+			return "", err
+		}
 		return DataPlaneThinkWatch, nil
 	case DataPlaneDirect:
 		return DataPlaneDirect, nil
