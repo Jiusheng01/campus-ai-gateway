@@ -17,6 +17,11 @@ import {ago, fmt, num} from '../lib/format'
 
 type Bundle = {keys: ApiKey[]; tenants: Tenant[]; models: ModelConfig[]}
 
+// "*" is the stored form of "every model, including ones added later". The list
+// renders the same words the key form uses rather than the raw star, so a key
+// that was granted everything reads as a scope an operator recognises.
+const modelLabel = (alias: string) => (alias === '*' ? '全部对外模型' : alias)
+
 export function ApiKeysPage() {
   const toast = useToast()
   const confirm = useConfirm()
@@ -116,7 +121,7 @@ export function ApiKeysPage() {
                 </td>
                 <td>
                   {(k.allowed_models || []).length ? (
-                    (k.allowed_models || []).map(a => <Badge key={a}>{a}</Badge>)
+                    (k.allowed_models || []).map(a => <Badge key={a}>{modelLabel(a)}</Badge>)
                   ) : (
                     <span className="muted">未授权任何模型</span>
                   )}
