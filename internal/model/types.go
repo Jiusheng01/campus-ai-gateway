@@ -35,6 +35,18 @@ type APIKey struct {
 	MonthlyRequestLimit int64
 }
 
+// TenantEnabled reports whether the key's owning tenant may serve traffic.
+//
+// Status is stored as 1 for enabled and 2 for disabled, which leaves the zero
+// value meaning neither: a key row read without its tenant (or from a query
+// that forgot to select the tenant) has status 0. Answering that case with
+// "enabled" is precisely how disabling a tenant stayed a label with no effect,
+// so the method grants on one value and refuses everything else, including the
+// one it cannot identify.
+func (k APIKey) TenantEnabled() bool {
+	return k.TenantStatus == 1
+}
+
 type Identity struct {
 	TenantID      string
 	APIKeyID      string

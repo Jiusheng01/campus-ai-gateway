@@ -308,7 +308,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// A key belongs to a tenant, and switching a tenant off has to switch
 		// off everything under it. Checking only the key's own status made
 		// "停用租户" a label with no effect: the keys kept serving.
-		if k.TenantStatus != 1 {
+		if !k.TenantEnabled() {
 			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "tenant_disabled", ClientIP: s.clientIPFrom(r)})
 			httpx.Error(w, http.StatusForbidden, "tenant_disabled", "Tenant is disabled", reqID)
 			return
