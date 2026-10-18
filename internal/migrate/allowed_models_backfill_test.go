@@ -17,7 +17,13 @@ import (
 // schema is still at 0010, exactly as they would exist in a deployment that is
 // being upgraded, and only then does 0011 run over them. Applying everything at
 // once and inserting afterwards would test the predicate but not the ordering.
-func TestAllowedModelsBackfillConvertsOnlyTheEmptyList(t *testing.T) {
+//
+// The unrestricted rows come in two shapes because the gateway wrote two. An
+// empty array is what the console sent; JSON null is what the writer stored when
+// the field was omitted entirely, and the old data plane read both as "no
+// restriction". A backfill that covered only the array would revoke the null
+// rows silently.
+func TestAllowedModelsBackfillKeepsEveryUnrestrictedRow(t *testing.T) {
 	url := isolatedDatabase(t)
 
 	dir := t.TempDir()
@@ -58,6 +64,7 @@ func TestAllowedModelsBackfillConvertsOnlyTheEmptyList(t *testing.T) {
 		value string
 	}{
 		{"unrestricted", `[]`},
+		{"legacy-null", `null`},
 		{"already-wildcard", `["*"]`},
 		{"restricted", `["campus-smart"]`},
 	}
@@ -79,6 +86,7 @@ func TestAllowedModelsBackfillConvertsOnlyTheEmptyList(t *testing.T) {
 	defer func() { _ = conn.Close(context.Background()) }()
 	for name, want := range map[string]string{
 		"unrestricted":     `["*"]`,
+		"legacy-null":      `["*"]`,
 		"already-wildcard": `["*"]`,
 		"restricted":       `["campus-smart"]`,
 	} {

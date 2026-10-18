@@ -12,6 +12,13 @@
 -- traffic on the strength of a documentation fix, which is the one outcome a
 -- security change must not produce unannounced.
 --
+-- A row holding JSON null is the same case, not a different one. The console
+-- always sent an array, but a client that omitted the field left the Go slice
+-- nil and the writer marshalled that as null; the old data plane asked
+-- len(allowed_models) and read both shapes as "no restriction". Rewriting only
+-- [] would strand the null rows on the new reading, where an empty list denies
+-- every model, and those keys would stop serving without anyone deciding that.
+--
 -- The backfill is guarded because it is a data migration, not a schema one. If
 -- the column is missing the database has drifted, and the schema contract check
 -- is the component that reports drift properly: it names the table, the column
@@ -28,7 +35,8 @@ BEGIN
     ) THEN
         UPDATE gateway_api_key
         SET allowed_models = '["*"]'::jsonb
-        WHERE allowed_models = '[]'::jsonb;
+        WHERE allowed_models = '[]'::jsonb
+           OR allowed_models = 'null'::jsonb;
     END IF;
 END
 $$;

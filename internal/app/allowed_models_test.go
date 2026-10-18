@@ -130,12 +130,13 @@ func TestWriteAllowedModelsListsExactlyTheAllowedSet(t *testing.T) {
 // does not provide, but its two structural promises are readable in the SQL and
 // are the parts that keep the upgrade from changing live access:
 //
-//   - only rows whose list is empty are rewritten, so a key that was already
-//     wildcarded or already restricted keeps its scope;
+//   - only rows the old reading treated as unrestricted are rewritten - an empty
+//     list, and the JSON null a writer produced for an omitted field - so a key
+//     that was already wildcarded or already restricted keeps its scope;
 //   - the UPDATE sits behind an existence guard, so a database missing the
 //     column is reported by the schema contract (table, column, expected shape)
 //     instead of failing first with "column does not exist".
-func TestAllowedModelsMigrationRewritesOnlyTheEmptyList(t *testing.T) {
+func TestAllowedModelsMigrationRewritesOnlyTheUnrestrictedShapes(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0011_allowed_models_explicit.sql"))
 	if err != nil {
 		t.Fatalf("the backfill migration must exist: %v", err)
@@ -147,7 +148,13 @@ func TestAllowedModelsMigrationRewritesOnlyTheEmptyList(t *testing.T) {
 		t.Fatalf("the migration must rewrite the empty list to the wildcard (%q missing):\n%s", wantSet, sql)
 	}
 	if !strings.Contains(sql, `WHERE allowed_models = '[]'::jsonb`) {
-		t.Fatalf("the migration must only touch rows whose list is empty:\n%s", sql)
+		t.Fatalf("the migration must only touch rows whose list is empty or null:\n%s", sql)
+	}
+	// JSON null is what the marshaller wrote when the field was omitted, and the
+	// old reading counted it as unrestricted too. Dropping it from the predicate
+	// would strand those keys on a reading that denies every model.
+	if !strings.Contains(sql, `OR allowed_models = 'null'::jsonb`) {
+		t.Fatalf("the migration must also rewrite the rows holding JSON null:\n%s", sql)
 	}
 
 	// Search for the statement, not the word: the header comment also contains
