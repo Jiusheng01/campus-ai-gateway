@@ -108,3 +108,20 @@ type RequestLog struct {
 	StatusCode     int
 	ErrorCode      string
 }
+
+// QuotaUsageRow is the settled usage for one tenant on one UTC day, derived
+// from the request log (the durable truth of the system).
+//
+// It is the input a Quota Counter rebuild writes back to Redis: the day bucket
+// is formatted exactly like the limiter's day key ("YYYYMMDD" in UTC), so the
+// reconstructed counters land on the same keys the gate reads. Month buckets
+// are the day bucket's first six characters ("YYYYMM"), matching the limiter's
+// month keys. In-flight usage — reserved on the counter but not yet written to
+// the log — is deliberately absent here, so rebuilding never fabricates a
+// charge that has not settled.
+type QuotaUsageRow struct {
+	TenantID string // tenant id as text; the tenant segment of the Redis key
+	Day      string // UTC day bucket "YYYYMMDD", == limiter tenantDayBucket()
+	Requests int64  // settled request count for that day
+	Tokens   int64  // settled total_tokens for that day
+}

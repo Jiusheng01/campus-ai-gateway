@@ -3,8 +3,10 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -51,7 +53,20 @@ return current
 
 type Limiter struct {
 	rdb *redis.Client
+
+	// rebuildSrc, when set, lets the hot path detect that a tenant quota
+	// counter is missing (e.g. Redis was flushed while the gateway kept
+	// running) and reconstruct it from the settled request log on demand. See
+	// SetQuotaRebuildSource and ensureQuotaCounters.
+	rebuildSrc QuotaRebuildSource
+	rebuildMu  sync.Mutex
 }
+
+// QuotaRebuildSource supplies the settled request-log rows a Quota Counter
+// rebuild needs. The gateway wires it to the storage layer; providing it from
+// the app keeps the limiter free of any storage dependency while still letting
+// the hot path trigger a rebuild when it finds a counter missing.
+type QuotaRebuildSource func(ctx context.Context) ([]model.QuotaUsageRow, error)
 
 type TPMReservation struct {
 	rdb    *redis.Client
@@ -70,6 +85,48 @@ func New(rdb *redis.Client) *Limiter {
 	return &Limiter{rdb: rdb}
 }
 
+// SetQuotaRebuildSource registers the loader that supplies settled request-log
+// rows when the hot path finds a tenant quota counter missing. Passing nil
+// disables on-demand rebuild (the default — a checkout or test that configures
+// no source keeps the previous behaviour).
+func (l *Limiter) SetQuotaRebuildSource(src QuotaRebuildSource) {
+	l.rebuildSrc = src
+}
+
+// ensureQuotaCounters is the "counter missing" trigger of a Quota Counter
+// rebuild. When a rebuild source is configured and the counter the caller is
+// about to touch does not exist — the signature of a flushed cache, or a
+// counter that was never armed — it reconstructs all tenant counters from the
+// settled request log before the gate reads them.
+//
+// probeKey is the specific counter the caller intends to mutate; the two paths
+// probe different keys because they depend on different counters (monthly
+// requests vs daily tokens). A missing key under a configured source means the
+// cache is not holding the settled baseline, so the gate would otherwise admit
+// against zero and over-run the tenant's quota. The rebuild is idempotent
+// (SET, not INCRBY) and serialised so concurrent requests cannot stampede the
+// storage loader.
+func (l *Limiter) ensureQuotaCounters(ctx context.Context, probeKey string) error {
+	if l.rebuildSrc == nil {
+		return nil
+	}
+	exists, err := l.rdb.Exists(ctx, probeKey).Result()
+	if err != nil {
+		return err
+	}
+	if exists == 1 {
+		return nil
+	}
+	l.rebuildMu.Lock()
+	defer l.rebuildMu.Unlock()
+	rows, err := l.rebuildSrc(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = l.RebuildQuotaCounters(ctx, rows)
+	return err
+}
+
 func minuteBucket() string {
 	return time.Now().UTC().Format("200601021504")
 }
@@ -82,12 +139,42 @@ func tenantMonthBucket() string {
 	return time.Now().UTC().Format("200601")
 }
 
+// The rebuild path and the hot path must agree on the exact key each counter
+// lives under and how long it lives, or a "repaired" cache would reconstruct a
+// different counter than the one the gate reads. These are the single source of
+// truth for both, so the format is defined once.
+
+// quotaRequestsKey is the monthly request counter for a tenant.
+func quotaRequestsKey(tenantID, month string) string {
+	return fmt.Sprintf("gw:quota:tenant:%s:requests:%s", tenantID, month)
+}
+
+// quotaDailyTokensKey is the daily token counter for a tenant.
+func quotaDailyTokensKey(tenantID, day string) string {
+	return fmt.Sprintf("gw:quota:tenant:%s:tokens:day:%s", tenantID, day)
+}
+
+// quotaMonthlyTokensKey is the monthly token counter for a tenant.
+func quotaMonthlyTokensKey(tenantID, month string) string {
+	return fmt.Sprintf("gw:quota:tenant:%s:tokens:month:%s", tenantID, month)
+}
+
+// TTLs are kept in sync with the historical behaviour of the live INCR path:
+// daily counters roll over after three days, monthly after forty.
+const (
+	quotaDailyTTL   = 3 * 24 * time.Hour
+	quotaMonthlyTTL = 40 * 24 * time.Hour
+)
+
 func (l *Limiter) AllowTenantRequest(ctx context.Context, tenantID string, monthlyLimit int64) (bool, error) {
 	if monthlyLimit <= 0 {
 		return true, nil
 	}
-	key := fmt.Sprintf("gw:quota:tenant:%s:requests:%s", tenantID, tenantMonthBucket())
-	allowed, err := tenantRequestScript.Run(ctx, l.rdb, []string{key}, monthlyLimit, int64((40*24*time.Hour)/time.Second)).Int()
+	key := quotaRequestsKey(tenantID, tenantMonthBucket())
+	if err := l.ensureQuotaCounters(ctx, key); err != nil {
+		return false, err
+	}
+	allowed, err := tenantRequestScript.Run(ctx, l.rdb, []string{key}, monthlyLimit, int64(quotaMonthlyTTL/time.Second)).Int()
 	return allowed == 1, err
 }
 
@@ -95,12 +182,15 @@ func (l *Limiter) ReserveTenantTokens(ctx context.Context, tenantID string, amou
 	if amount <= 0 || (dailyLimit <= 0 && monthlyLimit <= 0) {
 		return nil, true, nil
 	}
-	dailyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:day:%s", tenantID, tenantDayBucket())
-	monthlyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:month:%s", tenantID, tenantMonthBucket())
+	dailyKey := quotaDailyTokensKey(tenantID, tenantDayBucket())
+	monthlyKey := quotaMonthlyTokensKey(tenantID, tenantMonthBucket())
+	if err := l.ensureQuotaCounters(ctx, dailyKey); err != nil {
+		return nil, false, err
+	}
 	allowed, err := tenantTokenScript.Run(
 		ctx, l.rdb, []string{dailyKey, monthlyKey},
 		amount, dailyLimit, monthlyLimit,
-		int64((3*24*time.Hour)/time.Second), int64((40*24*time.Hour)/time.Second),
+		int64(quotaDailyTTL/time.Second), int64(quotaMonthlyTTL/time.Second),
 	).Int()
 	if err != nil {
 		return nil, false, err
