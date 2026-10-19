@@ -875,10 +875,15 @@ func shouldFailover(status int) bool {
 
 // serveModelTestDirect runs the admin connectivity test without ThinkWatch.
 //
-// It walks the same route list and applies the same failover policy as
-// serveDirect, so a test that passes here is evidence about the path a real
-// request would take. The one difference is intent: a probe wants to know which
-// channel answered, so the winner is reported back rather than discarded.
+// It walks the same route list and applies the same failover classification as
+// serveDirect (classifyAttempt decides what is worth failing over), so a test
+// that passes here is evidence about the path a real request could take. Two
+// deliberate differences: it does not apply weighted selection — a probe is a
+// deterministic walk, not a sampled request — and it does not consult the
+// circuit breaker, because a probe is the operator asking a channel directly,
+// including one the breaker currently holds open. The intent also differs: a
+// probe wants to know which channel answered, so the winner is reported back
+// rather than discarded.
 func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in thinkWatchTestRequest, payload []byte, reqID string) {
 	table, err := s.routeTableCached(r.Context())
 	if err != nil {

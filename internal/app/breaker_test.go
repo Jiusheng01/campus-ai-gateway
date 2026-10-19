@@ -121,6 +121,25 @@ func TestBreakerDoublesTheCooldownOnAFailedProbe(t *testing.T) {
 	}
 }
 
+// A request that was already in flight when the circuit tripped reports its
+// success afterwards. That is not evidence the channel is healthy now, so it
+// must not silently close the circuit and undo the breaker.
+func TestBreakerIgnoresALateSuccessWhileOpen(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	b := newCircuitBreaker().withClock(func() time.Time { return now })
+	for i := 0; i < breakerFailureThreshold; i++ {
+		b.record("p", false)
+	}
+	if b.allow("p") {
+		t.Fatal("the circuit must be open")
+	}
+
+	b.record("p", true)
+	if b.allow("p") {
+		t.Fatal("a late success must not close an open circuit")
+	}
+}
+
 func TestClassifyAttemptSplitsRetryableFromTerminal(t *testing.T) {
 	cases := map[int]attemptClass{
 		200: attemptServed,

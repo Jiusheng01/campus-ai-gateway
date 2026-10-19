@@ -135,6 +135,13 @@ func (b *circuitBreaker) record(provider string, ok bool) {
 	}
 
 	if ok {
+		// A late success must not close a circuit the breaker has already
+		// opened: it is a request that was in flight when the circuit tripped,
+		// not evidence the channel is healthy now. Only a closed circuit keeps
+		// succeeding, or the single half-open probe, can close it.
+		if c.state == breakerOpen {
+			return
+		}
 		c.state = breakerClosed
 		c.failures = 0
 		c.cooldown = 0
