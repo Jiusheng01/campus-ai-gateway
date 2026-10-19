@@ -21,6 +21,10 @@ type AdminUser struct {
 	DisplayName  string
 	Roles        []string
 	Status       int
+	// ScopeTenantID confines the account to the strict descendants of one
+	// tenant. nil means global reach. See migration 0010 for why the scope
+	// tenant itself is excluded.
+	ScopeTenantID *string
 	// AuthVersion invalidates every session and access token of this account
 	// when it changes. Password changes and disabling bump it.
 	AuthVersion int64

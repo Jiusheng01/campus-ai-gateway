@@ -19,6 +19,11 @@ type adminPrincipal struct {
 	Roles     map[string]bool
 	SessionID string
 	AuthMode  string
+	// ScopeTenantID confines the caller to the strict descendants of one
+	// tenant. nil means global reach. Roles decide *what* an account may do;
+	// the scope decides *where* it may do it, which is what makes delegation
+	// to a department or a teacher enforceable.
+	ScopeTenantID *string
 }
 
 type adminPrincipalKey struct{}
@@ -200,6 +205,42 @@ func (p adminPrincipal) canSelfService(path, method string) bool {
 		return true
 	}
 	return false
+}
+
+// --- tenant scope -----------------------------------------------------------
+
+// tenantWritable reports whether the caller may modify tenantID.
+//
+// super_admin is unrestricted. An account carrying a scope is confined to the
+// strict descendants of that tenant: strict, because an administrator who could
+// write to their own scope tenant could raise their own budget, which would
+// make the delegation meaningless.
+//
+// An account with no scope keeps full reach, which is what every existing
+// tenant_admin has today. Defaulting the other way ("no scope means nowhere")
+// would silently strip tenant management from accounts that already work, and
+// the field is set explicitly by an administrator rather than inferred, so it
+// is not the "missing value becomes a grant" pattern.
+func (s *Server) tenantWritable(ctx context.Context, p adminPrincipal, tenantID string) (bool, error) {
+	if p.Roles["super_admin"] {
+		return true, nil
+	}
+	if p.ScopeTenantID == nil {
+		return true, nil
+	}
+	return s.pg.TenantIsDescendant(ctx, *p.ScopeTenantID, tenantID, false)
+}
+
+// tenantReadable is tenantWritable for reads: it includes the scope tenant
+// itself, so an administrator can see their own node as well as their subtree.
+func (s *Server) tenantReadable(ctx context.Context, p adminPrincipal, tenantID string) (bool, error) {
+	if p.Roles["super_admin"] {
+		return true, nil
+	}
+	if p.ScopeTenantID == nil {
+		return true, nil
+	}
+	return s.pg.TenantIsDescendant(ctx, *p.ScopeTenantID, tenantID, true)
 }
 
 // --- client address resolution --------------------------------------------

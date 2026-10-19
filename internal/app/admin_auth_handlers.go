@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -402,6 +403,275 @@ func (s *Server) handleAdminSessionByID(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": sid})
 }
 
+// --- /admin/admin-users ----------------------------------------------------
+//
+// Account administration is reachable only by a super administrator: no other
+// role is granted these paths in adminPrincipal.can(), so every other caller is
+// stopped with a 403 before the handler runs.
+
+// adminUserView is the safe projection of an account in the administration
+// list. The password hash is deliberately absent from the struct, so it cannot
+// be serialised by accident.
+type adminUserView struct {
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles"`
+	Status      int      `json:"status"`
+	// ScopeTenantID is null for an account with global reach. Exposing it in
+	// the list is what lets an operator answer "who can touch this tenant?"
+	// without reading the database.
+	ScopeTenantID *string  `json:"scope_tenant_id"`
+	LastLoginAt   string   `json:"last_login_at"`
+	CreatedAt     string   `json:"created_at"`
+}
+
+func adminUserViewFrom(u model.AdminUser) adminUserView {
+	last := ""
+	if u.LastLoginAt != nil {
+		last = u.LastLoginAt.UTC().Format(time.RFC3339)
+	}
+	return adminUserView{
+		ID:            u.ID,
+		Username:      u.Username,
+		DisplayName:   u.DisplayName,
+		Roles:         rolesOf(u),
+		Status:        u.Status,
+		ScopeTenantID: u.ScopeTenantID,
+		LastLoginAt:   last,
+		CreatedAt:     u.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+type adminUserCreateRequest struct {
+	Username      string   `json:"username"`
+	DisplayName   string   `json:"display_name"`
+	Password      string   `json:"password"`
+	Roles         []string `json:"roles"`
+	ScopeTenantID *string  `json:"scope_tenant_id"`
+}
+
+// adminUserScopeRequest sets the tenant scope of an account. It lives on its own
+// sub-route rather than in the PATCH body because a pointer field cannot tell
+// "clear the scope" apart from "leave it alone" -- both decode to nil, and the
+// two mean very different things here.
+type adminUserScopeRequest struct {
+	ScopeTenantID *string `json:"scope_tenant_id"`
+}
+
+// adminUserUpdateRequest is a partial update. A non-empty Roles replaces the
+// role set; Status is applied only when present, so "enable" and "disable" stay
+// distinguishable from "leave it alone".
+type adminUserUpdateRequest struct {
+	Roles  []string `json:"roles"`
+	Status *int     `json:"status"`
+}
+
+func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if s.adminAuth == nil {
+		writeAdminError(w, reqID, ErrAdminAuthDisabled)
+		return
+	}
+	principal, ok := adminPrincipalFrom(r.Context())
+	if !ok {
+		writeAdminError(w, reqID, ErrAdminForbidden)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		users, err := s.adminAuth.listAdminUsers(r.Context())
+		if err != nil {
+			writeAdminError(w, reqID, err)
+			return
+		}
+		views := make([]adminUserView, 0, len(users))
+		for _, u := range users {
+			views = append(views, adminUserViewFrom(u))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": views})
+
+	case http.MethodPost:
+		var in adminUserCreateRequest
+		if err := decodeAdminAuthBody(r, &in); err != nil {
+			writeAdminError(w, reqID, ErrAdminBadRequest)
+			return
+		}
+		// The scope is a privilege grant, so it is checked before the account
+		// is created: an account that should not hold this scope must not come
+		// into existence and be fixed afterwards.
+		if msg, err := s.authorizeScopeGrant(r.Context(), principal, in.ScopeTenantID); err != nil {
+			writeAdminError(w, reqID, ErrAdminInternal)
+			return
+		} else if msg != "" {
+			s.auditAdminAuthResource(r, "admin_user_create_failed",
+				"admin_user:"+strings.TrimSpace(in.Username), http.StatusForbidden, principal.Username)
+			httpx.Error(w, http.StatusForbidden, "scope_out_of_bounds", msg, reqID)
+			return
+		}
+		user, err := s.adminAuth.createAdminUser(r.Context(), in.Username, in.DisplayName, in.Password, in.Roles, in.ScopeTenantID)
+		if err != nil {
+			s.auditAdminAuthResource(r, "admin_user_create_failed",
+				"admin_user:"+strings.TrimSpace(in.Username), statusForAdminError(err), principal.Username)
+			writeAdminError(w, reqID, err)
+			return
+		}
+		s.auditAdminAuthResource(r, "admin_user_created",
+			"admin_user:"+user.Username, http.StatusCreated, principal.Username)
+		writeJSON(w, http.StatusCreated, adminUserViewFrom(user))
+
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	}
+}
+
+func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if s.adminAuth == nil {
+		writeAdminError(w, reqID, ErrAdminAuthDisabled)
+		return
+	}
+	principal, ok := adminPrincipalFrom(r.Context())
+	if !ok {
+		writeAdminError(w, reqID, ErrAdminForbidden)
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/admin-users/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// The scope lives on its own sub-route: a pointer field cannot distinguish
+	// "clear it" from "leave it alone", and here the difference is between
+	// confining an account and granting it global reach.
+	if id, ok := strings.CutSuffix(rest, "/scope"); ok {
+		s.handleAdminUserScope(w, r, id)
+		return
+	}
+	id := rest
+	if strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPatch {
+		w.Header().Set("Allow", "PATCH")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+
+	var in adminUserUpdateRequest
+	if err := decodeAdminAuthBody(r, &in); err != nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+	if len(in.Roles) == 0 && in.Status == nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+
+	var (
+		user   model.AdminUser
+		err    error
+		action string
+	)
+	if len(in.Roles) > 0 {
+		action = "admin_user_roles_changed"
+		user, err = s.adminAuth.updateAdminUserRoles(r.Context(), principal.UserID, id, in.Roles)
+	} else {
+		action = "admin_user_enabled"
+		if *in.Status == model.AdminStatusDisabled {
+			action = "admin_user_disabled"
+		}
+		user, err = s.adminAuth.setAdminUserStatus(r.Context(), principal.UserID, id, *in.Status)
+	}
+	if err != nil {
+		s.auditAdminAuthResource(r, action+"_failed", "admin_user:"+id, statusForAdminError(err), principal.Username)
+		writeAdminError(w, reqID, err)
+		return
+	}
+	s.auditAdminAuthResource(r, action, "admin_user:"+user.Username, http.StatusOK, principal.Username)
+	writeJSON(w, http.StatusOK, adminUserViewFrom(user))
+}
+
+// handleAdminUserScope sets or clears the tenant scope of an account.
+//
+// This is the endpoint that makes delegation possible: create a teacher's
+// account, point its scope at the teacher's tenant, and the account can then
+// allocate budget to that teacher's students and to nothing else.
+func (s *Server) handleAdminUserScope(w http.ResponseWriter, r *http.Request, id string) {
+	reqID := r.Header.Get("X-Request-Id")
+	if s.adminAuth == nil {
+		writeAdminError(w, reqID, ErrAdminAuthDisabled)
+		return
+	}
+	principal, ok := adminPrincipalFrom(r.Context())
+	if !ok {
+		writeAdminError(w, reqID, ErrAdminForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	var in adminUserScopeRequest
+	if err := decodeAdminAuthBody(r, &in); err != nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+	if msg, err := s.authorizeScopeGrant(r.Context(), principal, in.ScopeTenantID); err != nil {
+		writeAdminError(w, reqID, ErrAdminInternal)
+		return
+	} else if msg != "" {
+		s.auditAdminAuthResource(r, "admin_user_scope_change_failed", "admin_user:"+id, http.StatusForbidden, principal.Username)
+		httpx.Error(w, http.StatusForbidden, "scope_out_of_bounds", msg, reqID)
+		return
+	}
+
+	user, err := s.adminAuth.setAdminUserScope(r.Context(), principal.UserID, id, in.ScopeTenantID)
+	if err != nil {
+		s.auditAdminAuthResource(r, "admin_user_scope_change_failed", "admin_user:"+id, statusForAdminError(err), principal.Username)
+		writeAdminError(w, reqID, err)
+		return
+	}
+	s.auditAdminAuthResource(r, "admin_user_scope_changed", "admin_user:"+user.Username, http.StatusOK, principal.Username)
+	writeJSON(w, http.StatusOK, adminUserViewFrom(user))
+}
+
+// authorizeScopeGrant checks whether the actor may hand out a given tenant
+// scope. It returns an operator-facing message rather than a sentinel because
+// every failure here is a 403 with a different explanation.
+//
+// An unscoped actor (super_admin, or any account without a scope) may grant any
+// scope, including none. A scoped actor may only grant a scope inside their own
+// subtree, and may never grant "no scope": that would hand out precisely the
+// global reach they do not themselves have.
+func (s *Server) authorizeScopeGrant(ctx context.Context, actor adminPrincipal, scopeTenantID *string) (string, error) {
+	if actor.Roles["super_admin"] || actor.ScopeTenantID == nil {
+		return "", nil
+	}
+	target := normalizeScopeTenantID(scopeTenantID)
+	if target == nil {
+		return "Only an unscoped administrator can grant an account without a scope", nil
+	}
+	ok, err := s.pg.TenantIsDescendant(ctx, *actor.ScopeTenantID, *target, true)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "The scope tenant is outside your own subtree", nil
+	}
+	return "", nil
+}
+
 // --- shared helpers --------------------------------------------------------
 
 func loginResponseFrom(t adminTokens) adminLoginResponse {
@@ -512,6 +782,13 @@ func (s *Server) checkSameOrigin(r *http.Request) error {
 // auditAdminAuth records an authentication event. It is best effort: an audit
 // write failure must never change the response the caller receives.
 func (s *Server) auditAdminAuth(r *http.Request, action string, status int, actor string) {
+	s.auditAdminAuthResource(r, action, r.URL.Path, status, actor)
+}
+
+// auditAdminAuthResource is auditAdminAuth with an explicit resource. Account
+// administration uses it to record *which* account was touched, which the
+// request path alone does not say.
+func (s *Server) auditAdminAuthResource(r *http.Request, action, resource string, status int, actor string) {
 	if s.pg == nil {
 		return
 	}
@@ -523,7 +800,7 @@ func (s *Server) auditAdminAuth(r *http.Request, action string, status int, acto
 		RequestID:  r.Header.Get("X-Request-Id"),
 		Actor:      actor,
 		Action:     action,
-		Resource:   r.URL.Path,
+		Resource:   resource,
 		StatusCode: status,
 		ClientIP:   s.clientIPFrom(r),
 	})

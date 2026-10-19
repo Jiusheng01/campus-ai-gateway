@@ -118,6 +118,105 @@ func (f *fakeAdminStore) TouchAdminUserLogin(_ context.Context, id string) {
 	f.users[id] = u
 }
 
+// --- account administration -------------------------------------------------
+
+func (f *fakeAdminStore) ListAdminUsers(context.Context) ([]model.AdminUser, error) {
+	out := make([]model.AdminUser, 0, len(f.users))
+	for _, u := range f.users {
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+func (f *fakeAdminStore) CreateAdminUser(_ context.Context, username, displayName, hash string, roles []string, scopeTenantID *string) (model.AdminUser, error) {
+	key := strings.ToLower(strings.TrimSpace(username))
+	if _, exists := f.names[key]; exists {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
+	}
+	f.seq++
+	id := uuid.NewString()
+	now := time.Now().UTC()
+	u := model.AdminUser{
+		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
+		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
+		ScopeTenantID: scopeTenantID,
+		CreatedAt:     now, UpdatedAt: now,
+	}
+	f.users[id] = u
+	f.names[key] = id
+	return u, nil
+}
+
+func (f *fakeAdminStore) UpdateAdminUserScope(_ context.Context, id string, scopeTenantID *string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	u.ScopeTenantID = scopeTenantID
+	u.UpdatedAt = time.Now().UTC()
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeAdminStore) UpdateAdminUserRoles(_ context.Context, id string, roles []string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	if f.wouldOrphanSuperAdmin(u, roles) {
+		return storage.ErrAdminLastSuperAdmin
+	}
+	u.Roles = roles
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeAdminStore) UpdateAdminUserStatus(_ context.Context, id string, status int) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	if status == model.AdminStatusDisabled && u.Status == model.AdminStatusEnabled &&
+		containsSuperAdmin(u.Roles) && f.enabledSuperAdmins() <= 1 {
+		return storage.ErrAdminLastSuperAdmin
+	}
+	u.Status = status
+	u.AuthVersion++
+	f.users[id] = u
+	return nil
+}
+
+// wouldOrphanSuperAdmin mirrors the guard embedded in the UPDATE statement:
+// stripping super_admin from the last enabled super administrator is refused.
+func (f *fakeAdminStore) wouldOrphanSuperAdmin(u model.AdminUser, next []string) bool {
+	if u.Status != model.AdminStatusEnabled || !containsSuperAdmin(u.Roles) {
+		return false
+	}
+	if containsSuperAdmin(next) {
+		return false
+	}
+	return f.enabledSuperAdmins() <= 1
+}
+
+func (f *fakeAdminStore) enabledSuperAdmins() int {
+	n := 0
+	for _, u := range f.users {
+		if u.Status == model.AdminStatusEnabled && containsSuperAdmin(u.Roles) {
+			n++
+		}
+	}
+	return n
+}
+
+func containsSuperAdmin(roles []string) bool {
+	for _, r := range roles {
+		if r == "super_admin" {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeAdminStore) CreateAdminSession(_ context.Context, s model.AdminSession) (model.AdminSession, error) {
 	if _, exists := f.sessions[s.SID]; exists {
 		return model.AdminSession{}, errors.New("duplicate session id")

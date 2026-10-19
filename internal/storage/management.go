@@ -171,46 +171,8 @@ WHERE m.id=$1::uuid
 	return v, nil
 }
 
-func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
-	rows, err := p.Pool.Query(ctx, `
-SELECT id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
-FROM gateway_tenant
-ORDER BY name
-`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []model.Tenant
-	for rows.Next() {
-		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
-}
-
-func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
-	return v, err
-}
-
-func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, updated_at=NOW()
-WHERE id=$1::uuid
-RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
-	return v, err
-}
+// Tenant CRUD lives in tenant_hierarchy.go: the tenant table is a tree, and the
+// create/update/move statements are all path-aware.
 
 func (p *Postgres) TenantUsageStats(ctx context.Context, tenantID string) (model.TenantUsageStats, error) {
 	var v model.TenantUsageStats

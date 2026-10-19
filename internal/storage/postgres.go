@@ -24,10 +24,17 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 
 func (p *Postgres) Close() { p.Pool.Close() }
 
+// FindAPIKeyByDigest resolves a presented key to its owner and the owner's
+// tenant path.
+//
+// The tenant's quota columns are deliberately NOT selected: they are nullable
+// (NULL = inherit) and can only be turned into concrete numbers by walking the
+// ancestor chain, which the caller does via FindTenantChain. The path is
+// returned instead because it is the cheap handle that makes that walk a single
+// indexed lookup.
 func (p *Postgres) FindAPIKeyByDigest(ctx context.Context, digest string) (model.APIKey, error) {
-	q := `SELECT k.id::text, k.tenant_id::text, k.name, k.key_prefix, k.key_digest, k.status, k.expire_at,
-k.allowed_models, k.allowed_ips, k.rpm_limit, k.tpm_limit, k.max_concurrency, COALESCE(k.route_group,''),
-t.daily_token_limit, t.monthly_token_limit, t.monthly_request_limit
+	q := `SELECT k.id::text, k.tenant_id::text, t.path, k.name, k.key_prefix, k.key_digest, k.status, k.expire_at,
+k.allowed_models, k.allowed_ips, k.rpm_limit, k.tpm_limit, k.max_concurrency, COALESCE(k.route_group,'')
 FROM gateway_api_key k
 JOIN gateway_tenant t ON t.id=k.tenant_id
 WHERE k.key_digest=$1
@@ -37,6 +44,7 @@ LIMIT 1`
 	err := p.Pool.QueryRow(ctx, q, digest).Scan(
 		&k.ID,
 		&k.TenantID,
+		&k.TenantPath,
 		&k.Name,
 		&k.KeyPrefix,
 		&k.KeyDigest,
@@ -48,9 +56,6 @@ LIMIT 1`
 		&k.TPMLimit,
 		&k.MaxConcurrency,
 		&k.RouteGroup,
-		&k.DailyTokenLimit,
-		&k.MonthlyTokenLimit,
-		&k.MonthlyRequestLimit,
 	)
 	if err != nil {
 		return model.APIKey{}, err

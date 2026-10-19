@@ -50,6 +50,11 @@ type adminStore interface {
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
+	ListAdminUsers(ctx context.Context) ([]model.AdminUser, error)
+	CreateAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string, scopeTenantID *string) (model.AdminUser, error)
+	UpdateAdminUserRoles(ctx context.Context, id string, roles []string) error
+	UpdateAdminUserStatus(ctx context.Context, id string, status int) error
+	UpdateAdminUserScope(ctx context.Context, id string, scopeTenantID *string) error
 
 	CreateAdminSession(ctx context.Context, s model.AdminSession) (model.AdminSession, error)
 	FindAdminSessionByID(ctx context.Context, sid string) (model.AdminSession, error)
@@ -480,12 +485,13 @@ func (a *adminAuthService) authenticate(ctx context.Context, accessToken string)
 	}
 
 	return adminPrincipal{
-		UserID:    user.ID,
-		Username:  user.Username,
-		User:      user.Username,
-		Roles:     filterAdminRoles(user.Roles),
-		SessionID: session.SID,
-		AuthMode:  "session",
+		UserID:        user.ID,
+		Username:      user.Username,
+		User:          user.Username,
+		Roles:         filterAdminRoles(user.Roles),
+		SessionID:     session.SID,
+		AuthMode:      "session",
+		ScopeTenantID: user.ScopeTenantID,
 	}, nil
 }
 
@@ -656,6 +662,215 @@ func filterAdminRoles(roles []string) map[string]bool {
 		out["auditor"] = true
 	}
 	return out
+}
+
+// --- account administration -------------------------------------------------
+//
+// Everything below is reachable only by a super administrator; the RBAC layer
+// in admin_auth.go refuses these routes for every other role. The rules encoded
+// here are the ones RBAC cannot express on its own.
+
+// adminRoleOrder fixes the serialisation order of the role set so stored JSON
+// stays stable and diffs remain readable.
+var adminRoleOrder = []string{"super_admin", "gateway_admin", "tenant_admin", "auditor", "operator"}
+
+// normalizeAdminRoles validates a submitted role list and returns it in a
+// stable order.
+//
+// Unlike filterAdminRoles it does not fall back to auditor: a request naming no
+// valid role is rejected outright, because silently granting auditor would hide
+// a typo behind a plausible-looking result.
+func normalizeAdminRoles(roles []string) ([]string, error) {
+	seen := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		switch role := strings.TrimSpace(r); role {
+		case "super_admin", "gateway_admin", "tenant_admin", "auditor", "operator":
+			seen[role] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil, ErrAdminRolesInvalid
+	}
+	out := make([]string, 0, len(seen))
+	for _, role := range adminRoleOrder {
+		if seen[role] {
+			out = append(out, role)
+		}
+	}
+	return out, nil
+}
+
+// listAdminUsers returns every account with the password hash stripped, so the
+// hash cannot reach a response body even if a handler forgets to filter it.
+func (a *adminAuthService) listAdminUsers(ctx context.Context) ([]model.AdminUser, error) {
+	users, err := a.store.ListAdminUsers(ctx)
+	if err != nil {
+		return nil, ErrAdminInternal
+	}
+	for i := range users {
+		users[i].PasswordHash = ""
+	}
+	return users, nil
+}
+
+// createAdminUser adds an administrator account.
+//
+// Username uniqueness is left to the database: the unique index on
+// lower(username) is the only check that two concurrent requests cannot race.
+//
+// scopeTenantID confines the new account to one subtree; nil creates an
+// unscoped account, which reaches every tenant. The caller decides which of the
+// two it is allowed to grant.
+func (a *adminAuthService) createAdminUser(ctx context.Context, username, displayName, password string, roles []string, scopeTenantID *string) (model.AdminUser, error) {
+	username = strings.TrimSpace(username)
+	displayName = strings.TrimSpace(displayName)
+
+	if username == "" || utf8.RuneCountInString(username) > 64 {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if utf8.RuneCountInString(displayName) > 128 {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	roleSet, err := normalizeAdminRoles(roles)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	if err := validateAdminPassword(username, password); err != nil {
+		return model.AdminUser{}, err
+	}
+	hash, err := security.HashPassword(password)
+	if err != nil {
+		return model.AdminUser{}, ErrAdminInternal
+	}
+
+	user, err := a.store.CreateAdminUser(ctx, username, displayName, hash, roleSet, normalizeScopeTenantID(scopeTenantID))
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUsernameTaken) {
+			return model.AdminUser{}, ErrAdminUsernameTaken
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	user.PasswordHash = ""
+	return user, nil
+}
+
+// setAdminUserScope changes where an account may act.
+//
+// Editing one's own scope is refused for the same reason editing one's own
+// roles is: widening it is an unapproved privilege escalation and narrowing it
+// locks the account out of its own console.
+func (a *adminAuthService) setAdminUserScope(ctx context.Context, actorID, targetID string, scopeTenantID *string) (model.AdminUser, error) {
+	if targetID == "" {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if targetID == actorID {
+		return model.AdminUser{}, ErrAdminSelfModification
+	}
+	if _, err := a.store.FindAdminUserByID(ctx, targetID); err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	if err := a.store.UpdateAdminUserScope(ctx, targetID, normalizeScopeTenantID(scopeTenantID)); err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	target, err := a.store.FindAdminUserByID(ctx, targetID)
+	if err != nil {
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	target.PasswordHash = ""
+	return target, nil
+}
+
+// normalizeScopeTenantID treats a blank uuid as "no scope". An empty string
+// from a JSON body means the same thing as omitting the field, and neither
+// should reach the database as a value that cannot be cast to uuid.
+func normalizeScopeTenantID(scopeTenantID *string) *string {
+	if scopeTenantID == nil {
+		return nil
+	}
+	if trimmed := strings.TrimSpace(*scopeTenantID); trimmed != "" {
+		return &trimmed
+	}
+	return nil
+}
+
+// updateAdminUserRoles replaces the roles of another account.
+//
+// Editing one's own roles is refused: depending on the direction it is either
+// an unapproved privilege escalation or a way to lock oneself out of the
+// console. The change takes effect on the target's very next request, because
+// roles are read from the database rather than carried in the token.
+func (a *adminAuthService) updateAdminUserRoles(ctx context.Context, actorID, targetID string, roles []string) (model.AdminUser, error) {
+	if targetID == "" {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if targetID == actorID {
+		return model.AdminUser{}, ErrAdminSelfModification
+	}
+	roleSet, err := normalizeAdminRoles(roles)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	target, err := a.store.FindAdminUserByID(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	// The existence check above keeps the two zero-row cases apart: a missing
+	// account is reported as not found, while a blocked write means the guard
+	// against removing the last super administrator fired.
+	if err := a.store.UpdateAdminUserRoles(ctx, targetID, roleSet); err != nil {
+		if errors.Is(err, storage.ErrAdminLastSuperAdmin) {
+			return model.AdminUser{}, ErrAdminLastSuperAdmin
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	target.Roles = roleSet
+	target.PasswordHash = ""
+	return target, nil
+}
+
+// setAdminUserStatus enables or disables another account.
+//
+// Disabling also revokes every session of the target, so the account is signed
+// out at once instead of lingering until its next request trips the status
+// check. Disabling oneself is refused for the obvious reason.
+func (a *adminAuthService) setAdminUserStatus(ctx context.Context, actorID, targetID string, status int) (model.AdminUser, error) {
+	if targetID == "" {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if status != model.AdminStatusEnabled && status != model.AdminStatusDisabled {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if targetID == actorID {
+		return model.AdminUser{}, ErrAdminSelfModification
+	}
+	target, err := a.store.FindAdminUserByID(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	if err := a.store.UpdateAdminUserStatus(ctx, targetID, status); err != nil {
+		if errors.Is(err, storage.ErrAdminLastSuperAdmin) {
+			return model.AdminUser{}, ErrAdminLastSuperAdmin
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	if status == model.AdminStatusDisabled {
+		_ = a.store.RevokeSessionsForUser(ctx, targetID, revokeReasonDisabled)
+	}
+	target.Status = status
+	target.PasswordHash = ""
+	return target, nil
 }
 
 func truncate(s string, max int) string {

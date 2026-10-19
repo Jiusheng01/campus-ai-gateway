@@ -79,6 +79,25 @@ var (
 	// ErrAdminBadRequest means the request body was missing or malformed.
 	ErrAdminBadRequest = errors.New("request body is invalid")
 
+	// ErrAdminUsernameTaken means another account already holds the username.
+	// The uniqueness rule is case-insensitive, matching the index on
+	// lower(username).
+	ErrAdminUsernameTaken = errors.New("this username is already taken")
+
+	// ErrAdminRolesInvalid means the submitted role set is empty or contains
+	// nothing recognisable. It is rejected rather than silently defaulted so a
+	// typo cannot hand out an unintended role.
+	ErrAdminRolesInvalid = errors.New("at least one valid role is required")
+
+	// ErrAdminSelfModification means the caller tried to change their own
+	// roles or disable their own account. Both are refused: the first is an
+	// unapproved privilege change, the second would lock the operator out.
+	ErrAdminSelfModification = errors.New("you cannot change your own roles or disable your own account")
+
+	// ErrAdminLastSuperAdmin means the change would leave the system without
+	// any enabled super administrator, making it permanently unmanageable.
+	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
+
 	// ErrAdminInternal is the catch-all for unexpected storage failures. The
 	// underlying error is logged, never returned to the client.
 	ErrAdminInternal = errors.New("administrator authentication failed")
@@ -125,6 +144,14 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):
 		return http.StatusBadRequest, "password_unchanged"
+	case errors.Is(err, ErrAdminRolesInvalid):
+		return http.StatusBadRequest, "invalid_roles"
+	case errors.Is(err, ErrAdminUsernameTaken):
+		return http.StatusConflict, "username_taken"
+	case errors.Is(err, ErrAdminSelfModification):
+		return http.StatusForbidden, "self_modification_forbidden"
+	case errors.Is(err, ErrAdminLastSuperAdmin):
+		return http.StatusConflict, "last_super_admin"
 	case errors.Is(err, ErrAdminBadRequest):
 		return http.StatusBadRequest, "invalid_request"
 	default:

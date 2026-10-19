@@ -210,6 +210,10 @@ func (s *Server) routes() {
 	s.mux.Handle("/admin/password", s.adminMiddleware(http.HandlerFunc(s.handleAdminPasswordChange)))
 	s.mux.Handle("/admin/sessions", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessions)))
 	s.mux.Handle("/admin/sessions/", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessionByID)))
+	// Account administration. No role other than super_admin is granted these
+	// paths in adminPrincipal.can(), so RBAC alone keeps everyone else out.
+	s.mux.Handle("/admin/admin-users", s.adminMiddleware(http.HandlerFunc(s.handleAdminUsers)))
+	s.mux.Handle("/admin/admin-users/", s.adminMiddleware(http.HandlerFunc(s.handleAdminUserByID)))
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
@@ -273,22 +277,48 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		allowed := make(map[string]struct{}, len(k.AllowedModels))
-		for _, m := range k.AllowedModels {
-			allowed[m] = struct{}{}
+		// Resolve the tenant hierarchy. The key's tenant is a leaf, and the
+		// budgets that actually bind are the ones along the path from the root
+		// down to it. The path came back with the key, so this is one
+		// primary-key lookup rather than a recursive walk.
+		chain, err := s.pg.FindTenantChainByPath(r.Context(), k.TenantPath)
+		if err != nil || len(chain) == 0 {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "invalid_api_key", ClientIP: s.clientIPFrom(r), Detail: "tenant hierarchy unavailable"})
+			httpx.Error(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key", reqID)
+			return
 		}
+		tenantChain := storage.ResolveQuotas(chain)
+
+		// Model access is an intersection, not an inheritance: the key's own
+		// allowlist narrows the tenant chain's, and a tenant can never widen
+		// what an ancestor allows. Either side being absent means "no
+		// constraint from that side", which is why the restricted flags are
+		// tracked separately from the sets.
+		tenantAccess, tenantAccessRestricted := storage.ResolveAccess(chain)
+		keyAccess := storage.StringSet(k.AllowedModels)
+		effectiveAccess, accessRestricted := storage.ComposeAccess(
+			keyAccess, len(k.AllowedModels) > 0,
+			tenantAccess, tenantAccessRestricted,
+		)
+
+		// The leaf of the chain carries the already-inherited limits, so the
+		// per-tenant fields keep their plain int64 shape and no nil-checking
+		// leaks into the data plane.
+		leaf := tenantChain[len(tenantChain)-1]
 		id := model.Identity{
-			TenantID:       k.TenantID,
-			APIKeyID:       k.ID,
-			AllowedModels:  allowed,
-			AllowedIPs:     k.AllowedIPs,
-			RPMLimit:       k.RPMLimit,
-			TPMLimit:       k.TPMLimit,
-			MaxConcurrency: k.MaxConcurrency,
-			RouteGroup:     k.RouteGroup,
-			DailyTokenLimit: k.DailyTokenLimit,
-			MonthlyTokenLimit: k.MonthlyTokenLimit,
-			MonthlyRequestLimit: k.MonthlyRequestLimit,
+			TenantID:              k.TenantID,
+			APIKeyID:              k.ID,
+			AllowedModels:         effectiveAccess,
+			ModelAccessRestricted: accessRestricted,
+			AllowedIPs:            k.AllowedIPs,
+			RPMLimit:              k.RPMLimit,
+			TPMLimit:              k.TPMLimit,
+			MaxConcurrency:        k.MaxConcurrency,
+			RouteGroup:            k.RouteGroup,
+			DailyTokenLimit:       leaf.DailyTokenLimit,
+			MonthlyTokenLimit:     leaf.MonthlyTokenLimit,
+			MonthlyRequestLimit:   leaf.MonthlyRequestLimit,
+			TenantChain:           tenantChain,
 		}
 
 		s.pg.TouchAPIKey(r.Context(), k.ID)
@@ -309,7 +339,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	aw := &auditResponseWriter{ResponseWriter: w}
 	var envelope requestEnvelope
 	var reservation *ratelimit.TPMReservation
-	var tenantReservation *ratelimit.TenantQuotaReservation
+	var tenantReservation *ratelimit.TenantChainReservation
 	defer func() {
 		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
 		status := aw.status
@@ -349,13 +379,33 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			if tenantReservation != nil {
 				_ = tenantReservation.Reconcile(ctx, totalTokens)
 			}
+		} else {
+			// No usage was reported: the upstream failed, a streamed response
+			// carried no usage chunk, or the body could not be parsed. Release the
+			// reservation rather than leaving it held -- otherwise the tenant's
+			// daily/monthly bucket keeps the estimate until the bucket expires
+			// (3 days for the daily key, 40 days for the monthly one).
+			if reservation != nil {
+				_ = reservation.Refund(ctx)
+			}
+			if tenantReservation != nil {
+				_ = tenantReservation.Refund(ctx)
+			}
 		}
 		_ = s.pg.InsertRequestLog(ctx, log)
 	}()
 
-	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
+	// The monthly request cap is enforced at every level of the tenant chain, so
+	// a request counts against the leaf and against each of its ancestors. The
+	// level that rejects is named in the event so an operator can tell whose
+	// budget ran out.
+	allowed, requestRejection, err := s.limit.AllowTenantRequestChain(r.Context(), id.TenantChain)
 	if err != nil || !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r)})
+		tenantID, detail := "", ""
+		if requestRejection != nil {
+			tenantID, detail = requestRejection.TenantID, "level="+requestRejection.Label
+		}
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: tenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r), Detail: detail})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_request_quota_exceeded", "Tenant monthly request quota exceeded", reqID)
 		return
 	}
@@ -368,7 +418,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-		if len(id.AllowedModels) > 0 {
+		// Restricted means an allowlist applies -- possibly an empty one, which
+		// is how "deny everything" is expressed. Returning the upstream catalog
+		// in that case would advertise models the caller cannot use.
+		if id.ModelAccessRestricted {
 			writeAllowedModels(aw, id.AllowedModels)
 			return
 		}
@@ -400,7 +453,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(aw, http.StatusBadRequest, "model_required", "Model is required", reqID)
 		return
 	}
-	if envelope.Model != "" && len(id.AllowedModels) > 0 {
+	if envelope.Model != "" && id.ModelAccessRestricted {
 		if _, ok := id.AllowedModels[envelope.Model]; !ok {
 			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 			httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
@@ -408,11 +461,51 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The estimate is reserved against the whole tenant chain, not just the
+	// leaf, so a parent's budget caps its entire subtree without any separate
+	// rollup step.
+	//
+	// When the request names a model, the per-model chain joins the same call.
+	// The two axes are ANDed, and doing it in one script preserves the
+	// guarantee that a rejection writes nothing at all: a request that would
+	// drain the campus-wide pool for a model must not leave the tenant's own
+	// counters incremented.
 	reserveAmount := estimateTPM(body, envelope)
-	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
+
+	levels := ratelimit.TenantQuotaLevels(id.TenantChain)
+	if envelope.Model != "" {
+		modelLevels, err := s.pg.ResolveModelQuotaLevels(r.Context(), id.TenantChain, envelope.Model)
+		if err != nil {
+			httpx.Error(aw, http.StatusInternalServerError, "database_error", "Unable to resolve the model quota", reqID)
+			return
+		}
+		// The shared pool is placed first. When it and a tenant level would
+		// both reject, the pool is the more actionable thing to report: it
+		// being exhausted affects every caller, not just this one.
+		levels = append(levels, ratelimit.ModelQuotaLevels(modelLevels)...)
+	}
+
+	var rejection *ratelimit.QuotaRejection
+	tenantReservation, allowed, rejection, err = s.limit.ReserveTokenChain(r.Context(), levels, reserveAmount)
 	if err != nil || !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
-		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
+		// The rejection is reported as a model event only when a model pool is
+		// what refused. Collapsing the two into one event type would hide the
+		// single most useful fact about the refusal -- whether the caller ran
+		// out of their own budget or of the shared one.
+		eventType := "tenant_token_quota_exceeded"
+		message := "Tenant token quota exceeded"
+		tenantID := ""
+		detail := ""
+		if rejection != nil {
+			tenantID = rejection.TenantID
+			detail = "level=" + rejection.Label
+			if rejection.ModelAlias != "" {
+				eventType = "model_token_quota_exceeded"
+				message = "Model token quota exceeded"
+			}
+		}
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: tenantID, APIKeyID: id.APIKeyID, EventType: eventType, ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model, Detail: detail})
+		httpx.Error(aw, http.StatusTooManyRequests, eventType, message, reqID)
 		return
 	}
 	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
