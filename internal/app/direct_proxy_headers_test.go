@@ -109,7 +109,7 @@ func TestServeDirectDoesNotEchoTheUpstreamErrorBody(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "upstream_error") {
 		t.Fatalf("the stable error code must remain so clients can branch on it: %s", rec.Body.String())
 	}
-	if got := rec.Header().Get("X-ThinkWatch-Attempts"); got != "1" {
+	if got := rec.Header().Get("X-Gateway-Attempts"); got != "1" {
 		t.Fatalf("attempts header = %q, want 1", got)
 	}
 }

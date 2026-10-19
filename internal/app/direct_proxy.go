@@ -36,9 +36,10 @@ import (
 // environment variable, streams the response back, and fails over to the next
 // line the same way ThinkWatch would.
 //
-// What it deliberately does not do: weighted routing and circuit breaking.
-// Those need per-channel state that outlives a request, and pretending to have
-// them would be worse than saying so.
+// It does now carry the per-channel state that outlives a request: a smooth
+// weighted round robin picks which line of a priority band starts (orderRoutes)
+// and a per-provider circuit breaker skips a channel that keeps failing
+// (breaker.go). Both are per instance and in memory.
 
 // directRoute is one usable line: a channel plus the upstream model name that
 // channel expects.
@@ -449,7 +450,7 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	// Every line failed. Record how many were tried before answering: the
 	// request log would otherwise show a total failure with no attempt count,
 	// which reads as "nothing was attempted" rather than "everything was".
-	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
+	w.Header().Set("X-Gateway-Attempts", strconv.Itoa(attempts))
 
 	// The client gets a stable code and the attempt count; the server log gets
 	// the gateway's own facts about the failure. Neither carries upstream
@@ -673,12 +674,13 @@ var forwardableResponseHeaders = map[string]bool{
 }
 
 // writeDirectResponse copies the upstream response to the client and stamps the
-// telemetry headers the request logger reads.
+// X-Gateway-* telemetry headers the request logger reads.
 //
-// The header names still say ThinkWatch. They are an internal contract between
-// the data plane and the logging wrapper, and renaming them would churn every
-// test that pins attribution; what matters is that they carry the truth in both
-// modes.
+// The headers are an internal contract between the data plane and the logging
+// wrapper: they carry the winning channel, its upstream model, the band's
+// priority and the attempt count, which is what the request log records. The
+// names are the gateway's own now that ThinkWatch is not the thing producing
+// them.
 func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route directRoute, attempts int) {
 	defer resp.Body.Close()
 
@@ -703,10 +705,10 @@ func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route direc
 		}
 	}
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-ThinkWatch-Provider", route.Provider)
-	w.Header().Set("X-ThinkWatch-Upstream-Model", route.UpstreamModel)
-	w.Header().Set("X-ThinkWatch-Route-Priority", strconv.Itoa(route.Priority))
-	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
+	w.Header().Set("X-Gateway-Provider", route.Provider)
+	w.Header().Set("X-Gateway-Upstream-Model", route.UpstreamModel)
+	w.Header().Set("X-Gateway-Route-Priority", strconv.Itoa(route.Priority))
+	w.Header().Set("X-Gateway-Attempts", strconv.Itoa(attempts))
 
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
