@@ -202,36 +202,6 @@ func TestNormalizeAllocationPreservesNilVersusEmpty(t *testing.T) {
 	}
 }
 
-func TestNormalizeTenantParentTreatsBlankAsRoot(t *testing.T) {
-	if got := normalizeTenantParent(nil); got != nil {
-		t.Fatalf("nil = %v, want nil", got)
-	}
-	blank := "  "
-	if got := normalizeTenantParent(&blank); got != nil {
-		t.Fatalf("blank = %v, want nil", got)
-	}
-	id := "  abc  "
-	got := normalizeTenantParent(&id)
-	if got == nil || *got != "abc" {
-		t.Fatalf("got %v, want \"abc\"", got)
-	}
-}
-
-func TestNormalizeScopeTenantIDTreatsBlankAsNoScope(t *testing.T) {
-	if got := normalizeScopeTenantID(nil); got != nil {
-		t.Fatalf("nil = %v, want nil", got)
-	}
-	blank := ""
-	if got := normalizeScopeTenantID(&blank); got != nil {
-		t.Fatalf("blank = %v, want nil", got)
-	}
-	id := " abc "
-	got := normalizeScopeTenantID(&id)
-	if got == nil || *got != "abc" {
-		t.Fatalf("got %v, want \"abc\"", got)
-	}
-}
-
 // A scoped administrator must not be able to hand out a scope wider than their
 // own, nor to create an account with no scope at all -- that would be exactly
 // the global reach they do not have.

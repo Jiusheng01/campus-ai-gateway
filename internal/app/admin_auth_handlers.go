@@ -421,9 +421,9 @@ type adminUserView struct {
 	// ScopeTenantID is null for an account with global reach. Exposing it in
 	// the list is what lets an operator answer "who can touch this tenant?"
 	// without reading the database.
-	ScopeTenantID *string  `json:"scope_tenant_id"`
-	LastLoginAt   string   `json:"last_login_at"`
-	CreatedAt     string   `json:"created_at"`
+	ScopeTenantID *string `json:"scope_tenant_id"`
+	LastLoginAt   string  `json:"last_login_at"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 func adminUserViewFrom(u model.AdminUser) adminUserView {
@@ -658,7 +658,7 @@ func (s *Server) authorizeScopeGrant(ctx context.Context, actor adminPrincipal, 
 	if actor.Roles["super_admin"] || actor.ScopeTenantID == nil {
 		return "", nil
 	}
-	target := normalizeScopeTenantID(scopeTenantID)
+	target := model.NormalizeOptionalID(scopeTenantID)
 	if target == nil {
 		return "Only an unscoped administrator can grant an account without a scope", nil
 	}

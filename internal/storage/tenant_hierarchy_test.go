@@ -441,21 +441,3 @@ func TestMarshalModelsPreservesTheThreeStates(t *testing.T) {
 		})
 	}
 }
-
-func TestNormalizeParentIDTreatsBlankAsRoot(t *testing.T) {
-	if got := normalizeParentID(nil); got != nil {
-		t.Fatalf("nil = %v, want nil", got)
-	}
-	blank := "   "
-	if got := normalizeParentID(&blank); got != nil {
-		t.Fatalf("blank = %v, want nil (a blank uuid must mean root)", got)
-	}
-	id := "abc"
-	got := normalizeParentID(&id)
-	if got == nil || *got != "abc" {
-		t.Fatalf("id = %v, want \"abc\"", got)
-	}
-	if got == &id {
-		t.Fatal("the returned pointer must not alias the caller's")
-	}
-}

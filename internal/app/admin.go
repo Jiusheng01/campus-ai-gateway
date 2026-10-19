@@ -115,7 +115,8 @@ func (s *Server) recordAdminForbidden(r *http.Request, p adminPrincipal) {
 	s.auditAdminAuthResource(r, "admin_forbidden:"+r.Method, resource, http.StatusForbidden, p.User)
 }
 
-func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {	switch {
+func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
+	switch {
 	case r.URL.Path == "/admin/status":
 		s.handleAdminStatus(w, r)
 	case r.URL.Path == "/admin/whoami":
@@ -222,11 +223,11 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"gateway":    true,
-		"postgres":   dbOK,
-		"redis":      redisOK,
-		"thinkwatch": thinkwatchOK,
-		"stats":      stats,
+		"gateway":        true,
+		"postgres":       dbOK,
+		"redis":          redisOK,
+		"thinkwatch":     thinkwatchOK,
+		"stats":          stats,
 		"provider_stats": providerStats,
 	})
 }
@@ -383,7 +384,7 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 		// A new node must land inside the caller's scope. The check is on the
 		// parent, not on the tenant being created -- the child does not exist
 		// yet, and its position is what determines whose subtree it joins.
-		parentID := normalizeTenantParent(in.ParentID)
+		parentID := model.NormalizeOptionalID(in.ParentID)
 		if parentID == nil {
 			if p.ScopeTenantID != nil {
 				httpx.Error(w, http.StatusForbidden, "tenant_out_of_scope", "Only an unscoped administrator can create a root tenant", reqID)
@@ -427,18 +428,6 @@ func (s *Server) listTenantsFor(r *http.Request, p adminPrincipal) ([]model.Tena
 		return s.pg.ListTenants(r.Context())
 	}
 	return s.pg.ListTenantsInSubtree(r.Context(), *p.ScopeTenantID)
-}
-
-// normalizeTenantParent is the app-side twin of the storage normaliser: a blank
-// parent_id from a JSON body means "root", not "the tenant whose id is empty".
-func normalizeTenantParent(parentID *string) *string {
-	if parentID == nil {
-		return nil
-	}
-	if trimmed := strings.TrimSpace(*parentID); trimmed != "" {
-		return &trimmed
-	}
-	return nil
 }
 
 func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
@@ -553,7 +542,7 @@ func (s *Server) handleTenantMove(w http.ResponseWriter, r *http.Request) {
 	// Moving a tenant out of the caller's subtree is a way of losing control of
 	// it, and moving one in is a way of gaining it. Both directions have to be
 	// inside the scope.
-	newParent := normalizeTenantParent(in.ParentID)
+	newParent := model.NormalizeOptionalID(in.ParentID)
 	if newParent == nil {
 		if p.ScopeTenantID != nil {
 			httpx.Error(w, http.StatusForbidden, "tenant_out_of_scope", "Only an unscoped administrator can promote a tenant to a root", reqID)
@@ -716,17 +705,17 @@ func (s *Server) handleTenantAllocation(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// normalizeAllocation trims and de-duplicates the model allowlist so that a
-// list like ["gpt-4o", " gpt-4o "] does not become a two-element set that fails
-// to match. A nil list stays nil: that is "inherit", and it must not be
-// confused with the empty list, which is "deny every model".
-func normalizeAllocation(a *model.TenantAllocation) {
-	if a.AllowedModels == nil {
-		return
+// normalizeModelList trims and de-duplicates a model allowlist so that a list
+// like ["gpt-4o", " gpt-4o "] does not become a two-element set that fails to
+// match. A nil list stays nil: that is "inherit", and it must not be confused
+// with the empty list, which is "deny every model".
+func normalizeModelList(models []string) []string {
+	if models == nil {
+		return nil
 	}
-	seen := make(map[string]struct{}, len(a.AllowedModels))
-	out := make([]string, 0, len(a.AllowedModels))
-	for _, m := range a.AllowedModels {
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, m := range models {
 		m = strings.TrimSpace(m)
 		if m == "" {
 			continue
@@ -737,7 +726,12 @@ func normalizeAllocation(a *model.TenantAllocation) {
 		seen[m] = struct{}{}
 		out = append(out, m)
 	}
-	a.AllowedModels = out
+	return out
+}
+
+// normalizeAllocation applies the allowlist rule to a tenant allocation.
+func normalizeAllocation(a *model.TenantAllocation) {
+	a.AllowedModels = normalizeModelList(a.AllowedModels)
 }
 
 // validateAllocationAgainstParent enforces the one rule that keeps the
@@ -819,19 +813,6 @@ func modelQuotaChainKeys(depth int) int {
 	return 2*depth + 2*(depth+1)
 }
 
-// normalizeQuotaTenantID maps a blank tenant id to nil, and nil means the
-// system-wide pool. Getting this wrong would silently turn "this tenant" into
-// "everyone", so it is applied on every path that accepts a tenant id.
-func normalizeQuotaTenantID(id *string) *string {
-	if id == nil {
-		return nil
-	}
-	if s := strings.TrimSpace(*id); s != "" {
-		return &s
-	}
-	return nil
-}
-
 func modelQuotaResource(q model.ModelQuota) string {
 	if q.TenantID == nil {
 		return "model_pool:" + q.ModelAlias
@@ -869,7 +850,7 @@ type modelQuotaCheck struct {
 // would be checked against a ceiling that does not exist, and a tenant treated
 // as a pool would skip every rule. Deriving it makes that impossible.
 func (c modelQuotaCheck) systemPool() bool {
-	return normalizeQuotaTenantID(c.Allocation.TenantID) == nil
+	return model.NormalizeOptionalID(c.Allocation.TenantID) == nil
 }
 
 // validateModelQuotaAllocation enforces the rules that keep the model quota
@@ -980,13 +961,14 @@ func (s *Server) handleModelQuotas(w http.ResponseWriter, r *http.Request) {
 }
 
 // modelQuotaWritable applies the scope rule shared by PUT and DELETE. The
-// campus-wide pool affects every caller, so writing it stays with an unscoped
+// campus-wide pool affects every caller, so writing it stays with a super
 // administrator; a department administrator configuring it would be setting a
-// budget for the whole university.
+// budget for the whole university. Tenant-scoped rows follow the same subtree
+// rule as every other tenant write.
 func (s *Server) modelQuotaWritable(r *http.Request, p adminPrincipal, tenantID *string) (bool, string) {
 	if tenantID == nil {
-		if p.ScopeTenantID != nil {
-			return false, "Only an unscoped administrator can change the system-wide model pool"
+		if !p.Roles["super_admin"] {
+			return false, "Only a super administrator can change the system-wide model pool"
 		}
 		return true, ""
 	}
@@ -1003,7 +985,10 @@ func (s *Server) putModelQuota(w http.ResponseWriter, r *http.Request, p adminPr
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	in.TenantID = normalizeQuotaTenantID(in.TenantID)
+	// A nil tenant id means the system-wide pool. Getting this normalisation
+	// wrong would silently turn "this tenant" into "everyone", which is why it
+	// runs before the writability check rather than inside the storage layer.
+	in.TenantID = model.NormalizeOptionalID(in.TenantID)
 
 	if ok, msg := s.modelQuotaWritable(r, p, in.TenantID); !ok {
 		s.auditAdminAuthResource(r, "model_quota_denied", modelQuotaResource(model.ModelQuota{TenantID: in.TenantID, ModelAlias: in.ModelAlias}), http.StatusForbidden, p.Username)
@@ -1234,13 +1219,13 @@ func requestLogFilterFrom(r *http.Request, defaultLimit int) storage.RequestLogF
 		failover = 0
 	}
 	return storage.RequestLogFilter{
-		Limit: limit,
-		Offset: offset,
-		Model: strings.TrimSpace(r.URL.Query().Get("model")),
-		Provider: strings.TrimSpace(r.URL.Query().Get("provider")),
-		Status: status,
+		Limit:     limit,
+		Offset:    offset,
+		Model:     strings.TrimSpace(r.URL.Query().Get("model")),
+		Provider:  strings.TrimSpace(r.URL.Query().Get("provider")),
+		Status:    status,
 		RequestID: strings.TrimSpace(r.URL.Query().Get("request_id")),
-		Failover: failover,
+		Failover:  failover,
 	}
 }
 
@@ -1275,7 +1260,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=campus-gateway-request-logs.csv")
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"created_at","request_id","tenant_id","requested_model","actual_model","provider","upstream_model","route_priority","attempts","failover","tokens","latency_ms","status_code","error_code"})
+	_ = cw.Write([]string{"created_at", "request_id", "tenant_id", "requested_model", "actual_model", "provider", "upstream_model", "route_priority", "attempts", "failover", "tokens", "latency_ms", "status_code", "error_code"})
 	for _, v := range items {
 		_ = cw.Write([]string{
 			v.CreatedAt.Format(time.RFC3339), v.RequestID, v.TenantID, v.RequestedModel, v.ActualModel,
@@ -1286,7 +1271,6 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	}
 	cw.Flush()
 }
-
 
 func validateProvider(v *model.Provider) string {
 	v.Name = strings.TrimSpace(v.Name)
@@ -1396,25 +1380,10 @@ func validateTenant(v *model.Tenant) string {
 		return "rpm_limit and tpm_limit cannot be negative"
 	}
 
-	// Normalise the allowlist: drop blanks and duplicates so that a list like
-	// ["gpt-4o", " gpt-4o "] does not silently become a two-element set that
-	// fails to match. A nil list is preserved as nil -- that is "inherit".
-	if v.AllowedModels != nil {
-		seen := make(map[string]struct{}, len(v.AllowedModels))
-		out := make([]string, 0, len(v.AllowedModels))
-		for _, m := range v.AllowedModels {
-			m = strings.TrimSpace(m)
-			if m == "" {
-				continue
-			}
-			if _, dup := seen[m]; dup {
-				continue
-			}
-			seen[m] = struct{}{}
-			out = append(out, m)
-		}
-		v.AllowedModels = out
-	}
+	// Drop blanks and duplicates so that a list like ["gpt-4o", " gpt-4o "] does
+	// not silently become a two-element set that fails to match. A nil list is
+	// preserved as nil -- that is "inherit".
+	v.AllowedModels = normalizeModelList(v.AllowedModels)
 	return ""
 }
 

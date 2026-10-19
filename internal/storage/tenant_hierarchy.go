@@ -82,18 +82,6 @@ func marshalModels(models []string) any {
 	return string(b)
 }
 
-// normalizeParentID treats an empty string the same as nil, because JSON bodies
-// routinely send "" for an absent uuid field.
-func normalizeParentID(parentID *string) *string {
-	if parentID == nil {
-		return nil
-	}
-	if s := strings.TrimSpace(*parentID); s != "" {
-		return &s
-	}
-	return nil
-}
-
 // ParseTenantPath splits a materialized path into its id segments, root first.
 // The stored form is "/<root-id>/<child-id>/", so the leading and trailing
 // separators are dropped and empty segments ignored.
@@ -329,7 +317,7 @@ WHERE id = ANY($1::uuid[])
 // materialized path embeds it: knowing the id up front turns "insert, then fix
 // up the path" into a single statement.
 func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	parentID := normalizeParentID(v.ParentID)
+	parentID := model.NormalizeOptionalID(v.ParentID)
 
 	var parentPath *string
 	depth := 0
@@ -412,7 +400,7 @@ RETURNING `+tenantColumns,
 // node's old path, so replacing that prefix with the new path moves the whole
 // subtree at once. depth is adjusted by the constant delta.
 func (p *Postgres) MoveTenant(ctx context.Context, id string, newParentID *string) (model.Tenant, error) {
-	parentID := normalizeParentID(newParentID)
+	parentID := model.NormalizeOptionalID(newParentID)
 
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {

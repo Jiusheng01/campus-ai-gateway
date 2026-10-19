@@ -202,17 +202,18 @@ func TestValidateModelQuotaEnforcesTheKeyBudget(t *testing.T) {
 
 // A blank tenant id from a JSON body means "the shared pool", not "the tenant
 // whose id is empty". Getting this backwards would silently turn one tenant's
-// quota into a campus-wide cap.
-func TestNormalizeQuotaTenantIDTreatsBlankAsTheSharedPool(t *testing.T) {
-	if got := normalizeQuotaTenantID(nil); got != nil {
+// quota into a campus-wide cap, so the contract is pinned here as well as in
+// internal/model.
+func TestModelQuotaTenantIDBlankMeansSharedPool(t *testing.T) {
+	if got := model.NormalizeOptionalID(nil); got != nil {
 		t.Fatalf("nil -> %v, want nil (shared pool)", got)
 	}
 	blank := "   "
-	if got := normalizeQuotaTenantID(&blank); got != nil {
+	if got := model.NormalizeOptionalID(&blank); got != nil {
 		t.Fatalf("blank -> %v, want nil (shared pool)", got)
 	}
 	id := "  11111111-1111-1111-1111-111111111111  "
-	got := normalizeQuotaTenantID(&id)
+	got := model.NormalizeOptionalID(&id)
 	if got == nil || *got != "11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("got %v, want the trimmed id", got)
 	}

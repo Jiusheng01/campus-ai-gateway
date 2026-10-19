@@ -12,7 +12,7 @@ import (
 )
 
 // This file is the storage half of the per-model quota axis. Read the header of
-// migrations/0012_model_quota.sql first: the three states of a limit column
+// migrations/0014_model_quota.sql first: the three states of a limit column
 // (NULL = inherit, 0 = unlimited, >0 = cap) and the meaning of a NULL tenant_id
 // (the system-wide pool) are defined there and relied on everywhere below.
 
@@ -47,19 +47,6 @@ func normalizeAlias(alias string) (string, error) {
 		return "", fmt.Errorf("model alias is too long (max 128 characters)")
 	}
 	return trimmed, nil
-}
-
-// normalizeTenantID treats a blank string the same as nil, because a JSON body
-// routinely sends "" for an absent uuid field. A nil result means the system
-// pool, so getting this wrong would silently turn "this tenant" into "everyone".
-func normalizeTenantID(id *string) *string {
-	if id == nil {
-		return nil
-	}
-	if s := strings.TrimSpace(*id); s != "" {
-		return &s
-	}
-	return nil
 }
 
 // ListModelQuotas returns every quota row, system pools first, then grouped by
@@ -108,7 +95,9 @@ func (p *Postgres) UpsertModelQuota(ctx context.Context, a model.ModelQuotaAlloc
 	if err != nil {
 		return model.ModelQuota{}, err
 	}
-	tenantID := normalizeTenantID(a.TenantID)
+	// A nil tenant id means the system pool, so getting this normalisation wrong
+	// would silently turn "this tenant" into "everyone".
+	tenantID := model.NormalizeOptionalID(a.TenantID)
 
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
@@ -184,7 +173,7 @@ func (p *Postgres) DeleteModelQuota(ctx context.Context, tenantID *string, alias
 DELETE FROM gateway_model_quota
 WHERE tenant_id IS NOT DISTINCT FROM $1::uuid
   AND model_alias = $2
-`, normalizeTenantID(tenantID), trimmed)
+`, model.NormalizeOptionalID(tenantID), trimmed)
 	if err != nil {
 		return false, fmt.Errorf("delete model quota: %w", err)
 	}

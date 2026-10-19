@@ -32,12 +32,12 @@ const (
 	adminSessionTouchInterval = 60 * time.Second
 
 	// Revocation reasons recorded in gateway_admin_session.revoke_reason.
-	revokeReasonLogout        = "logout"
-	revokeReasonPassword      = "password_changed"
-	revokeReasonReuse         = "refresh_reuse_detected"
-	revokeReasonDisabled      = "account_disabled"
-	revokeReasonStale         = "auth_version_mismatch"
-	revokeReasonAdminRevoked  = "revoked_by_admin"
+	revokeReasonLogout       = "logout"
+	revokeReasonPassword     = "password_changed"
+	revokeReasonReuse        = "refresh_reuse_detected"
+	revokeReasonDisabled     = "account_disabled"
+	revokeReasonStale        = "auth_version_mismatch"
+	revokeReasonAdminRevoked = "revoked_by_admin"
 )
 
 // adminStore is the slice of the storage layer the auth service depends on.
@@ -743,7 +743,7 @@ func (a *adminAuthService) createAdminUser(ctx context.Context, username, displa
 		return model.AdminUser{}, ErrAdminInternal
 	}
 
-	user, err := a.store.CreateAdminUser(ctx, username, displayName, hash, roleSet, normalizeScopeTenantID(scopeTenantID))
+	user, err := a.store.CreateAdminUser(ctx, username, displayName, hash, roleSet, model.NormalizeOptionalID(scopeTenantID))
 	if err != nil {
 		if errors.Is(err, storage.ErrAdminUsernameTaken) {
 			return model.AdminUser{}, ErrAdminUsernameTaken
@@ -772,7 +772,7 @@ func (a *adminAuthService) setAdminUserScope(ctx context.Context, actorID, targe
 		}
 		return model.AdminUser{}, ErrAdminInternal
 	}
-	if err := a.store.UpdateAdminUserScope(ctx, targetID, normalizeScopeTenantID(scopeTenantID)); err != nil {
+	if err := a.store.UpdateAdminUserScope(ctx, targetID, model.NormalizeOptionalID(scopeTenantID)); err != nil {
 		if errors.Is(err, storage.ErrAdminUserNotFound) {
 			return model.AdminUser{}, ErrAdminUserNotFound
 		}
@@ -784,19 +784,6 @@ func (a *adminAuthService) setAdminUserScope(ctx context.Context, actorID, targe
 	}
 	target.PasswordHash = ""
 	return target, nil
-}
-
-// normalizeScopeTenantID treats a blank uuid as "no scope". An empty string
-// from a JSON body means the same thing as omitting the field, and neither
-// should reach the database as a value that cannot be cast to uuid.
-func normalizeScopeTenantID(scopeTenantID *string) *string {
-	if scopeTenantID == nil {
-		return nil
-	}
-	if trimmed := strings.TrimSpace(*scopeTenantID); trimmed != "" {
-		return &trimmed
-	}
-	return nil
 }
 
 // updateAdminUserRoles replaces the roles of another account.

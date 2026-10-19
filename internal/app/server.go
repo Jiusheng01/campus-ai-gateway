@@ -479,9 +479,11 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(aw, http.StatusInternalServerError, "database_error", "Unable to resolve the model quota", reqID)
 			return
 		}
-		// The shared pool is placed first. When it and a tenant level would
-		// both reject, the pool is the more actionable thing to report: it
-		// being exhausted affects every caller, not just this one.
+		// The model axis is appended after the tenant axis, so the shared pool
+		// sits last in the chain. The script reports the first level that
+		// rejects, so when both would refuse the caller hears about their own
+		// budget first -- that is the one they can act on, and it keeps the
+		// shared pool's state out of a refusal the tenant cannot influence.
 		levels = append(levels, ratelimit.ModelQuotaLevels(modelLevels)...)
 	}
 

@@ -204,7 +204,7 @@ func (p *Postgres) CreateAdminUser(ctx context.Context, username, displayName, p
 VALUES ($1, $2, $3, $4::jsonb, $5::uuid)
 RETURNING ` + adminUserColumns
 
-	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded, normalizeParentID(scopeTenantID)))
+	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded, model.NormalizeOptionalID(scopeTenantID)))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return model.AdminUser{}, ErrAdminUsernameTaken
@@ -223,7 +223,7 @@ func (p *Postgres) UpdateAdminUserScope(ctx context.Context, id string, scopeTen
 	tag, err := p.Pool.Exec(ctx, `
 UPDATE gateway_admin_user
    SET scope_tenant_id = $2::uuid, updated_at = NOW()
- WHERE id = $1`, id, normalizeParentID(scopeTenantID))
+ WHERE id = $1`, id, model.NormalizeOptionalID(scopeTenantID))
 	if err != nil {
 		return err
 	}

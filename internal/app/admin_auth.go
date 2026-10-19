@@ -180,6 +180,11 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		switch {
 		case strings.HasPrefix(path, "/admin/tenants"),
 			strings.HasPrefix(path, "/admin/api-keys"),
+			// A per-model quota is a tenant-level budget, so the role that owns
+			// tenants owns them too. The campus-wide pool is not tenant-level:
+			// modelQuotaWritable carves it back out and requires super_admin for
+			// a request that names no tenant.
+			strings.HasPrefix(path, "/admin/model-quotas"),
 			path == "/admin/status":
 			return true
 		}

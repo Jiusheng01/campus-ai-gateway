@@ -62,11 +62,11 @@ const (
 //	0    -> explicitly unlimited
 //	>0   -> this tenant's own limit
 type Tenant struct {
-	ID     string  `json:"id"`
-	Code   string  `json:"code"`
-	Name   string  `json:"name"`
-	Status int     `json:"status"`
-	Kind   string  `json:"kind"` // school | dept | teacher | student | tenant
+	ID     string `json:"id"`
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Status int    `json:"status"`
+	Kind   string `json:"kind"` // school | dept | teacher | student | tenant
 
 	// Hierarchy. Path is a materialized path of UUID segments, e.g.
 	// "/<root-id>/<child-id>/". It is derived from parent_id but stored so that
@@ -143,11 +143,11 @@ type EffectiveLimits struct {
 }
 
 type TenantUsageStats struct {
-	TenantID       string `json:"tenant_id"`
-	DailyRequests  int64  `json:"daily_requests"`
-	MonthlyRequests int64 `json:"monthly_requests"`
-	DailyTokens    int64  `json:"daily_tokens"`
-	MonthlyTokens  int64  `json:"monthly_tokens"`
+	TenantID        string `json:"tenant_id"`
+	DailyRequests   int64  `json:"daily_requests"`
+	MonthlyRequests int64  `json:"monthly_requests"`
+	DailyTokens     int64  `json:"daily_tokens"`
+	MonthlyTokens   int64  `json:"monthly_tokens"`
 }
 
 type APIKeyAdmin struct {
@@ -206,8 +206,8 @@ type DashboardStats struct {
 }
 
 type ProviderStats struct {
-	Provider    string  `json:"provider"`
-	Requests    int64   `json:"requests"`
-	SuccessRate float64 `json:"success_rate"`
+	Provider     string  `json:"provider"`
+	Requests     int64   `json:"requests"`
+	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 }
