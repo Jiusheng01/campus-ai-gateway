@@ -6,12 +6,11 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// shadowDecision reports the channel the direct plane would pick first for a
-// model, so it can be compared with the channel ThinkWatch actually chose for
-// the same request.
+// shadowChain returns the ordered Routing Attempts the direct plane would make
+// for a model, recorded as shadow rows (leader first, then the fallback order).
 //
 // It advances the same smooth-weighted-round-robin rotation a live request
-// would, so the recorded distribution is the one the cutover would produce —
+// would, so the recorded sequence is the one the cutover would produce —
 // recording without advancing would sample the same leader every time and prove
 // nothing. It dials nothing.
 //
@@ -20,27 +19,29 @@ import (
 // check mark a half-open probe in flight (which nothing would ever resolve)
 // would corrupt the state the cutover depends on.
 //
-// ok is false when no enabled route exists for the model — the direct plane
+// nil is returned when no enabled route exists for the model — the direct plane
 // would have answered 404, so there is no decision to record.
-func (s *Server) shadowDecision(ctx context.Context, alias string) (model.RequestAttempt, bool) {
+func (s *Server) shadowChain(ctx context.Context, alias string) []model.RequestAttempt {
 	if s.selector == nil {
-		// No rotation configured: only reachable if the direct-plane state was
-		// never built, which shadow mode always builds.
-		return model.RequestAttempt{}, false
+		return nil
 	}
 	table, err := s.routeTableCached(ctx)
 	if err != nil {
-		return model.RequestAttempt{}, false
+		return nil
 	}
 	configured := table.models[alias]
 	if len(configured) == 0 {
-		return model.RequestAttempt{}, false
+		return nil
 	}
-	leader := s.orderRoutes(alias, configured)[0]
-	return model.RequestAttempt{
-		AttemptNo:     1,
-		Provider:      leader.Provider,
-		UpstreamModel: leader.UpstreamModel,
-		Outcome:       model.AttemptShadow,
-	}, true
+	ordered := s.orderRoutes(alias, configured)
+	out := make([]model.RequestAttempt, 0, len(ordered))
+	for i, route := range ordered {
+		out = append(out, model.RequestAttempt{
+			AttemptNo:     i + 1,
+			Provider:      route.Provider,
+			UpstreamModel: route.UpstreamModel,
+			Outcome:       model.AttemptShadow,
+		})
+	}
+	return out
 }

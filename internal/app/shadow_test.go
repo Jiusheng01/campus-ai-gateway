@@ -28,32 +28,42 @@ func TestResolveDataPlaneShadow(t *testing.T) {
 	}
 }
 
-// The shadow decision must follow the same weighted rotation a live request
-// would, or the comparison would sample one leader forever and prove nothing.
-func TestShadowDecisionFollowsTheWeightedRotation(t *testing.T) {
+// The shadow chain must follow the same weighted rotation a live request would,
+// or the comparison would sample one leader forever and prove nothing; and it
+// must carry the whole fallback order, not just the leader.
+func TestShadowChainFollowsTheWeightedRotation(t *testing.T) {
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
 		"campus-smart": {
 			{Provider: "a", UpstreamModel: "a", Priority: 1, Weight: 3},
 			{Provider: "b", UpstreamModel: "b", Priority: 1, Weight: 1},
+			{Provider: "c", UpstreamModel: "c", Priority: 2, Weight: 100},
 		},
 	}})
 
-	var got []string
+	var leads []string
 	for i := 0; i < 4; i++ {
-		d, ok := s.shadowDecision(context.Background(), "campus-smart")
-		if !ok {
-			t.Fatal("a configured model must have a shadow decision")
+		chain := s.shadowChain(context.Background(), "campus-smart")
+		if len(chain) != 3 {
+			t.Fatalf("chain length = %d, want 3", len(chain))
 		}
-		if d.Outcome != model.AttemptShadow {
-			t.Fatalf("outcome = %q, want %q", d.Outcome, model.AttemptShadow)
+		for j, a := range chain {
+			if a.Outcome != model.AttemptShadow {
+				t.Fatalf("outcome = %q, want %q", a.Outcome, model.AttemptShadow)
+			}
+			if a.AttemptNo != j+1 {
+				t.Fatalf("attempt_no = %d, want %d", a.AttemptNo, j+1)
+			}
 		}
-		got = append(got, d.Provider)
+		if chain[len(chain)-1].Provider != "c" {
+			t.Fatalf("the priority-2 line must be last, got %v", chain)
+		}
+		leads = append(leads, chain[0].Provider)
 	}
-	if want := "a,a,b,a"; strings.Join(got, ",") != want {
-		t.Fatalf("shadow decisions = %v, want %v", got, want)
+	if want := "a,a,b,a"; strings.Join(leads, ",") != want {
+		t.Fatalf("shadow leaders = %v, want %v", leads, want)
 	}
 
-	if _, ok := s.shadowDecision(context.Background(), "no-such-model"); ok {
-		t.Fatal("a model with no enabled route has no shadow decision")
+	if chain := s.shadowChain(context.Background(), "no-such-model"); chain != nil {
+		t.Fatal("a model with no enabled route has no shadow chain")
 	}
 }

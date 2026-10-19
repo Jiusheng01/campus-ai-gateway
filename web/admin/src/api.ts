@@ -22,7 +22,7 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
  * has nothing to write to, and a ThinkWatch health light would report on a
  * process the deployment never started.
  */
-export type DataPlane='direct'|'thinkwatch'
+export type DataPlane='direct'|'thinkwatch'|'shadow'
 
 /**
  * `thinkwatch` is absent in direct mode rather than false. A `false` would read

@@ -127,6 +127,8 @@ function outcomeLabel(a: RequestAttempt): string {
       return '成功'
     case 'skipped':
       return '跳过（熔断）'
+    case 'shadow':
+      return '影子决策（本请求由 ThinkWatch 服务）'
     default:
       return a.error_kind ? `失败（${a.error_kind}）` : '失败'
   }

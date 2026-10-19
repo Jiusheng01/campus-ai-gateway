@@ -129,29 +129,40 @@ ORDER BY attempt_no
 // ShadowReport compares the direct plane's shadow decisions with what
 // ThinkWatch actually served, over the window from `since`.
 //
-// It returns how many requests were sampled and the disagreeing ones. A
-// disagreement is on the channel NAME, which is the only field the two planes
-// share: the direct plane knows a provider by its gateway_provider.name and
-// ThinkWatch reports its own resolved channel name, so an operator reads the
-// rows rather than trusting the count alone.
+// The comparison is the direct plane's LEADER (attempt_no = 1 of its shadow
+// chain) against the channel ThinkWatch reported. ThinkWatch's `provider` is the
+// channel that WON, so a request it failed over on would disagree with the
+// direct plane's first pick even when both planes chose the same first line;
+// those requests are excluded, leaving the ones where a disagreement is a real
+// difference of first choice.
+//
+// The two planes name channels independently — the direct plane knows a
+// gateway_provider.name, ThinkWatch reports its own resolved channel name — so a
+// disagreement is evidence to read, not a verdict.
+//
+// sampled counts requests (leader rows), not attempt rows, so it is the same
+// denominator `mismatched` is a share of.
 func (p *Postgres) ShadowReport(ctx context.Context, since time.Time, limit int) (sampled, mismatched int64, rows []model.ShadowComparison, err error) {
+	const leaders = `
+	FROM gateway_request_attempt a
+	WHERE a.outcome='shadow' AND a.attempt_no=1 AND a.created_at >= $1`
+	const comparable = `
+	FROM gateway_request_attempt a
+	JOIN gateway_request_log l ON l.request_id = a.request_id
+	WHERE a.outcome='shadow' AND a.attempt_no=1 AND a.created_at >= $1
+	  AND COALESCE(l.attempts,1) <= 1`
+
 	if err := p.Pool.QueryRow(ctx, `
 SELECT
-	COUNT(*),
-	COUNT(*) FILTER (WHERE COALESCE(a.provider,'') <> COALESCE(l.provider,''))
-FROM gateway_request_attempt a
-LEFT JOIN gateway_request_log l ON l.request_id = a.request_id
-WHERE a.outcome='shadow' AND a.created_at >= $1
+	(SELECT COUNT(*)`+leaders+`),
+	(SELECT COUNT(*)`+comparable+` AND COALESCE(a.provider,'') <> COALESCE(l.provider,''))
 `, since).Scan(&sampled, &mismatched); err != nil {
 		return 0, 0, nil, err
 	}
 
 	r, err := p.Pool.Query(ctx, `
 SELECT a.request_id, COALESCE(a.provider,''), COALESCE(a.upstream_model,''),
-       COALESCE(l.provider,''), a.created_at
-FROM gateway_request_attempt a
-JOIN gateway_request_log l ON l.request_id = a.request_id
-WHERE a.outcome='shadow' AND a.created_at >= $1
+       COALESCE(l.provider,''), a.created_at`+comparable+`
   AND COALESCE(a.provider,'') <> COALESCE(l.provider,'')
 ORDER BY a.created_at DESC
 LIMIT $2

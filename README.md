@@ -101,7 +101,7 @@ ThinkWatch 正在退役：它仍可用作回退路径，但不再获得这些能
 
 直连模式下网关只需要 PostgreSQL 和 Redis，不必再跑第二个进程；Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，同步 ThinkWatch 的入口自动隐藏（`POST /admin/thinkwatch/sync` 会返回 `409 data_plane_direct`），模型连通测试改为由网关直接向渠道发起请求并在结果中回报实际应答的渠道。
 
-**切换建议走影子模式**：先用 `DATA_PLANE=shadow` 让两个平面并跑一段时间，用 `GET /admin/shadow-report`（或 `scripts/shadow-report.sql`）比对决策，一致后再切 `direct`。注意两个平面各自命名渠道（直连用 `gateway_provider.name`，ThinkWatch 用它自己的解析结果），所以报告里的「不一致」是需要阅读的证据而非判定——先确认两个名字指的是同一个上游。
+**切换建议走影子模式**：先用 `DATA_PLANE=shadow` 让两个平面并跑一段时间，用 `GET /admin/shadow-report`（或 `scripts/shadow-report.sql`）比对决策，一致后再切 `direct`。比对的是直连的**首选**（attempt chain 的第一条）与 ThinkWatch **最终胜出**的渠道，因此发生过 failover 的请求（`attempts > 1`）被排除——否则 ThinkWatch 换过线的请求会被误判成不一致。另外两个平面各自命名渠道（直连用 `gateway_provider.name`，ThinkWatch 用它自己的解析结果），所以报告里的「不一致」是需要阅读的证据而非判定——先确认两个名字指的是同一个上游。
 
 直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
 

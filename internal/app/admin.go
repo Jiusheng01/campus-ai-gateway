@@ -711,8 +711,8 @@ func (s *Server) handleShadowReport(w http.ResponseWriter, r *http.Request) {
 	window := 24 * time.Hour
 	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			httpx.Error(w, http.StatusBadRequest, "invalid_window", "window must be a positive duration such as 24h", reqID)
+		if err != nil || d <= 0 || d > 30*24*time.Hour {
+			httpx.Error(w, http.StatusBadRequest, "invalid_window", "window must be a positive duration no longer than 720h", reqID)
 			return
 		}
 		window = d
@@ -733,10 +733,11 @@ func (s *Server) handleShadowReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"window":         window.String(),
-		"sampled":        sampled,
-		"mismatched":     mismatched,
-		"data":           mismatches,
+		"window":     window.String(),
+		"limit":      limit,
+		"sampled":    sampled,
+		"mismatched": mismatched,
+		"data":       mismatches,
 	})
 }
 

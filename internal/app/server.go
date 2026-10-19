@@ -163,15 +163,19 @@ func NewServer(cfg Config) (*Server, error) {
 		s.upstream = http.HandlerFunc(s.serveDirect)
 		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
 	}
-	// The direct plane's state is built whenever it will be consulted — either as
-	// the serving plane or as the shadow that records what it would have chosen.
-	if !cfg.UsesThinkWatch() || cfg.ShadowDirect() {
+	// The direct plane's state is built whenever it will be consulted. As the
+	// serving plane it needs the transports and the breaker too; as the shadow it
+	// consults only the rotation, because it dials nothing and has nothing to
+	// break on.
+	if !cfg.UsesThinkWatch() {
 		s.transport = &transportPool{}
 		s.selector = newRouteSelector()
 		s.breaker = newCircuitBreaker()
+	} else if cfg.ShadowDirect() {
+		s.selector = newRouteSelector()
 	}
 	if cfg.ShadowDirect() {
-		log.Printf("data plane: shadow — ThinkWatch serves, the direct plane records its decision for comparison")
+		log.Printf("data plane: shadow — ThinkWatch serves, the direct plane records the chain it would have tried")
 	}
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
@@ -583,13 +587,11 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Shadow mode: ThinkWatch serves the request below, but the direct plane
-	// records the channel it would have chosen, so the two decisions can be
-	// compared for the same request id before the cutover.
-	if s.cfg.ShadowDirect() {
-		if decision, ok := s.shadowDecision(r.Context(), envelope.Model); ok {
-			attempts.record(decision)
-		}
-	}
+	// records the chain it would have tried, so the two decisions can be
+	// compared for the same request id before the cutover. It is recorded after
+	// the admission gates (see below), so a request the gateway itself refused
+	// never enters the comparison.
+
 
 	reserveAmount := estimateTPM(body, envelope)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
@@ -630,6 +632,16 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+
+	// Past every admission gate: this request will actually be served, so it is
+	// the set the shadow comparison should cover. Recording it earlier would
+	// sample requests the gateway refused for quota or rate limits, which have
+	// no ThinkWatch channel to compare against and would read as disagreements.
+	if s.cfg.ShadowDirect() {
+		for _, a := range s.shadowChain(r.Context(), envelope.Model) {
+			attempts.record(a)
+		}
+	}
 
 	s.upstream.ServeHTTP(aw, r)
 }

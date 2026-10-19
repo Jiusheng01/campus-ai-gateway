@@ -105,9 +105,10 @@ type APIKeyCreateResult struct {
 //
 // It exists because the Request Record keeps only the winning channel and a
 // count, which cannot say what was tried and why the gateway moved on. Outcome
-// is "served", "failed" or "skipped"; ErrorKind is the gateway's own
-// classification (never upstream text). No upstream response content is stored
-// (ADR-0009).
+// is "served", "failed", "skipped", or "shadow" (a decision the direct plane
+// recorded without sending, for comparison with ThinkWatch). ErrorKind is the
+// gateway's own classification (never upstream text). No upstream response
+// content is stored (ADR-0009).
 type RequestAttempt struct {
 	AttemptNo     int    `json:"attempt_no"`
 	Provider      string `json:"provider"`
