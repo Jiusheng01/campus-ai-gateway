@@ -85,7 +85,7 @@ LIMIT 2
 func (p *Postgres) TenantByID(ctx context.Context, id string) (model.Tenant, error) {
 	var v model.Tenant
 	err := p.Pool.QueryRow(ctx, `
-SELECT id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+SELECT `+tenantColumns+`
 FROM gateway_tenant
 WHERE id=$1::uuid
 `, id).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
