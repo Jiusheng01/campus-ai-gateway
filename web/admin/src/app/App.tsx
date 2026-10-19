@@ -30,7 +30,6 @@ import {ApiKeysPage} from '../pages/ApiKeysPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
 import {SecurityPage} from '../pages/SecurityPage'
-import {TasksPage} from '../pages/TasksPage'
 import {UsersPage} from '../pages/UsersPage'
 import {SettingsPage} from '../pages/SettingsPage'
 import {ProfilePage} from '../pages/ProfilePage'
@@ -260,7 +259,6 @@ function Console() {
       {page === 'logs' && <RequestLogsPage />}
       {page === 'audit' && <AuditPage />}
       {page === 'security' && <SecurityPage />}
-      {page === 'tasks' && <TasksPage />}
       {page === 'users' && <UsersPage />}
       {page === 'settings' && <SettingsPage who={who} authConfig={authConfig} />}
       {page === 'profile' && <ProfilePage who={who} />}

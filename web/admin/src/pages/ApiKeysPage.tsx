@@ -93,7 +93,7 @@ export function ApiKeysPage() {
             disabled={!canCreate}
             title={canCreate ? undefined : '请先创建租户'}
             onClick={() =>
-              setDraft({status: 1, rpm_limit: 60, tpm_limit: 100000, max_concurrency: 10, allowed_models: [], allowed_ips: []})
+              setDraft({status: 1, allowed_models: [], allowed_ips: []})
             }
           >
             创建 Key
@@ -101,13 +101,13 @@ export function ApiKeysPage() {
         }
       >
         {loading && !data ? (
-          <SkeletonRows rows={5} columns={9} />
+          <SkeletonRows rows={5} columns={7} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : keys.length ? (
           <Table
-            heads={['名称', '租户', 'Key 前缀', '状态', '允许模型', 'RPM', 'TPM', '已用请求', '已用 Token', '最后使用', '操作']}
-            minWidth={1380}
+            heads={['名称', '租户', 'Key 前缀', '状态', '允许模型', '已用请求', '已用 Token', '最后使用', '操作']}
+            minWidth={1180}
           >
             {keys.map(k => (
               <tr key={k.id}>
@@ -126,8 +126,6 @@ export function ApiKeysPage() {
                     <span className="muted">未授权任何模型</span>
                   )}
                 </td>
-                <td className="numeric">{num(k.rpm_limit)}</td>
-                <td className="numeric">{num(k.tpm_limit)}</td>
                 {/* Cumulative, aggregated from the request log rather than from
                     a counter on the key, so it can never disagree with the log
                     it summarises. */}
@@ -162,7 +160,7 @@ export function ApiKeysPage() {
                   variant="primary"
                   icon={<Plus />}
                   onClick={() =>
-                    setDraft({status: 1, rpm_limit: 60, tpm_limit: 100000, max_concurrency: 10, allowed_models: [], allowed_ips: []})
+                    setDraft({status: 1, allowed_models: [], allowed_ips: []})
                   }
                 >
                   创建 Key
@@ -176,7 +174,7 @@ export function ApiKeysPage() {
       {draft && (
         <Drawer
           title={draft.id ? '编辑 API 密钥' : '创建 API 密钥'}
-          subtitle="限流与配额在 Key 与租户两级同时生效，取更严格的一方。"
+          subtitle="限流与配额定义在租户上，本密钥继承所属租户的边界。"
           onClose={() => setDraft(null)}
         >
           <KeyForm

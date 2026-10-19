@@ -8,7 +8,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 >
 > 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言；2026-10-18 在临时 PostgreSQL 17 与 Redis 7 上重跑 `go test ./...` 全绿、无 SKIP，CI 通过。
 >
-> 仍未做：完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
+> 暂缓（冻结）：以下不在当前迭代范围内——完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。当前迭代聚焦收敛：把限流边界收敛到租户、修正并发语义，并移除承诺了却不存在的能力。
 
 ---
 
@@ -38,7 +38,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | trusted-header / 校园 SSO 边界 | ✅* | Gateway 侧完成；学校真实 IdP 待验收 |
 | 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
 | Prometheus / 健康检查 | ✅ | `/healthz`、`/readyz`、`/metrics` |
-| 30,000 RPM | ⏳ | k6 工具已完成，目标环境尚未正式压测 |
+| 30,000 RPM | 🧊 冻结 | k6 工具已完成；性能目标暂缓，等真实环境与压测证据 |
 
 ---
 
@@ -117,7 +117,6 @@ http://127.0.0.1:8080/admin-ui
 - 用户（super_admin）
 - 使用日志筛选、分页、CSV 与详情
 - 审计日志与安全事件
-- 任务日志（占位：网关为同步代理，暂无异步任务数据源）
 - 个人资料、安全与访问（修改密码、登录设备、退出登录）
 
 默认：
@@ -674,16 +673,18 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 
 ## 13. 当前已知限制
 
-- 完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
+> 标注 **🧊 冻结** 的条目不在当前迭代范围内（见顶部说明）。
+
+- 🧊 冻结：完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
 - 直连数据面**不做加权路由和熔断**，只做按 priority / weight 排序的故障切换；需要这两项能力请继续使用 ThinkWatch。
 - ThinkWatch 最终 Provider / attempts / failover telemetry 仍取决于 Core 暴露的可信路由事实。
-- 学校真实 IdP 尚未完成现场集成验收。
+- 🧊 冻结：学校真实 IdP 尚未完成现场集成验收。
 - 目前没有管理员自助“忘记密码”与完整管理员生命周期 UI。
 - `ADMIN_SESSION_IDLE_TTL` 尚未实现；当前主要使用 Refresh absolute TTL。
 - 管理员 Access JWT 当前仍使用项目内 HS256 实现，后续可迁移成熟 JWT 库。
-- Multi-Gateway / PostgreSQL / Redis HA 尚未做目标环境故障切换验收。
-- Embedding / ASR 的真实 Provider 尚未完成最终验收。
-- 30,000 RPM 仍必须在代表性生产拓扑实测，不能仅凭代码或本地压测标记通过。
+- 🧊 冻结：Multi-Gateway / PostgreSQL / Redis HA 尚未做目标环境故障切换验收。
+- 🧊 冻结：Embedding / ASR 的真实 Provider 尚未完成最终验收。
+- 🧊 冻结：30,000 RPM 仍必须在代表性生产拓扑实测，不能仅凭代码或本地压测标记通过。
 - `/v1/*` 中除 `/v1/models` 以外的路径一律要求请求体带 `model` 字段，否则 `400 model_required`。这是为了不让"没有 model 的请求"绕过模型白名单；如果将来接入确实不含 `model` 的上游端点（如部分 ASR 接口），需要把该路径加入 `modelFreePaths` 例外表。
 - 线路分组（`route_group`）字段保留在库表与 API 中但**两个数据面都不读取**，因此已从 Admin UI 摘除；在直连模式实现它会让两个数据面的行为不一致，故暂不实现。
 - 月度预算（`monthly_budget_micros`）同样是**存而不执行**——没有单价数据就无法把 Token 用量折算成金额，字段保留会继续接受写入，但已从 Admin UI 摘除。真正的额度控制目前由 RPM / TPM / 最大并发承担。
@@ -719,14 +720,18 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 
 ### 下一阶段
 
+- [ ] 管理员生命周期管理 / 密码恢复
+- [ ] Secret Manager / KMS 接入
+- [ ] 数据面自研补齐：真正的加权路由、按错误率的熔断、逐次 attempt 遥测，随后退役 ThinkWatch（见顶部说明）
+
+#### 冻结（暂不排期）
+
 - [ ] 完整业务数据面 Qwen -> Ark Failover 验收
 - [ ] ThinkWatch 最终 Route telemetry bridge
 - [ ] 学校真实 IdP 接入验收
-- [ ] 管理员生命周期管理 / 密码恢复
 - [ ] Multi-Gateway / PostgreSQL / Redis HA
 - [ ] Embedding / ASR 真实 Provider
 - [ ] 30,000 RPM 正式性能验收
-- [ ] Secret Manager / KMS 接入
 
 ---
 

@@ -92,18 +92,6 @@ export function KeyForm({
         />
       </Field>
 
-      <div className="formGrid">
-        <Field label="RPM 上限" hint="每分钟请求数，0 表示不限。">
-          <input type="number" min="0" value={v.rpm_limit ?? 0} onChange={e => setV({...v, rpm_limit: +e.target.value})} />
-        </Field>
-        <Field label="TPM 上限" hint="每分钟 Token 数，0 表示不限。">
-          <input type="number" min="0" value={v.tpm_limit ?? 0} onChange={e => setV({...v, tpm_limit: +e.target.value})} />
-        </Field>
-        <Field label="最大并发">
-          <input type="number" min="0" value={v.max_concurrency ?? 0} onChange={e => setV({...v, max_concurrency: +e.target.value})} />
-        </Field>
-      </div>
-
       <Field label="过期时间（ISO 8601，留空表示永不过期）">
         <input className="mono" placeholder="2026-12-31T00:00:00Z" value={v.expire_at || ''} onChange={e => setV({...v, expire_at: e.target.value || undefined})} />
       </Field>

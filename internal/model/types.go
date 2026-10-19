@@ -22,6 +22,10 @@ type APIKey struct {
 	ExpireAt       *time.Time
 	AllowedModels  []string
 	AllowedIPs     []string
+	// The three minute-level limits are the OWNING TENANT's, read here as part
+	// of the key lookup (see FindAPIKeyByDigest). The key carries them only so
+	// the admission path has them after authentication; they are not the key's
+	// own budget. Zero means unlimited.
 	RPMLimit       int64
 	TPMLimit       int64
 	MaxConcurrency int64

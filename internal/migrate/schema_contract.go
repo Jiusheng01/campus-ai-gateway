@@ -11,7 +11,7 @@ package migrate
 // current.
 //
 // The contract below is the complete set of objects the current migration set
-// is supposed to leave behind, derived by hand from migrations/0001..0010. It
+// is supposed to leave behind, derived by hand from the whole migration set. It
 // covers, per table: every column with its PostgreSQL data type, bounded length,
 // nullability and default; each primary key, unique constraint, foreign key and
 // CHECK definition; and every named index including uniqueness, key expression
@@ -92,6 +92,9 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"monthly_token_limit", "bigint", true},
 				{"monthly_request_limit", "bigint", true},
 				{"monthly_budget_micros", "bigint", true},
+				{"rpm_limit", "bigint", true},
+				{"tpm_limit", "bigint", true},
+				{"max_concurrency", "bigint", true},
 			},
 		},
 		{
@@ -107,9 +110,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"last_used_at", "timestamp with time zone", false},
 				{"allowed_models", "jsonb", true},
 				{"allowed_ips", "jsonb", true},
-				{"rpm_limit", "integer", true},
-				{"tpm_limit", "bigint", true},
-				{"max_concurrency", "integer", true},
 				{"route_group", "character varying", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -342,11 +342,11 @@ func finalColumnDefaults() map[string]string {
 		"gateway_tenant.created_at": "now()", "gateway_tenant.updated_at": "now()",
 		"gateway_tenant.daily_token_limit": "0", "gateway_tenant.monthly_token_limit": "0",
 		"gateway_tenant.monthly_request_limit": "0", "gateway_tenant.monthly_budget_micros": "0",
+		"gateway_tenant.rpm_limit": "0", "gateway_tenant.tpm_limit": "0", "gateway_tenant.max_concurrency": "0",
 
 		"gateway_api_key.id": "gen_random_uuid()", "gateway_api_key.status": "1",
 		"gateway_api_key.allowed_models": "'[]'::jsonb", "gateway_api_key.allowed_ips": "'[]'::jsonb",
-		"gateway_api_key.rpm_limit": "60", "gateway_api_key.tpm_limit": "100000",
-		"gateway_api_key.max_concurrency": "10", "gateway_api_key.created_at": "now()", "gateway_api_key.updated_at": "now()",
+		"gateway_api_key.created_at": "now()", "gateway_api_key.updated_at": "now()",
 
 		"gateway_request_log.id":     "nextval('gateway_request_log_id_seq'::regclass)",
 		"gateway_request_log.stream": "false", "gateway_request_log.input_tokens": "0",
@@ -403,6 +403,23 @@ type schemaQuerier interface {
 // prove drift is detected).
 func CheckFinalSchema(ctx context.Context, conn *pgx.Conn) error {
 	return verifyFinalSchema(ctx, conn)
+}
+
+// droppedColumnRef names a column that an earlier migration created and a later
+// one dropped.
+//
+// The expected-column walk below only proves the columns it lists are present;
+// it cannot see a column that should be gone, because a column nobody expects is
+// simply never looked at. So "the DROP COLUMN actually ran" needs its own
+// assertion, and this list is it: if a drop migration were lost, misspelled or
+// never recorded, the column would still be here and the contract would say so.
+type droppedColumnRef struct{ table, column string }
+
+var droppedColumns = []droppedColumnRef{
+	// Moved to the tenant by 0012 (rate limits are the tenant's, ADR-0015).
+	{"gateway_api_key", "rpm_limit"},
+	{"gateway_api_key", "tpm_limit"},
+	{"gateway_api_key", "max_concurrency"},
 }
 
 // verifyFinalSchema checks the connected database against the contract. It
@@ -490,6 +507,17 @@ func verifyFinalSchema(ctx context.Context, q schemaQuerier) error {
 				missing = append(missing, fmt.Sprintf(
 					"table %s column %s: expected default %s, actual %s",
 					t.Name, want.Name, displayDefault(wantDefault), displayDefault(ac.Default)))
+			}
+		}
+	}
+
+	// --- columns a migration should have dropped ---------------------------
+	for _, drop := range droppedColumns {
+		if cols, ok := actualCols[drop.table]; ok {
+			if _, present := cols[drop.column]; present {
+				missing = append(missing, fmt.Sprintf(
+					"%s.%s: unexpected column (a migration dropped it, but it is still present)",
+					drop.table, drop.column))
 			}
 		}
 	}

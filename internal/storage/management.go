@@ -177,7 +177,7 @@ WHERE m.id=$1::uuid
 // two writes' RETURNING clauses. Spelling it once means a column added to the
 // tenant cannot be selected by three queries and forgotten by the fourth, which
 // is exactly how a quota dimension silently reads as zero.
-const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros`
+const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency`
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
@@ -193,7 +193,7 @@ ORDER BY name
 	var out []model.Tenant
 	for rows.Next() {
 		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros); err != nil {
+		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -203,20 +203,20 @@ ORDER BY name
 
 func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
 	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING `+tenantColumns+`
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
+`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
 	return v, err
 }
 
 func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
 	err := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, updated_at=NOW()
+SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING `+tenantColumns+`
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
+`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
 	return v, err
 }
 
@@ -265,7 +265,7 @@ func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error)
 SELECT
 	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
 	k.expire_at, k.last_used_at, k.allowed_models, k.allowed_ips,
-	k.rpm_limit, k.tpm_limit, k.max_concurrency, COALESCE(k.route_group,''),
+	COALESCE(k.route_group,''),
 	k.created_at,
 	COALESCE(u.requests,0)::bigint, COALESCE(u.tokens,0)::bigint
 FROM gateway_api_key k
@@ -289,7 +289,7 @@ ORDER BY k.created_at DESC
 		if err := rows.Scan(
 			&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
 			&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
-			&v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency, &v.RouteGroup, &v.CreatedAt,
+			&v.RouteGroup, &v.CreatedAt,
 			&v.UsageRequests, &v.UsageTokens,
 		); err != nil {
 			return nil, err
@@ -307,13 +307,13 @@ func (p *Postgres) CreateAPIKey(ctx context.Context, v model.APIKeyAdmin, digest
 	err := p.Pool.QueryRow(ctx, `
 INSERT INTO gateway_api_key(
 	tenant_id, name, key_prefix, key_digest, status, expire_at,
-	allowed_models, allowed_ips, rpm_limit, tpm_limit, max_concurrency, route_group
+	allowed_models, allowed_ips, route_group
 )
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, NULLIF($12,''))
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9,''))
 RETURNING id::text, created_at
 `,
 		v.TenantID, v.Name, v.KeyPrefix, digest, v.Status, v.ExpireAt,
-		string(modelsJSON), string(ipsJSON), v.RPMLimit, v.TPMLimit, v.MaxConcurrency, v.RouteGroup,
+		string(modelsJSON), string(ipsJSON), v.RouteGroup,
 	).Scan(&v.ID, &v.CreatedAt)
 	if err != nil {
 		return v, err
@@ -333,16 +333,13 @@ SET tenant_id=$2::uuid,
 	expire_at=$5,
 	allowed_models=$6::jsonb,
 	allowed_ips=$7::jsonb,
-	rpm_limit=$8,
-	tpm_limit=$9,
-	max_concurrency=$10,
-	route_group=NULLIF($11,''),
+	route_group=NULLIF($8,''),
 	updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING key_prefix, created_at, last_used_at
 `,
 		id, v.TenantID, v.Name, v.Status, v.ExpireAt,
-		string(modelsJSON), string(ipsJSON), v.RPMLimit, v.TPMLimit, v.MaxConcurrency, v.RouteGroup,
+		string(modelsJSON), string(ipsJSON), v.RouteGroup,
 	).Scan(&v.KeyPrefix, &v.CreatedAt, &v.LastUsedAt)
 	if err != nil {
 		return v, err
