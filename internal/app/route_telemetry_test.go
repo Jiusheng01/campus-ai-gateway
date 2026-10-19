@@ -31,10 +31,10 @@ func TestParseRouteTelemetryCurrentThinkWatchContract(t *testing.T) {
 // working once ThinkWatch exposes the complete route telemetry.
 func TestParseRouteTelemetryFullContract(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-Gateway-Provider", "deepseek")
-	h.Set("X-Gateway-Upstream-Model", "deepseek-chat")
-	h.Set("X-Gateway-Route-Priority", "2")
-	h.Set("X-Gateway-Attempts", "2")
+	h.Set(headerProvider, "deepseek")
+	h.Set(headerUpstreamModel, "deepseek-chat")
+	h.Set(headerRoutePriority, "2")
+	h.Set(headerAttempts, "2")
 
 	got := parseRouteTelemetry(h)
 	if got.Provider != "deepseek" {
@@ -56,7 +56,7 @@ func TestParseRouteTelemetryFullContract(t *testing.T) {
 
 func TestParseRouteTelemetryPrefersExplicitProvider(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-Gateway-Provider", "deepseek")
+	h.Set(headerProvider, "deepseek")
 	h.Set("X-Gateway-Upstream", "qwen")
 
 	if got := parseRouteTelemetry(h); got.Provider != "deepseek" {
@@ -66,8 +66,8 @@ func TestParseRouteTelemetryPrefersExplicitProvider(t *testing.T) {
 
 func TestParseRouteTelemetryIgnoresInvalidNumbers(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-Gateway-Route-Priority", "not-a-number")
-	h.Set("X-Gateway-Attempts", "0")
+	h.Set(headerRoutePriority, "not-a-number")
+	h.Set(headerAttempts, "0")
 
 	got := parseRouteTelemetry(h)
 	if got.RoutePriority != 0 || got.Attempts != 0 {

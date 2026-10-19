@@ -44,13 +44,80 @@ func TestBreakerOpensHalfOpensAndRecovers(t *testing.T) {
 		t.Fatal("a failed probe must re-open the circuit")
 	}
 
-	now = now.Add(breakerCooldown + time.Second)
+	now = now.Add(2*breakerCooldown + time.Second)
 	if !b.allow("p") {
-		t.Fatal("the second cooldown must let a probe through")
+		t.Fatal("the doubled cooldown must let a probe through")
 	}
 	b.record("p", true)
 	if !b.allow("p") {
 		t.Fatal("a successful probe must close the circuit")
+	}
+}
+
+// ADR-0006's second trigger: more than half of the last 20 attempts failing
+// opens the circuit even when the failures are not consecutive.
+func TestBreakerOpensOnFailureRate(t *testing.T) {
+	b := newCircuitBreaker()
+	// Four groups of three failures then a success (16 attempts, longest run
+	// three), then four more failures: 16 of the last 20 attempts failed, but no
+	// run of consecutive failures reached five, so only the failure-rate trigger
+	// can open the circuit here.
+	for i := 0; i < 4; i++ {
+		b.record("p", false)
+		b.record("p", false)
+		b.record("p", false)
+		b.record("p", true)
+	}
+	for i := 0; i < 4; i++ {
+		b.record("p", false)
+	}
+	if b.allow("p") {
+		t.Fatal("a >50% failure rate over 20 attempts must open the circuit")
+	}
+}
+
+// A failed probe doubles the wait, up to the five-minute cap.
+func TestBreakerDoublesTheCooldownOnAFailedProbe(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	b := newCircuitBreaker().withClock(func() time.Time { return now })
+
+	for i := 0; i < breakerFailureThreshold; i++ {
+		b.record("p", false)
+	}
+	// First probe after the base cooldown fails -> the next wait is doubled.
+	now = now.Add(breakerCooldown + time.Second)
+	if !b.allow("p") {
+		t.Fatal("the first cooldown must let a probe through")
+	}
+	b.record("p", false)
+
+	now = now.Add(breakerCooldown + time.Second)
+	if b.allow("p") {
+		t.Fatal("the doubled cooldown must not have elapsed yet")
+	}
+	now = now.Add(breakerCooldown + time.Second)
+	if !b.allow("p") {
+		t.Fatal("a probe must be let through once the doubled cooldown elapses")
+	}
+
+	// Keep failing probes: the wait keeps doubling and caps at five minutes.
+	wait := 2 * breakerCooldown
+	for i := 0; i < 10; i++ {
+		b.record("p", false)
+		if wait < breakerMaxCooldown {
+			wait *= 2
+			if wait > breakerMaxCooldown {
+				wait = breakerMaxCooldown
+			}
+		}
+		now = now.Add(wait - time.Second)
+		if b.allow("p") {
+			t.Fatalf("probe %d let through before its cooldown", i)
+		}
+		now = now.Add(time.Second)
+		if !b.allow("p") {
+			t.Fatalf("probe %d not let through after a %s cooldown", i, wait)
+		}
 	}
 }
 
@@ -107,7 +174,8 @@ func TestServeDirectSkipsAnOpenChannelAndRecordsIt(t *testing.T) {
 	rec := newAttemptRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
 	req = req.WithContext(withAttemptRecorder(req.Context(), rec))
-	s.serveDirect(httptest.NewRecorder(), req)
+	w := httptest.NewRecorder()
+	s.serveDirect(w, req)
 
 	if n := atomic.LoadInt32(&deadHits); n != 0 {
 		t.Fatalf("the open channel was hit %d times, want 0", n)
@@ -124,6 +192,12 @@ func TestServeDirectSkipsAnOpenChannelAndRecordsIt(t *testing.T) {
 	}
 	if !sawSkipped || !sawServed {
 		t.Fatalf("chain = %+v, want a skipped for a and a served for b", chain)
+	}
+	// A skipped line is not a Routing Attempt: only b was dialled, so the
+	// attempt count is 1, not 2. The request log turns this into the failover
+	// flag, so counting the skip would report a failover that never happened.
+	if got := w.Header().Get(headerAttempts); got != "1" {
+		t.Fatalf("%s = %q, want \"1\" (the skipped line is not an attempt)", headerAttempts, got)
 	}
 }
 

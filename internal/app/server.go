@@ -782,8 +782,8 @@ func (t routeTelemetry) Failover() bool {
 
 func parseRouteTelemetry(h http.Header) routeTelemetry {
 	v := routeTelemetry{
-		Provider:      strings.TrimSpace(h.Get("X-Gateway-Provider")),
-		UpstreamModel: strings.TrimSpace(h.Get("X-Gateway-Upstream-Model")),
+		Provider:      strings.TrimSpace(h.Get(headerProvider)),
+		UpstreamModel: strings.TrimSpace(h.Get(headerUpstreamModel)),
 	}
 	// Compatibility fallback: current ThinkWatch Core exposes the resolved
 	// provider name as X-Gateway-Upstream. It is a provider, not an upstream
@@ -791,10 +791,10 @@ func parseRouteTelemetry(h http.Header) routeTelemetry {
 	if v.Provider == "" {
 		v.Provider = strings.TrimSpace(h.Get("X-Gateway-Upstream"))
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-Gateway-Route-Priority"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(h.Get(headerRoutePriority))); err == nil && n > 0 {
 		v.RoutePriority = n
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-Gateway-Attempts"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(h.Get(headerAttempts))); err == nil && n > 0 {
 		v.Attempts = n
 	}
 	return v

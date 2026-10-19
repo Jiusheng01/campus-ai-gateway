@@ -16,9 +16,16 @@ import (
 const (
 	// breakerFailureThreshold is how many consecutive failures open the circuit.
 	breakerFailureThreshold = 5
-	// breakerCooldown is how long the circuit stays open before one probe is let
-	// through.
-	breakerCooldown = 30 * time.Second
+	// breakerFailureRateWindow and breakerFailureRateThreshold are the second
+	// trigger ADR-0006 names: more than half of at least this many recent
+	// attempts failed. It catches a channel that is failing often but not
+	// consecutively.
+	breakerFailureRateWindow    = 20
+	breakerFailureRateThreshold = 0.5
+	// breakerCooldown is the first wait before a probe; a failed probe doubles it
+	// up to breakerMaxCooldown.
+	breakerCooldown    = 30 * time.Second
+	breakerMaxCooldown = 5 * time.Minute
 )
 
 type breakerState int
@@ -42,9 +49,13 @@ func (s breakerState) String() string {
 
 type providerCircuit struct {
 	state         breakerState
-	failures      int
+	failures      int // consecutive failures
+	cooldown      time.Duration
 	openedAt      time.Time
 	probeInFlight bool
+	// recent is a ring of the last breakerFailureRateWindow attempt outcomes
+	// (true = failed), used for the failure-rate trigger.
+	recent []bool
 }
 
 // circuitBreaker holds every provider's circuit and the clock it decides on.
@@ -84,9 +95,13 @@ func (b *circuitBreaker) allow(provider string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	c := b.get(provider)
+	cooldown := c.cooldown
+	if cooldown <= 0 {
+		cooldown = breakerCooldown
+	}
 	switch c.state {
 	case breakerOpen:
-		if b.now().Sub(c.openedAt) < breakerCooldown {
+		if b.now().Sub(c.openedAt) < cooldown {
 			return false
 		}
 		if c.probeInFlight {
@@ -108,25 +123,63 @@ func (b *circuitBreaker) record(provider string, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	c := b.get(provider)
+
+	// Every outcome enters the rate window, successes included: the point of
+	// the failure-rate trigger is that a channel failing often is unhealthy, and
+	// clearing the window on a success would make that rule unreachable.
+	c.recent = append(c.recent, !ok)
+	if len(c.recent) > breakerFailureRateWindow {
+		trimmed := make([]bool, breakerFailureRateWindow)
+		copy(trimmed, c.recent[len(c.recent)-breakerFailureRateWindow:])
+		c.recent = trimmed
+	}
+
 	if ok {
 		c.state = breakerClosed
 		c.failures = 0
+		c.cooldown = 0
 		c.probeInFlight = false
 		return
 	}
-	// A failed probe re-opens the circuit with a fresh cooldown; it does not
-	// count up from the old failure count, which the threshold already crossed.
+	// A failed probe re-opens the circuit and doubles the wait, up to the cap.
+	// It does not count up from the old failure count, which the threshold
+	// already crossed.
 	c.probeInFlight = false
 	if c.state == breakerHalfOpen {
+		c.cooldown *= 2
+		if c.cooldown < breakerCooldown {
+			c.cooldown = breakerCooldown
+		}
+		if c.cooldown > breakerMaxCooldown {
+			c.cooldown = breakerMaxCooldown
+		}
 		c.state = breakerOpen
 		c.openedAt = b.now()
 		return
 	}
 	c.failures++
-	if c.failures >= breakerFailureThreshold {
+	if c.failures >= breakerFailureThreshold || failureRateExceeded(c.recent) {
 		c.state = breakerOpen
+		// Set the base cooldown here as well as in the half-open branch, or the
+		// first failed probe would double zero and stay at the floor forever.
+		c.cooldown = breakerCooldown
 		c.openedAt = b.now()
 	}
+}
+
+// failureRateExceeded reports whether the recent window is large enough and
+// failing often enough to open the circuit on its own.
+func failureRateExceeded(recent []bool) bool {
+	if len(recent) < breakerFailureRateWindow {
+		return false
+	}
+	failed := 0
+	for _, f := range recent {
+		if f {
+			failed++
+		}
+	}
+	return float64(failed)/float64(len(recent)) > breakerFailureRateThreshold
 }
 
 // providerCircuitView is one provider's circuit as the console shows it.
@@ -147,7 +200,11 @@ func (b *circuitBreaker) circuits() []providerCircuitView {
 	for name, c := range b.m {
 		v := providerCircuitView{Provider: name, State: c.state.String(), Failures: c.failures}
 		if c.state == breakerOpen {
-			if remaining := breakerCooldown - now.Sub(c.openedAt); remaining > 0 {
+			cooldown := c.cooldown
+			if cooldown <= 0 {
+				cooldown = breakerCooldown
+			}
+			if remaining := cooldown - now.Sub(c.openedAt); remaining > 0 {
 				v.RetryInMS = remaining.Milliseconds()
 			}
 		}

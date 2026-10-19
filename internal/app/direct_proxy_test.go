@@ -242,13 +242,13 @@ func TestServeDirectFailsOverToTheSecondChannel(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Gateway-Provider"); got != "backup" {
+	if got := rec.Header().Get(headerProvider); got != "backup" {
 		t.Fatalf("provider attribution = %q, want backup", got)
 	}
-	if got := rec.Header().Get("X-Gateway-Attempts"); got != "2" {
+	if got := rec.Header().Get(headerAttempts); got != "2" {
 		t.Fatalf("attempts = %q, want 2", got)
 	}
-	if got := rec.Header().Get("X-Gateway-Upstream-Model"); got != "qwen-plus" {
+	if got := rec.Header().Get(headerUpstreamModel); got != "qwen-plus" {
 		t.Fatalf("upstream model = %q, want qwen-plus", got)
 	}
 	if secondAuth != "Bearer sk-backup" {
@@ -452,7 +452,7 @@ func TestServeDirectRecordsAttemptsWhenEveryLineFails(t *testing.T) {
 	}
 	// Without this header the request log would show a total failure with no
 	// attempt count, which reads as "nothing was attempted".
-	if got := rec.Header().Get("X-Gateway-Attempts"); got != "2" {
+	if got := rec.Header().Get(headerAttempts); got != "2" {
 		t.Fatalf("attempts header = %q, want 2", got)
 	}
 	// The upstream body is not copied to the caller: it can carry internal

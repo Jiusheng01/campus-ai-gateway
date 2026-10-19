@@ -378,20 +378,19 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		lastBody    []byte
 		lastErr     error
 		lastChannel string // the channel that produced whichever outcome is reported
-		attempts    int
+		chainNo     int    // position in the attempt chain, skipped lines included
 	)
 	recorder := attemptRecorderFrom(r.Context())
-	tried := 0
+	tried := 0 // channels actually dialled; a skipped line is NOT an attempt
 	for _, route := range routes {
-		attempts++
+		chainNo++
 		// A channel whose circuit is open is skipped, not tried: that is the
 		// whole point of the breaker. It still leaves a line in the chain so the
-		// console can tell "not tried" from "tried and failed".
+		// console can tell "not tried" from "tried and failed" — but it is not a
+		// Routing Attempt, so it must not inflate the attempt count or the
+		// failover flag.
 		if s.breaker != nil && !s.breaker.allow(route.Provider) {
-			recordAttempt(recorder, model.RequestAttempt{
-				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
-				Outcome: model.AttemptSkipped,
-			})
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptSkipped, 0, 0, ""))
 			continue
 		}
 		tried++
@@ -403,10 +402,7 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			lastStatus = 0
 			lastBody = nil
 			lastChannel = route.Provider
-			recordAttempt(recorder, model.RequestAttempt{
-				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
-				Outcome: model.AttemptFailed, LatencyMS: time.Since(started).Milliseconds(), ErrorKind: attemptErrorKind(err),
-			})
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptFailed, 0, time.Since(started).Milliseconds(), attemptErrorKind(err)))
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
@@ -420,21 +416,15 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			lastStatus = resp.StatusCode
 			lastErr = nil
 			lastChannel = route.Provider
-			recordAttempt(recorder, model.RequestAttempt{
-				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
-				Outcome: model.AttemptFailed, StatusCode: resp.StatusCode, LatencyMS: time.Since(started).Milliseconds(),
-			})
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptFailed, resp.StatusCode, time.Since(started).Milliseconds(), ""))
 			continue
 		}
 		// The channel answered: a 2xx, or a terminal 4xx that is the request's
 		// fault rather than the channel's, so it still counts as a healthy
 		// answer for the breaker.
 		s.recordBreaker(route.Provider, true)
-		recordAttempt(recorder, model.RequestAttempt{
-			AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
-			Outcome: model.AttemptServed, StatusCode: resp.StatusCode, LatencyMS: time.Since(started).Milliseconds(),
-		})
-		writeDirectResponse(w, resp, route, attempts)
+		recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptServed, resp.StatusCode, time.Since(started).Milliseconds(), ""))
+		writeDirectResponse(w, resp, route, tried)
 		return
 	}
 
@@ -447,10 +437,10 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every line failed. Record how many were tried before answering: the
-	// request log would otherwise show a total failure with no attempt count,
+	// Every line failed. Record how many were actually tried before answering:
+	// the request log would otherwise show a total failure with no attempt count,
 	// which reads as "nothing was attempted" rather than "everything was".
-	w.Header().Set("X-Gateway-Attempts", strconv.Itoa(attempts))
+	w.Header().Set(headerAttempts, strconv.Itoa(tried))
 
 	// The client gets a stable code and the attempt count; the server log gets
 	// the gateway's own facts about the failure. Neither carries upstream
@@ -476,9 +466,9 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		// reaches the log; the request id ties the line to its log row. The
 		// body is reported as a size, never quoted.
 		log.Printf("direct: request %s model %q failed on every channel after %d attempt(s); last status %d from %s, response body %d bytes",
-			reqID, oneLine(envelope.Model), attempts, lastStatus, oneLine(lastChannel), len(lastBody))
+			reqID, oneLine(envelope.Model), tried, lastStatus, oneLine(lastChannel), len(lastBody))
 		httpx.Error(w, lastStatus, "upstream_error",
-			fmt.Sprintf("all %d channel(s) failed; last status %d", attempts, lastStatus), reqID)
+			fmt.Sprintf("all %d channel(s) failed; last status %d", tried, lastStatus), reqID)
 	case lastErr != nil:
 		log.Printf("direct: request %s model %q could not reach channel %s: %s",
 			reqID, oneLine(envelope.Model), oneLine(lastChannel), directFailureReason(lastErr))
@@ -491,6 +481,22 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			"no channel could serve the request", reqID)
 	default:
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", "no channel could serve the request", reqID)
+	}
+}
+
+// attemptFor builds one entry of the attempt chain. no is the position in the
+// chain (every line considered, skipped ones included, so the console can show
+// the sequence); status, latency and errorKind are the attempt's own, and are
+// zero/empty when they do not apply.
+func attemptFor(no int, route directRoute, outcome string, status int, latencyMS int64, errorKind string) model.RequestAttempt {
+	return model.RequestAttempt{
+		AttemptNo:     no,
+		Provider:      route.Provider,
+		UpstreamModel: route.UpstreamModel,
+		Outcome:       outcome,
+		StatusCode:    status,
+		LatencyMS:     latencyMS,
+		ErrorKind:     errorKind,
 	}
 }
 
@@ -520,18 +526,36 @@ func (s *Server) recordBreaker(provider string, ok bool) {
 func attemptErrorKind(err error) string {
 	var missing missingCredentialError
 	if errors.As(err, &missing) {
-		return "missing_credential"
+		return errorKindMissingCredential
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return "dns"
+		return errorKindDNS
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "timeout"
+		return errorKindTimeout
 	}
-	return "transport"
+	return errorKindTransport
 }
+
+// The gateway's own failure labels for an attempt. They are a closed set, so
+// the column and the console agree on what can appear in error_kind.
+const (
+	errorKindMissingCredential = "missing_credential"
+	errorKindDNS               = "dns"
+	errorKindTimeout           = "timeout"
+	errorKindTransport         = "transport"
+)
+
+// The telemetry headers the data plane stamps and the logging wrapper reads.
+// They are a contract between the two, so they are spelled once.
+const (
+	headerProvider      = "X-Gateway-Provider"
+	headerUpstreamModel = "X-Gateway-Upstream-Model"
+	headerRoutePriority = "X-Gateway-Route-Priority"
+	headerAttempts      = "X-Gateway-Attempts"
+)
 
 // clientSafeFailure returns the part of an attempt error that is safe to show
 // the caller, or "" when nothing is.
@@ -705,10 +729,10 @@ func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route direc
 		}
 	}
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-Gateway-Provider", route.Provider)
-	w.Header().Set("X-Gateway-Upstream-Model", route.UpstreamModel)
-	w.Header().Set("X-Gateway-Route-Priority", strconv.Itoa(route.Priority))
-	w.Header().Set("X-Gateway-Attempts", strconv.Itoa(attempts))
+	w.Header().Set(headerProvider, route.Provider)
+	w.Header().Set(headerUpstreamModel, route.UpstreamModel)
+	w.Header().Set(headerRoutePriority, strconv.Itoa(route.Priority))
+	w.Header().Set(headerAttempts, strconv.Itoa(attempts))
 
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
