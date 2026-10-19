@@ -43,7 +43,9 @@ export function TenantsPage() {
     }
   }
 
-  const quota = (n: number) => (n ? fmt(n) : '不限')
+  // Renders any configured limit (quota or rate limit) or "不限" for zero.
+  // Named for what it shows, not for one of the two things it renders.
+  const limitText = (n: number) => (n ? fmt(n) : '不限')
   const items = data || []
 
   return (
@@ -74,14 +76,14 @@ export function TenantsPage() {
                     <td>
                       <StatusBadge status={t.status} />
                     </td>
-                    <td className="numeric">{quota(t.daily_token_limit)}</td>
-                    <td className="numeric">{quota(t.monthly_token_limit)}</td>
-                    <td className="numeric">{quota(t.monthly_request_limit)}</td>
+                    <td className="numeric">{limitText(t.daily_token_limit)}</td>
+                    <td className="numeric">{limitText(t.monthly_token_limit)}</td>
+                    <td className="numeric">{limitText(t.monthly_request_limit)}</td>
                     {/* The tenant is the rate-limit boundary (ADR-0015); these
                         three are shared by every key it owns. */}
-                    <td className="numeric">{quota(t.rpm_limit)}</td>
-                    <td className="numeric">{quota(t.tpm_limit)}</td>
-                    <td className="numeric">{quota(t.max_concurrency)}</td>
+                    <td className="numeric">{limitText(t.rpm_limit)}</td>
+                    <td className="numeric">{limitText(t.tpm_limit)}</td>
+                    <td className="numeric">{limitText(t.max_concurrency)}</td>
                     <td className="rowActions">
                       <button className="link" onClick={() => void openUsage(t)}>
                         查看用量
@@ -108,27 +110,27 @@ export function TenantsPage() {
                   <div className="miniCardRows">
                     <div>
                       <span>日 Token</span>
-                      <b>{quota(t.daily_token_limit)}</b>
+                      <b>{limitText(t.daily_token_limit)}</b>
                     </div>
                     <div>
                       <span>月 Token</span>
-                      <b>{quota(t.monthly_token_limit)}</b>
+                      <b>{limitText(t.monthly_token_limit)}</b>
                     </div>
                     <div>
                       <span>月请求</span>
-                      <b>{quota(t.monthly_request_limit)}</b>
+                      <b>{limitText(t.monthly_request_limit)}</b>
                     </div>
                     <div>
                       <span>RPM</span>
-                      <b>{quota(t.rpm_limit)}</b>
+                      <b>{limitText(t.rpm_limit)}</b>
                     </div>
                     <div>
                       <span>TPM</span>
-                      <b>{quota(t.tpm_limit)}</b>
+                      <b>{limitText(t.tpm_limit)}</b>
                     </div>
                     <div>
                       <span>并发</span>
-                      <b>{quota(t.max_concurrency)}</b>
+                      <b>{limitText(t.max_concurrency)}</b>
                     </div>
                   </div>
                   <footer className="cardActions">
@@ -160,7 +162,7 @@ export function TenantsPage() {
       {draft && (
         <Drawer
           title={draft.id ? '编辑租户' : '新增租户'}
-          subtitle="配额为 0 表示不限制，由上级配额与限流策略兜底。"
+          subtitle="配额与限流均为 0 表示不限制；限流为本租户内所有密钥共享。"
           onClose={() => setDraft(null)}
         >
           <TenantForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />

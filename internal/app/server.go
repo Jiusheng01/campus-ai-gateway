@@ -482,14 +482,22 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
-	if err != nil || !allowed {
+	if err != nil {
+		stateUnavailable(aw, reqID)
+		return
+	}
+	if !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_request_quota_exceeded", "Tenant monthly request quota exceeded", reqID)
 		return
 	}
 
 	allowed, err = s.limit.AllowRPM(r.Context(), id.TenantID, id.RPMLimit)
-	if err != nil || !allowed {
+	if err != nil {
+		stateUnavailable(aw, reqID)
+		return
+	}
+	if !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: s.clientIPFrom(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
 		return
@@ -552,13 +560,22 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 
 	reserveAmount := estimateTPM(body, envelope)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
-	if err != nil || !allowed {
+	if err != nil {
+		stateUnavailable(aw, reqID)
+		return
+	}
+	if !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
 		return
 	}
 	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.TenantID, reserveAmount, id.TPMLimit)
-	if err != nil || !allowed {
+	if err != nil {
+		_ = tenantReservation.Refund(r.Context())
+		stateUnavailable(aw, reqID)
+		return
+	}
+	if !allowed {
 		_ = tenantReservation.Refund(r.Context())
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
@@ -566,7 +583,13 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	release, allowed, err := s.limit.AcquireConcurrencySlot(r.Context(), id.TenantID, id.MaxConcurrency)
-	if err != nil || !allowed {
+	if err != nil {
+		_ = reservation.Refund(r.Context())
+		_ = tenantReservation.Refund(r.Context())
+		stateUnavailable(aw, reqID)
+		return
+	}
+	if !allowed {
 		_ = reservation.Refund(r.Context())
 		_ = tenantReservation.Refund(r.Context())
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
@@ -576,6 +599,16 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	s.upstream.ServeHTTP(aw, r)
+}
+
+// stateUnavailable answers a request the gateway could not admit because an
+// enforcement dependency could not be read. ADR-0007 splits the two outcomes a
+// limiter can produce: an over-limit answer is a 429, but state that is
+// unavailable at all is a 503 — failing closed means refusing the request, and
+// the client being told "try again" rather than "you are over your limit" is
+// the difference between an outage and a policy decision.
+func stateUnavailable(aw http.ResponseWriter, reqID string) {
+	httpx.Error(aw, http.StatusServiceUnavailable, "enforcement_state_unavailable", "Rate limit enforcement state is unavailable", reqID)
 }
 
 // maxRequestBody bounds how much of a business request the gateway will buffer.

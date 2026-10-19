@@ -55,6 +55,12 @@ return current
 type Limiter struct {
 	rdb *redis.Client
 
+	// concurrencyLease is how long a Concurrency Slot is held before its own
+	// deadline lets it be reclaimed. It defaults to defaultConcurrencySlotLease;
+	// WithConcurrencyLease overrides it so a test can exercise expiry without
+	// waiting the production lease out.
+	concurrencyLease time.Duration
+
 	// rebuildSrc, when set, lets the hot path detect that a tenant quota
 	// counter is missing (e.g. Redis was flushed while the gateway kept
 	// running) and reconstruct it from the settled request log on demand. See
@@ -83,7 +89,16 @@ type TenantQuotaReservation struct {
 }
 
 func New(rdb *redis.Client) *Limiter {
-	return &Limiter{rdb: rdb}
+	return &Limiter{rdb: rdb, concurrencyLease: defaultConcurrencySlotLease}
+}
+
+// WithConcurrencyLease overrides the Concurrency Slot lease. The production
+// value is deliberately long (a slot must outlive the request holding it); the
+// override is here so a test can drive expiry with a short lease instead of
+// reaching into the stored sorted set to age a member.
+func (l *Limiter) WithConcurrencyLease(d time.Duration) *Limiter {
+	l.concurrencyLease = d
+	return l
 }
 
 // SetQuotaRebuildSource registers the loader that supplies settled request-log
@@ -304,12 +319,12 @@ func (r *TPMReservation) Refund(ctx context.Context) error {
 	return err
 }
 
-// concurrencySlotLease bounds how long a slot is held before it is reclaimed,
-// even if the holder never releases it (a crashed process, a wedged request).
-// It has to exceed the longest legitimate request — a long SSE stream runs far
-// past the per-attempt timeout — so a slot is not reaped while still in use and
-// re-issued to someone else.
-const concurrencySlotLease = 15 * time.Minute
+// defaultConcurrencySlotLease bounds how long a slot is held before it is
+// reclaimed, even if the holder never releases it (a crashed process, a wedged
+// request). It has to exceed the longest legitimate request — a long SSE stream
+// runs far past the per-attempt timeout — so a slot is not reaped while still in
+// use and re-issued to someone else.
+const defaultConcurrencySlotLease = 15 * time.Minute
 
 // concurrencySlotKey is the sorted set holding one tenant's in-flight slots. It
 // is scoped to the Tenant, not the key: the Tenant is the concurrency boundary
@@ -365,8 +380,12 @@ func (l *Limiter) AcquireConcurrencySlot(ctx context.Context, tenantID string, l
 	}
 	key := concurrencySlotKey(tenantID)
 	member := uuid.NewString()
+	lease := l.concurrencyLease
+	if lease <= 0 {
+		lease = defaultConcurrencySlotLease
+	}
 	allowed, err := acquireConcurrencySlotScript.Run(ctx, l.rdb, []string{key},
-		time.Now().UnixMilli(), concurrencySlotLease.Milliseconds(), limit, member).Int()
+		time.Now().UnixMilli(), lease.Milliseconds(), limit, member).Int()
 	if err != nil {
 		return nil, false, err
 	}
@@ -374,6 +393,10 @@ func (l *Limiter) AcquireConcurrencySlot(ctx context.Context, tenantID string, l
 		return nil, false, nil
 	}
 	release := func() {
+		// The release runs on a bare context so a canceled request context
+		// cannot leave the slot held; a failure is ignored on purpose because
+		// the slot's own deadline reclaims it, which is the whole reason the
+		// reservation is a lease rather than a bare counter.
 		_ = releaseConcurrencySlotScript.Run(context.Background(), l.rdb, []string{key}, member).Err()
 	}
 	return release, true, nil

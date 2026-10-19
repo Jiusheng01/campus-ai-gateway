@@ -14,6 +14,21 @@ import (
 // cannot interfere with each other.
 func uniqueTenantID() string { return uuid.NewString() }
 
+// cleanupTenantKeys removes every key this tenant's limits may have written. It
+// deletes by the tenant id embedded in the keys rather than by an exact key
+// name, so the test does not pin the key format.
+func cleanupTenantKeys(t *testing.T, client *redis.Client, tenant string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		keys, err := client.Keys(ctx, "gw:*"+tenant+"*").Result()
+		if err != nil || len(keys) == 0 {
+			return
+		}
+		_ = client.Del(ctx, keys...).Err()
+	})
+}
+
 // Exactly the limit, never more. A two-phase check-then-reserve would admit
 // every goroutine that read a count below the limit; the single Lua script is
 // what makes the count and the reservation one step.
@@ -21,8 +36,7 @@ func TestAcquireConcurrencySlotAdmitsExactlyTheLimit(t *testing.T) {
 	client := redisTestClient(t)
 	ctx := context.Background()
 	tenant := uniqueTenantID()
-	key := concurrencySlotKey(tenant)
-	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
+	cleanupTenantKeys(t, client, tenant)
 
 	limiter := New(client)
 	const (
@@ -70,29 +84,38 @@ func TestAcquireConcurrencySlotAdmitsExactlyTheLimit(t *testing.T) {
 	if denied != concurrency-limit {
 		t.Fatalf("denied = %d, want %d", denied, concurrency-limit)
 	}
-	if n, err := client.ZCard(ctx, key).Result(); err != nil || n != limit {
-		t.Fatalf("slots held = %d (err %v), want %d", n, err, limit)
-	}
 
+	// Releasing every slot must empty the pool: a fresh limit's worth is
+	// admitted again. If any slot had leaked, the later acquires would be denied
+	// once the pool had already reached the limit.
 	for _, r := range releases {
 		r()
 	}
-	if n, err := client.Exists(ctx, key).Result(); err != nil || n != 0 {
-		t.Fatalf("releasing every slot must empty the set, but it still exists (err %v)", err)
+	var reacquired int
+	for i := 0; i < limit; i++ {
+		_, ok, err := limiter.AcquireConcurrencySlot(ctx, tenant, limit)
+		if err != nil {
+			t.Fatalf("re-acquire after release: %v", err)
+		}
+		if ok {
+			reacquired++
+		}
+	}
+	if reacquired != limit {
+		t.Fatalf("after releasing every slot only %d of %d could be re-acquired", reacquired, limit)
 	}
 }
 
 // A slot whose holder never releases it — a crashed process, a wedged request —
-// must not pin a slot forever. Aging the stored deadline past now stands in for
-// waiting out the lease.
+// must not pin a slot forever. A short lease stands in for waiting out the
+// production one.
 func TestAcquireConcurrencySlotReclaimsAnExpiredSlot(t *testing.T) {
 	client := redisTestClient(t)
 	ctx := context.Background()
 	tenant := uniqueTenantID()
-	key := concurrencySlotKey(tenant)
-	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
+	cleanupTenantKeys(t, client, tenant)
 
-	limiter := New(client)
+	limiter := New(client).WithConcurrencyLease(50 * time.Millisecond)
 	if _, ok, err := limiter.AcquireConcurrencySlot(ctx, tenant, 1); err != nil || !ok {
 		t.Fatalf("first acquire: ok=%v err=%v", ok, err)
 	}
@@ -100,14 +123,7 @@ func TestAcquireConcurrencySlotReclaimsAnExpiredSlot(t *testing.T) {
 		t.Fatal("a second acquire must be denied while the slot is held")
 	}
 
-	members, err := client.ZRange(ctx, key, 0, -1).Result()
-	if err != nil || len(members) != 1 {
-		t.Fatalf("expected exactly one held member, got %v (err %v)", members, err)
-	}
-	past := float64(time.Now().Add(-time.Minute).UnixMilli())
-	if err := client.ZAdd(ctx, key, redis.Z{Score: past, Member: members[0]}).Err(); err != nil {
-		t.Fatal(err)
-	}
+	time.Sleep(80 * time.Millisecond)
 
 	if _, ok, err := limiter.AcquireConcurrencySlot(ctx, tenant, 1); err != nil || !ok {
 		t.Fatalf("the expired slot must be reclaimed, got ok=%v err=%v", ok, err)
@@ -121,8 +137,7 @@ func TestReleaseConcurrencySlotIsIdempotent(t *testing.T) {
 	client := redisTestClient(t)
 	ctx := context.Background()
 	tenant := uniqueTenantID()
-	key := concurrencySlotKey(tenant)
-	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
+	cleanupTenantKeys(t, client, tenant)
 
 	limiter := New(client)
 	release, ok, err := limiter.AcquireConcurrencySlot(ctx, tenant, 1)
@@ -132,9 +147,6 @@ func TestReleaseConcurrencySlotIsIdempotent(t *testing.T) {
 	release()
 	release()
 
-	if n, err := client.ZCard(ctx, key).Result(); err != nil || n != 0 {
-		t.Fatalf("slots held = %d (err %v), want 0 after release", n, err)
-	}
 	if _, ok, err := limiter.AcquireConcurrencySlot(ctx, tenant, 1); err != nil || !ok {
 		t.Fatalf("the slot must be free again, got ok=%v err=%v", ok, err)
 	}
@@ -165,4 +177,56 @@ func TestAcquireConcurrencySlotRefusesWhenRedisIsUnreachable(t *testing.T) {
 	if ok {
 		t.Fatal("an unreachable Redis must not admit the request")
 	}
+}
+
+// The Tenant is the rate-limit boundary (ADR-0015): every limit is counted
+// against the tenant id, so two keys of one tenant share one budget while
+// another tenant is untouched. The functions take a tenant id, not a key id,
+// which is exactly the property under test.
+func TestRateLimitsAreSharedPerTenantNotPerKey(t *testing.T) {
+	client := redisTestClient(t)
+	ctx := context.Background()
+	limiter := New(client)
+
+	tenantA, tenantB := uniqueTenantID(), uniqueTenantID()
+	cleanupTenantKeys(t, client, tenantA)
+	cleanupTenantKeys(t, client, tenantB)
+
+	// RPM: the first request takes the tenant's only slot; a second request for
+	// the same tenant is denied, while the other tenant is unaffected.
+	if ok, err := limiter.AllowRPM(ctx, tenantA, 1); err != nil || !ok {
+		t.Fatalf("first RPM for tenant A: ok=%v err=%v", ok, err)
+	}
+	if ok, err := limiter.AllowRPM(ctx, tenantA, 1); err != nil || ok {
+		t.Fatalf("a second RPM for tenant A must be denied against the shared limit: ok=%v err=%v", ok, err)
+	}
+	if ok, err := limiter.AllowRPM(ctx, tenantB, 1); err != nil || !ok {
+		t.Fatalf("tenant B must be unaffected by tenant A's budget: ok=%v err=%v", ok, err)
+	}
+
+	// TPM: same shape — 500 then 600 exceeds the shared 1000.
+	if _, ok, err := limiter.ReserveTPM(ctx, tenantA, 500, 1000); err != nil || !ok {
+		t.Fatalf("first TPM for tenant A: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := limiter.ReserveTPM(ctx, tenantA, 600, 1000); err != nil || ok {
+		t.Fatalf("a second TPM for tenant A must be denied against the shared limit: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := limiter.ReserveTPM(ctx, tenantB, 900, 1000); err != nil || !ok {
+		t.Fatalf("tenant B must be unaffected: ok=%v err=%v", ok, err)
+	}
+
+	// Concurrency: one tenant, one shared pool.
+	releaseA, ok, err := limiter.AcquireConcurrencySlot(ctx, tenantA, 1)
+	if err != nil || !ok {
+		t.Fatalf("first slot for tenant A: ok=%v err=%v", ok, err)
+	}
+	defer releaseA()
+	if _, ok, _ := limiter.AcquireConcurrencySlot(ctx, tenantA, 1); ok {
+		t.Fatal("a second slot for tenant A must be denied against the shared pool")
+	}
+	releaseB, ok, err := limiter.AcquireConcurrencySlot(ctx, tenantB, 1)
+	if err != nil || !ok {
+		t.Fatalf("tenant B must get its own slot: ok=%v err=%v", ok, err)
+	}
+	releaseB()
 }
