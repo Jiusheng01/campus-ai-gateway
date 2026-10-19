@@ -92,6 +92,9 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"monthly_token_limit", "bigint", true},
 				{"monthly_request_limit", "bigint", true},
 				{"monthly_budget_micros", "bigint", true},
+				{"rpm_limit", "bigint", true},
+				{"tpm_limit", "bigint", true},
+				{"max_concurrency", "bigint", true},
 			},
 		},
 		{
@@ -107,9 +110,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"last_used_at", "timestamp with time zone", false},
 				{"allowed_models", "jsonb", true},
 				{"allowed_ips", "jsonb", true},
-				{"rpm_limit", "integer", true},
-				{"tpm_limit", "bigint", true},
-				{"max_concurrency", "integer", true},
 				{"route_group", "character varying", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -342,11 +342,11 @@ func finalColumnDefaults() map[string]string {
 		"gateway_tenant.created_at": "now()", "gateway_tenant.updated_at": "now()",
 		"gateway_tenant.daily_token_limit": "0", "gateway_tenant.monthly_token_limit": "0",
 		"gateway_tenant.monthly_request_limit": "0", "gateway_tenant.monthly_budget_micros": "0",
+		"gateway_tenant.rpm_limit": "0", "gateway_tenant.tpm_limit": "0", "gateway_tenant.max_concurrency": "0",
 
 		"gateway_api_key.id": "gen_random_uuid()", "gateway_api_key.status": "1",
 		"gateway_api_key.allowed_models": "'[]'::jsonb", "gateway_api_key.allowed_ips": "'[]'::jsonb",
-		"gateway_api_key.rpm_limit": "60", "gateway_api_key.tpm_limit": "100000",
-		"gateway_api_key.max_concurrency": "10", "gateway_api_key.created_at": "now()", "gateway_api_key.updated_at": "now()",
+		"gateway_api_key.created_at": "now()", "gateway_api_key.updated_at": "now()",
 
 		"gateway_request_log.id":     "nextval('gateway_request_log_id_seq'::regclass)",
 		"gateway_request_log.stream": "false", "gateway_request_log.input_tokens": "0",

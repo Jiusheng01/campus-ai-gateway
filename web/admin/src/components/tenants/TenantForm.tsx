@@ -39,6 +39,20 @@ export function TenantForm({value, onSave, onCancel}: {value: TenantDraft; onSav
         </Field>
       </div>
 
+      {/* Rate limits are the tenant's, not the key's (ADR-0015): every key under
+          this tenant shares these three. 0 means unlimited. */}
+      <div className="formGrid">
+        <Field label="RPM 上限" hint="每分钟请求数，本租户所有密钥共享，0 表示不限。">
+          <input type="number" min="0" value={v.rpm_limit || 0} onChange={e => set('rpm_limit', +e.target.value)} />
+        </Field>
+        <Field label="TPM 上限" hint="每分钟 Token 数，本租户所有密钥共享，0 表示不限。">
+          <input type="number" min="0" value={v.tpm_limit || 0} onChange={e => set('tpm_limit', +e.target.value)} />
+        </Field>
+        <Field label="最大并发" hint="本租户同时在处理的请求数，0 表示不限。">
+          <input type="number" min="0" value={v.max_concurrency || 0} onChange={e => set('max_concurrency', +e.target.value)} />
+        </Field>
+      </div>
+
       <Field label="状态">
         <select value={v.status || 1} onChange={e => setV({...v, status: +e.target.value})}>
           <option value="1">启用</option>

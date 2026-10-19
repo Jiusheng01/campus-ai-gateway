@@ -31,11 +31,19 @@ func TestAllowedModelsBackfillKeepsEveryUnrestrictedRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
 			continue
 		}
 		// Everything before the backfill.
+		//
+		// These files are applied through the runner's own primitives rather than
+		// Apply, because Apply also verifies the whole end-state schema contract
+		// and this phase deliberately stops at 0010 — a schema that, by design,
+		// is missing the columns later migrations add. Skipping the contract here
+		// is what lets the rows be inserted at the pre-backfill shape, which is
+		// the ordering this test exists to exercise.
 		if e.Name() >= "0011" {
 			continue
 		}
@@ -48,12 +56,20 @@ func TestAllowedModelsBackfillKeepsEveryUnrestrictedRow(t *testing.T) {
 		}
 	}
 
-	if _, err := Apply(context.Background(), url, dir); err != nil {
-		t.Fatalf("apply up to 0010: %v", err)
+	conn := connect(t, url)
+	pre, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureBookkeeping(ctx, conn); err != nil {
+		t.Fatalf("prepare bookkeeping: %v", err)
+	}
+	for _, m := range pre {
+		if err := applyOne(ctx, conn, m); err != nil {
+			t.Fatalf("apply up to 0010: %v", err)
+		}
 	}
 
-	conn := connect(t, url)
-	ctx := context.Background()
 	var tenantID string
 	if err := conn.QueryRow(ctx,
 		`INSERT INTO gateway_tenant(code, name) VALUES ('cs', 'CS') RETURNING id::text`).Scan(&tenantID); err != nil {

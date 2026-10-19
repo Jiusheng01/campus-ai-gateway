@@ -47,6 +47,12 @@ type Tenant struct {
 	DailyTokenLimit     int64  `json:"daily_token_limit"`
 	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
 	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
+	// The minute-level rate limits live on the Tenant, not on the Key: the
+	// Tenant is the rate-limit boundary (see GLOSSARY.md and ADR-0015), so every
+	// key it owns shares one budget. Zero means unlimited.
+	RPMLimit       int64 `json:"rpm_limit"`
+	TPMLimit       int64 `json:"tpm_limit"`
+	MaxConcurrency int64 `json:"max_concurrency"`
 	// MonthlyBudgetMicros is stored but not enforced: no price data exists, so
 	// there is nothing to charge against it. It is no longer offered in the
 	// console — a quota field an operator can set and nothing reads is worse
@@ -75,9 +81,6 @@ type APIKeyAdmin struct {
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	AllowedModels  []string   `json:"allowed_models"`
 	AllowedIPs     []string   `json:"allowed_ips"`
-	RPMLimit       int64      `json:"rpm_limit"`
-	TPMLimit       int64      `json:"tpm_limit"`
-	MaxConcurrency int64      `json:"max_concurrency"`
 	// RouteGroup is reserved. Neither data plane consults it, and the console
 	// no longer offers it for editing, because an input that stores a value
 	// nothing reads tells the operator a constraint is in force when it is not.

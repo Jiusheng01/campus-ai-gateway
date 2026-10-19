@@ -88,7 +88,7 @@ func (p *Postgres) TenantByID(ctx context.Context, id string) (model.Tenant, err
 SELECT `+tenantColumns+`
 FROM gateway_tenant
 WHERE id=$1::uuid
-`, id).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
+`, id).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Tenant{}, pgx.ErrNoRows
 	}

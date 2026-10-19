@@ -1057,6 +1057,9 @@ func validateTenant(v *model.Tenant) string {
 	if v.DailyTokenLimit < 0 || v.MonthlyTokenLimit < 0 || v.MonthlyRequestLimit < 0 || v.MonthlyBudgetMicros < 0 {
 		return "tenant quota values cannot be negative"
 	}
+	if v.RPMLimit < 0 || v.TPMLimit < 0 || v.MaxConcurrency < 0 {
+		return "tenant rate limit values cannot be negative"
+	}
 	return ""
 }
 
@@ -1118,18 +1121,10 @@ func validateAPIKey(v *model.APIKeyAdmin) string {
 	if v.Status != 1 && v.Status != 2 {
 		return "status must be 1 (enabled) or 2 (disabled)"
 	}
-	if v.RPMLimit == 0 {
-		v.RPMLimit = 60
-	}
-	if v.TPMLimit == 0 {
-		v.TPMLimit = 100000
-	}
-	if v.MaxConcurrency == 0 {
-		v.MaxConcurrency = 10
-	}
-	if v.RPMLimit < 0 || v.TPMLimit < 0 || v.MaxConcurrency < 0 {
-		return "limits cannot be negative"
-	}
+	// Rate limits are the tenant's, not the key's (see ADR-0015). The key is a
+	// credential, so there is nothing here to validate or default: a key with no
+	// limit of its own is the normal case, and rewriting a value the operator
+	// sent would be inventing a constraint they did not ask for.
 	return ""
 }
 

@@ -58,13 +58,13 @@ export function TenantsPage() {
         }
       >
         {loading && !data ? (
-          <SkeletonRows rows={5} columns={6} />
+          <SkeletonRows rows={5} columns={9} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : items.length ? (
           <>
             <div className="desktopOnly">
-              <Table heads={['租户', '编码', '状态', '日 Token 配额', '月 Token 配额', '月请求配额', '操作']} minWidth={900}>
+              <Table heads={['租户', '编码', '状态', '日 Token 配额', '月 Token 配额', '月请求配额', 'RPM', 'TPM', '并发', '操作']} minWidth={1200}>
                 {items.map(t => (
                   <tr key={t.id}>
                     <td>
@@ -77,6 +77,11 @@ export function TenantsPage() {
                     <td className="numeric">{quota(t.daily_token_limit)}</td>
                     <td className="numeric">{quota(t.monthly_token_limit)}</td>
                     <td className="numeric">{quota(t.monthly_request_limit)}</td>
+                    {/* The tenant is the rate-limit boundary (ADR-0015); these
+                        three are shared by every key it owns. */}
+                    <td className="numeric">{quota(t.rpm_limit)}</td>
+                    <td className="numeric">{quota(t.tpm_limit)}</td>
+                    <td className="numeric">{quota(t.max_concurrency)}</td>
                     <td className="rowActions">
                       <button className="link" onClick={() => void openUsage(t)}>
                         查看用量
@@ -112,6 +117,18 @@ export function TenantsPage() {
                     <div>
                       <span>月请求</span>
                       <b>{quota(t.monthly_request_limit)}</b>
+                    </div>
+                    <div>
+                      <span>RPM</span>
+                      <b>{quota(t.rpm_limit)}</b>
+                    </div>
+                    <div>
+                      <span>TPM</span>
+                      <b>{quota(t.tpm_limit)}</b>
+                    </div>
+                    <div>
+                      <span>并发</span>
+                      <b>{quota(t.max_concurrency)}</b>
                     </div>
                   </div>
                   <footer className="cardActions">
