@@ -26,19 +26,30 @@ export function TelemetryRow(label: string, value: unknown): [string, ReactNode]
   return [label, <span key={label} className={value === undefined || value === null || value === '' ? 'unknown' : undefined}>{orUnknown(value)}</span>]
 }
 
-export function Progress({label, used, limit}: {label: string; used: number; limit: number}) {
-  const pct = limit ? Math.min(100, (used / limit) * 100) : 0
+/**
+ * Progress bar for a usage-against-limit pair.
+ *
+ * The limit has three states and they must not look alike: null is "inherited"
+ * (the caller could not resolve a value), 0 is explicitly unlimited, and a
+ * positive number is the cap. A bar drawn against 0 would read as "0% of
+ * nothing", which is the opposite of unlimited.
+ */
+export function Progress({label, used, limit, limitText}: {label: string; used: number; limit: number | null | undefined; limitText?: string}) {
+  const known = limit !== null && limit !== undefined
+  const capped = known && limit > 0
+  const pct = capped ? Math.min(100, (used / (limit as number)) * 100) : 0
   const tone = pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'primary'
+  const shown = !known ? (limitText ?? '继承') : limit === 0 ? '不限' : fmt(limit as number)
   return (
     <div className="progress">
       <div className="progressHead">
         <span>{label}</span>
         <b>
-          {fmt(used)} / {limit ? fmt(limit) : '不限'}
+          {fmt(used)} / {shown}
         </b>
       </div>
       <i className="progressTrack">
-        <em className={`progressFill ${limit ? tone : 'muted'}`} style={{width: `${limit ? pct : 0}%`}} />
+        <em className={`progressFill ${capped ? tone : 'muted'}`} style={{width: `${pct}%`}} />
       </i>
     </div>
   )

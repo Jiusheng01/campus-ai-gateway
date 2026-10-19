@@ -1515,3 +1515,18 @@ input:focus, select:focus, textarea:focus {
    than a single value. */
 .detailRow.column{display:flex;flex-direction:column;align-items:flex-start;gap:9px}
 .detailRow.column .detailKey{margin:0}
+
+/* --- tenant tree ------------------------------------------------------- */
+
+/* A tree row: the indent is inline (it depends on depth), the rest is here. */
+.treeCell{display:inline-flex;align-items:center;gap:6px}
+.treeToggle{padding:0;display:inline-flex;align-items:center;color:var(--text-muted)}
+.treeSpacer{display:inline-block;width:14px}
+.kindTag{margin-left:2px;padding:1px 6px;border-radius:999px;background:var(--surface-hover);letter-spacing:0.02em}
+
+/* The three states of a limit must be distinguishable at a glance: inherit is
+   decided by an ancestor, unlimited is decided by nobody, a cap is decided
+   here. Printing the same thing for the first two is the bug this prevents. */
+.limitInherit{color:var(--text-faint);font-style:italic}
+.limitUnlimited{color:var(--text-muted)}
+.limitSet{font-weight:600}

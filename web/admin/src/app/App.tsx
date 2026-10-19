@@ -26,6 +26,7 @@ import {AnalyticsPage} from '../pages/AnalyticsPage'
 import {ProvidersPage} from '../pages/ProvidersPage'
 import {ModelsPage} from '../pages/ModelsPage'
 import {TenantsPage} from '../pages/TenantsPage'
+import {ModelQuotasPage} from '../pages/ModelQuotasPage'
 import {ApiKeysPage} from '../pages/ApiKeysPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
@@ -254,7 +255,8 @@ function Console() {
       {page === 'analytics' && <AnalyticsPage />}
       {page === 'providers' && <ProvidersPage />}
       {page === 'models' && <ModelsPage />}
-      {page === 'tenants' && <TenantsPage />}
+      {page === 'tenants' && <TenantsPage scopeTenantID={who?.scope_tenant_id} />}
+      {page === 'model-quotas' && <ModelQuotasPage scopeTenantID={who?.scope_tenant_id} />}
       {page === 'keys' && <ApiKeysPage />}
       {page === 'logs' && <RequestLogsPage />}
       {page === 'audit' && <AuditPage />}

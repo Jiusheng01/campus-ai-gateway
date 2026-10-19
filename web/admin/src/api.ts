@@ -1,8 +1,98 @@
 export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;status:number}
 export type ModelConfig={id:string;alias:string;provider_id:string;provider_name:string;upstream_model:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
-export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number}
-export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
+/**
+ * A tenant, as the admin API returns it.
+ *
+ * Every limit is nullable, and the three states mean different things:
+ *   null  — inherit from the nearest ancestor
+ *   0     — explicitly unlimited
+ *   >0    — this tenant's own cap
+ *
+ * A plain number would collapse the first two, which is exactly the distinction
+ * a multi-level tree depends on. Rendering code must therefore never do
+ * `n || 0` on these fields.
+ */
+export type Tenant={
+  id:string
+  code:string
+  name:string
+  status:number
+  kind?:string
+  parent_id?:string|null
+  /** Materialized path, e.g. "/<root>/<child>/". Used for ordering and subtree tests. */
+  path?:string
+  depth?:number
+  daily_token_limit:number|null
+  monthly_token_limit:number|null
+  monthly_request_limit:number|null
+  monthly_budget_micros:number|null
+  rpm_limit:number|null
+  tpm_limit:number|null
+  max_concurrency:number|null
+  /** nil inherits the parent's list; [] denies every model. */
+  allowed_models?:string[]|null
+}
+
+/** The write payload for PUT /admin/tenants/{id}/allocation. A full replacement. */
+export type TenantAllocation={
+  daily_token_limit:number|null
+  monthly_token_limit:number|null
+  monthly_request_limit:number|null
+  monthly_budget_micros:number|null
+  rpm_limit:number|null
+  tpm_limit:number|null
+  max_concurrency:number|null
+  allowed_models:string[]|null
+}
+
+/**
+ * One (subject, model) cap. tenant_id null is the campus-wide pool, which every
+ * tenant's usage also lands on.
+ */
+export type ModelQuota={
+  tenant_id:string|null
+  tenant_code?:string
+  tenant_name?:string
+  model_alias:string
+  daily_token_limit:number|null
+  monthly_token_limit:number|null
+}
+
+/** What one tenant actually gets for one model, and which level set it. */
+export type EffectiveModelQuota={
+  model_alias:string
+  daily_token_limit:number
+  monthly_token_limit:number
+  set_by:string
+  own:boolean
+}
+/** What one tenant actually gets once inheritance has been resolved. 0 means no cap. */
+export type EffectiveLimits={
+  tenant_id:string
+  daily_token_limit:number
+  monthly_token_limit:number
+  monthly_request_limit:number
+  rpm_limit:number
+  tpm_limit:number
+  max_concurrency:number
+  monthly_budget_micros:number
+  /** True when an allowlist applies; false means every model is reachable. */
+  model_access_restricted:boolean
+  allowed_models:string[]|null
+  depth:number
+  path:string
+}
+
+export type TenantUsage={
+  tenant_id:string
+  daily_requests:number
+  monthly_requests:number
+  daily_tokens:number
+  monthly_tokens:number
+  /** Present on the per-tenant usage endpoint; the denominator for the bars. */
+  effective?:EffectiveLimits
+}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];route_group:string;usage_requests:number;usage_tokens:number}
 export type RequestAttempt={attempt_no:number;provider:string;upstream_model:string;outcome:string;status_code:number;latency_ms:number;error_kind:string}
 export type RequestLog={request_id:string;tenant_id:string;api_key_id:string;client_ip:string;requested_model:string;actual_model:string;provider:string;upstream_model:string;route_priority:number;attempts:number;failover:boolean;stream:boolean;input_tokens:number;output_tokens:number;total_tokens:number;latency_ms:number;status_code:number;error_code:string;created_at:string}
@@ -20,7 +110,7 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
 export type DataPlane='direct'
 
 export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
-export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
+export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string;scope_tenant_id?:string|null}
 
 /**
  * RequestLogSummary aggregates the whole filtered set, not the page on screen.

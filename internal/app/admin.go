@@ -468,6 +468,13 @@ func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant usage could not be loaded", reqID)
 		return
 	}
+	// The drawer draws a bar per limit, so it needs the value that actually
+	// applies rather than the tenant's own declaration. Under a hierarchy most
+	// tenants declare nothing and inherit, and dividing by the declared column
+	// would leave the bar empty for a tenant that is in fact capped.
+	if limits, err := s.pg.EffectiveTenantLimits(r.Context(), id); err == nil {
+		stats.Effective = &limits
+	}
 	writeJSON(w, http.StatusOK, stats)
 }
 

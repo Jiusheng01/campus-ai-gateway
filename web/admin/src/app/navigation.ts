@@ -3,6 +3,7 @@ import {
   FileClock,
   KeyRound,
   LayoutDashboard,
+  Gauge,
   Network,
   Route,
   ScrollText,
@@ -25,6 +26,7 @@ export type Page =
   | 'models'
   | 'users'
   | 'tenants'
+  | 'model-quotas'
   | 'settings'
   | 'profile'
   | 'access'
@@ -45,10 +47,18 @@ export type NavItem = {
 export type NavGroup = {id: string; label: string; items: NavItem[]}
 
 // MANAGEMENT mirrors the gateway's allow-list for the pages every
-// administrator may reach. tenant_admin is deliberately absent: it is inert
-// until the scoped tenant membership exists, so offering it here would only
-// lead to a 403.
+// administrator may reach.
+//
+// tenant_admin is not in this list on purpose. Its authority is bounded to one
+// subtree, so it reaches exactly three pages — 租户, API 密钥 and 模型额度 —
+// and listing it here would offer it the dashboard, the audit trail and the
+// request log, all of which the API answers with 403.
 const MANAGEMENT = ['super_admin', 'gateway_admin', 'auditor', 'operator']
+
+// SCOPED_ADMIN is the role set of an administrator confined to a subtree. The
+// three entries it can see are the ones the gateway's allow-list grants; the
+// rows inside them are narrowed again by the API.
+const SCOPED_ADMIN = ['super_admin', 'tenant_admin']
 
 // Anyone signed in has a profile and can manage their own password and devices.
 const EVERYONE = [...MANAGEMENT, 'member']
@@ -66,7 +76,7 @@ export const navGroups: NavGroup[] = [
     items: [
       {id: 'dashboard', label: '总览', icon: LayoutDashboard, roles: MANAGEMENT},
       {id: 'analytics', label: '数据看板', icon: BarChart3, roles: MANAGEMENT},
-      {id: 'keys', label: 'API 密钥', icon: KeyRound, roles: ['super_admin']},
+      {id: 'keys', label: 'API 密钥', icon: KeyRound, roles: SCOPED_ADMIN},
       {id: 'logs', label: '使用日志', icon: FileClock, roles: ['super_admin', 'auditor']},
       {id: 'audit', label: '审计日志', icon: ScrollText, roles: ['super_admin', 'auditor']},
       {id: 'security', label: '安全事件', icon: ShieldAlert, roles: ['super_admin', 'auditor']},
@@ -85,7 +95,8 @@ export const navGroups: NavGroup[] = [
     label: '用户与租户',
     items: [
       {id: 'users', label: '用户', icon: UserRound, roles: ['super_admin']},
-      {id: 'tenants', label: '租户', icon: Users, roles: ['super_admin']},
+      {id: 'tenants', label: '租户', icon: Users, roles: SCOPED_ADMIN},
+      {id: 'model-quotas', label: '模型额度', icon: Gauge, roles: SCOPED_ADMIN},
     ],
   },
   {
@@ -114,7 +125,8 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   providers: {title: '渠道', subtitle: '管理模型渠道的接入与凭据来源'},
   models: {title: '模型与路由', subtitle: '管理对外模型与上游线路'},
   users: {title: '用户', subtitle: '管理注册用户和管理员角色'},
-  tenants: {title: '租户', subtitle: '管理租户与配额边界'},
+  tenants: {title: '租户', subtitle: '管理租户层级、配额与限流边界'},
+  'model-quotas': {title: '模型额度', subtitle: '按主体与模型设定 Token 上限'},
   settings: {title: '系统设置', subtitle: '认证方式与运行参数'},
   profile: {title: '个人资料', subtitle: '账号身份与权限范围'},
   access: {title: '安全与访问', subtitle: '密码与登录设备'},

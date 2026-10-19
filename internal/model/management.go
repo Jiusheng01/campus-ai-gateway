@@ -159,6 +159,11 @@ type TenantUsageStats struct {
 	MonthlyRequests int64  `json:"monthly_requests"`
 	DailyTokens     int64  `json:"daily_tokens"`
 	MonthlyTokens   int64  `json:"monthly_tokens"`
+	// Effective carries the limits that actually apply once inheritance has
+	// been resolved, so the console can draw a bar instead of dividing by a
+	// number the tenant never declared. It is nil when the caller did not ask
+	// for it, which keeps the plain usage query cheap.
+	Effective *EffectiveLimits `json:"effective,omitempty"`
 }
 
 type APIKeyAdmin struct {
