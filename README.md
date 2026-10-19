@@ -6,7 +6,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 
 > 当前状态（2026-10-18）：核心网关、Admin UI v3、管理员会话认证 v2、统一用户账户与开放注册、多 Provider 控制面、配额与审计已经进入 `main`；2026-10-17 完成一轮全项目逻辑审计与修复，封堵了权限提升链、修正了模型白名单语义、让租户停用真正生效，并加固了 trusted-header 边界。
 >
-> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言；2026-10-18 在临时 PostgreSQL 17 与 Redis 7 上重跑 `go test ./...` 全绿、无 SKIP，CI 通过。
+> 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言。`go test ./...` 全绿、无 SKIP —— 依赖数据库的集成测试需要 PostgreSQL 17 与 Redis 7，CI（`.github/workflows/ci.yml`）以 service 方式提供，本地则用 `.\scripts\dev.ps1` 起容器；**没有数据库时这些测试会 SKIP，因此"CI 绿"必须与"CI 里真的有数据库"一起看**。
 >
 > 暂缓（冻结）：以下不在当前迭代范围内——完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。当前迭代聚焦收敛：把限流边界收敛到租户、修正并发语义，并移除承诺了却不存在的能力。
 
@@ -29,7 +29,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | Qwen 真实调用 | ✅ | `campus-smart` 已完成真实端到端调用 |
 | Volcengine Ark / 豆包 | ✅* | 真实模型测试已通过；完整业务数据面 Failover 仍待最终验收 |
 | 多 Provider Failover 控制面 | ✅ | Route 优先级 / 权重 / 超时 |
-| 路由事实回填 | 🧪 | 字段与 telemetry 契约已完成 |
+| 逐次 attempt 遥测 | ✅ | 每次 Routing Attempt 落 `gateway_request_attempt`，请求详情展示完整 attempt chain（含被熔断跳过的线路） |
 | Admin UI v3 | ✅ | React + TypeScript + Vite，构建产物嵌入 Go |
 | 管理员会话认证 v2 | ✅ | 首次创建管理员、账号密码登录、Access + Refresh、设备会话 |
 | 统一账户与开放注册 | ✅ | 公开注册创建 member、super_admin 授予管理角色、用户与权限管理 |
