@@ -25,14 +25,14 @@ var ErrAdminUsernameTaken = errors.New("username is already taken")
 // by two concurrent demotions.
 var ErrLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
 
-const adminUserColumns = `id::text, username, password_hash, display_name, roles, status, auth_version, last_login_at, created_at, updated_at`
+const adminUserColumns = `id::text, username, password_hash, display_name, roles, status, scope_tenant_id::text, auth_version, last_login_at, created_at, updated_at`
 
 func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 	var u model.AdminUser
 	var roles []byte
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
-		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.Status, &u.ScopeTenantID, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AdminUser{}, ErrAdminUserNotFound
@@ -67,12 +67,19 @@ func (p *Postgres) CountSuperAdmins(ctx context.Context) (int64, error) {
 // which is the source of truth the gateway's allow-list is built from. It is
 // duplicated here because storage cannot import app (the dependency runs the
 // other way), so the comment is the contract: a change to the role semantics
-// must change both. tenant_admin is deliberately absent — Phase 1 withdrew its
-// global grant, so an account holding only that role grants nothing and is
-// counted as a member, exactly as the gateway treats it.
-const managementRolePredicate = `EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(roles) AS r
-    WHERE r IN ('auditor','operator','gateway_admin','super_admin')
+// must change both.
+//
+// tenant_admin is present because it now carries authority — but only inside
+// the subtree named by scope_tenant_id. That is why it cannot simply be added
+// to the list above: a tenant_admin row with a NULL scope is an inert leftover
+// from the withdrawn global grant, and counting it as an administrator would
+// put an account in the "admins" column that can administer nothing.
+const managementRolePredicate = `(
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(roles) AS r
+      WHERE r IN ('auditor','operator','gateway_admin','super_admin')
+    )
+    OR (roles @> '["tenant_admin"]'::jsonb AND scope_tenant_id IS NOT NULL)
   )`
 
 // AdminUserStats returns the counts shown on the user management page. They are
@@ -205,15 +212,19 @@ RETURNING ` + adminUserColumns
 // separate guards. A username collision is reported as ErrAdminUsernameTaken
 // rather than as a database error, so the HTTP layer can answer 409 without
 // leaking constraint names.
-func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error) {
+//
+// scopeTenantID is the subtree a tenant_admin is confined to and is nil for
+// every other role. The column's foreign key is ON DELETE RESTRICT, so a tenant
+// that still scopes an administrator cannot be deleted out from under them.
+func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, scopeTenantID *string) (model.AdminUser, error) {
 	encoded, err := json.Marshal(roles)
 	if err != nil {
 		return model.AdminUser{}, err
 	}
-	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles)
-VALUES ($1, $2, $3, $4::jsonb)
+	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles, scope_tenant_id)
+VALUES ($1, $2, $3, $4::jsonb, $5)
 RETURNING ` + adminUserColumns
-	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded))
+	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded, scopeTenantID))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -227,10 +238,18 @@ RETURNING ` + adminUserColumns
 // AdminUserMutation is a partial change to an account. A nil field means
 // "leave it alone", which is what lets the console send only the fields the
 // operator actually touched.
+//
+// ScopeTenantID needs a third state that a plain pointer cannot express:
+// "clear the scope" is different from "do not touch it". ClearScope says so
+// explicitly, and the two are never both set — the service layer derives both
+// from the final role list, so a scope cannot survive a demotion from
+// tenant_admin or go missing on a promotion to it.
 type AdminUserMutation struct {
-	DisplayName *string
-	Roles       *[]string
-	Status      *int
+	DisplayName   *string
+	Roles         *[]string
+	Status        *int
+	ScopeTenantID *string
+	ClearScope    bool
 }
 
 // AdminUserChangeSet reports what a mutation actually changed.
@@ -244,6 +263,7 @@ type AdminUserChangeSet struct {
 	RolesChanged       bool
 	StatusChanged      bool
 	DisplayNameChanged bool
+	ScopeChanged       bool
 
 	OldRoles []string
 	NewRoles []string
@@ -253,6 +273,9 @@ type AdminUserChangeSet struct {
 
 	OldDisplayName string
 	NewDisplayName string
+
+	OldScopeTenantID *string
+	NewScopeTenantID *string
 }
 
 // AuthenticationChanged reports whether the change invalidates credentials.
@@ -260,13 +283,18 @@ type AdminUserChangeSet struct {
 // Role and status are what the access token's authority is derived from, so
 // either one moving means every token issued before it must stop working.
 // A display name is a label and has no bearing on authentication.
+//
+// A scope change is deliberately absent. The principal is re-derived from this
+// row on every request, so the new subtree applies to the very next call — and
+// revoking the sessions of an administrator whose area of responsibility was
+// merely redrawn would be a sign-out with no security value behind it.
 func (c AdminUserChangeSet) AuthenticationChanged() bool {
 	return c.RolesChanged || c.StatusChanged
 }
 
 // AnythingChanged reports whether the row needs writing at all.
 func (c AdminUserChangeSet) AnythingChanged() bool {
-	return c.AuthenticationChanged() || c.DisplayNameChanged
+	return c.AuthenticationChanged() || c.DisplayNameChanged || c.ScopeChanged
 }
 
 // UpdateAdminUserAccount applies a partial account change in one transaction
@@ -316,18 +344,28 @@ func (p *Postgres) UpdateAdminUserAccount(ctx context.Context, id string, mutati
 	if mutation.DisplayName != nil {
 		next.DisplayName = *mutation.DisplayName
 	}
+	switch {
+	case mutation.ClearScope:
+		next.ScopeTenantID = nil
+	case mutation.ScopeTenantID != nil:
+		scope := *mutation.ScopeTenantID
+		next.ScopeTenantID = &scope
+	}
 
 	changes := AdminUserChangeSet{
-		OldRoles:       current.Roles,
-		NewRoles:       next.Roles,
-		OldStatus:      current.Status,
-		NewStatus:      next.Status,
-		OldDisplayName: current.DisplayName,
-		NewDisplayName: next.DisplayName,
+		OldRoles:         current.Roles,
+		NewRoles:         next.Roles,
+		OldStatus:        current.Status,
+		NewStatus:        next.Status,
+		OldDisplayName:   current.DisplayName,
+		NewDisplayName:   next.DisplayName,
+		OldScopeTenantID: current.ScopeTenantID,
+		NewScopeTenantID: next.ScopeTenantID,
 	}
 	changes.RolesChanged = !sameRoleSet(current.Roles, next.Roles)
 	changes.StatusChanged = current.Status != next.Status
 	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
+	changes.ScopeChanged = !sameScope(current.ScopeTenantID, next.ScopeTenantID)
 
 	// The invariant is judged on the outcome, not on the fields that were sent.
 	if keepsEnabledSuperAdmin(current) && !keepsEnabledSuperAdmin(next) {
@@ -364,11 +402,12 @@ UPDATE gateway_admin_user
 SET roles = $2::jsonb,
     status = $3,
     display_name = $4,
+    scope_tenant_id = $7,
     auth_version = CASE WHEN $5 THEN auth_version + 1 ELSE auth_version END,
     updated_at = CASE WHEN $6 THEN NOW() ELSE updated_at END
 WHERE id = $1
 RETURNING `+adminUserColumns,
-		id, encoded, next.Status, next.DisplayName, changes.AuthenticationChanged(), changes.AnythingChanged()))
+		id, encoded, next.Status, next.DisplayName, changes.AuthenticationChanged(), changes.AnythingChanged(), next.ScopeTenantID))
 	if err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
@@ -412,6 +451,20 @@ func containsRole(roles []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// sameScope compares two optional tenant identifiers. Two nil values are the
+// same scope — "no scope" — and that is the comparison the change detector
+// needs, not a pointer identity test.
+func sameScope(a, b *string) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
 }
 
 // UpdateAdminUserPassword rotates the hash and bumps auth_version in the same

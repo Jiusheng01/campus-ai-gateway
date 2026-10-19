@@ -28,6 +28,14 @@ type AdminUser struct {
 	DisplayName  string
 	Roles        []string
 	Status       int
+	// ScopeTenantID is the subtree a tenant_admin is confined to. It is NULL
+	// for every account that is not scoped, including super administrators,
+	// whose authority is global by definition.
+	//
+	// It is not part of the access token: the principal is re-derived from this
+	// row on every request, so moving an administrator's scope takes effect on
+	// their next call rather than when their token happens to expire.
+	ScopeTenantID *string
 	// AuthVersion invalidates every session and access token of this account
 	// when it changes. Password changes, role changes and disabling bump it.
 	AuthVersion int64

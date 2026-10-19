@@ -29,16 +29,17 @@ const (
 // them makes the account an administrator, which is what removes the need for
 // "member".
 //
-// tenant_admin is deliberately absent. Its global form reached every tenant and
-// every API key with no resource scope at all, which contradicts the confirmed
-// design where tenant_admin is a role *inside* a tenant. Phase 1 withdraws the
-// global grant instead of inventing a scope the data model cannot express yet.
-// The name stays in the vocabulary so an existing stored value can still be
-// read, displayed and explicitly replaced — it simply carries no authority, and
-// IsManagementRole says so.
+// tenant_admin is a management role, but not a global one. Its authority is
+// confined to the subtree named by the account's scope_tenant_id: it may read
+// and write the tenants, API keys and model quotas inside that subtree and is
+// refused everywhere else. Because the role without a scope would mean "every
+// tenant", the two are inseparable — ValidateAccountScope refuses a role list
+// that names tenant_admin without a scope, and refuses a scope on an account
+// that is not a tenant_admin.
 var managementRoles = []string{
 	RoleAuditor,
 	RoleOperator,
+	RoleTenantAdmin,
 	RoleGatewayAdmin,
 	RoleSuperAdmin,
 }
@@ -57,9 +58,12 @@ var managementRoleSet = func() map[string]bool {
 // management API. A super administrator must not be able to grant a role that
 // reads like authority while granting none: the account would look privileged
 // in the console and behave as a member everywhere else.
-var unassignableRoles = map[string]bool{
-	RoleTenantAdmin: true,
-}
+//
+// It is empty now that tenant_admin carries a real, scoped authority, but the
+// mechanism stays: withdrawing a role from the assignable vocabulary is a
+// decision that will be made again, and it should not require re-inventing the
+// check.
+var unassignableRoles = map[string]bool{}
 
 // rolePrecedence fixes the order roles are listed in, most privileged first.
 // Sorting by it keeps API responses and the UI stable instead of leaking Go's
@@ -141,9 +145,9 @@ func NormalizeAccountRoles(roles []string) []string {
 // input was accepted when part of it was discarded, and it hides a typo or a
 // client bug behind an apparent success. The API refuses it instead.
 //
-// The same reasoning applies to a recognised role that Phase 1 has withdrawn.
-// Returning 400 rather than quietly writing it keeps the operator informed and
-// keeps the console from showing a grant that does nothing.
+// The same reasoning applies to a recognised role that is not currently
+// assignable. Returning 400 rather than quietly writing it keeps the operator
+// informed and keeps the console from showing a grant that does nothing.
 func ValidateAccountRoles(roles []string) error {
 	for _, raw := range roles {
 		role := strings.TrimSpace(raw)
@@ -155,6 +159,42 @@ func ValidateAccountRoles(roles []string) error {
 		}
 	}
 	return nil
+}
+
+// ValidateAccountScope checks the pairing between the tenant_admin role and the
+// subtree it administers.
+//
+// The pairing is the whole security property of the role. A tenant_admin with
+// no scope would be the global grant that was withdrawn for being unbounded;
+// a scope on any other role would be a restriction that nothing enforces, and
+// would sit in the database looking like a boundary. Both are refused rather
+// than silently repaired, for the same reason unknown roles are refused: an
+// operator who asked for something the system will not do should be told.
+//
+// scopeTenantID is the raw request value; whitespace-only counts as absent.
+func ValidateAccountScope(roles []string, scopeTenantID string) error {
+	scope := strings.TrimSpace(scopeTenantID)
+	if hasRole(roles, RoleTenantAdmin) {
+		if scope == "" {
+			return ErrAdminBadRequest
+		}
+		return nil
+	}
+	if scope != "" {
+		return ErrAdminBadRequest
+	}
+	return nil
+}
+
+// hasRole reports whether the list contains the role, comparing trimmed values
+// so a stray space in a stored list is not mistaken for a different role.
+func hasRole(roles []string, want string) bool {
+	for _, raw := range roles {
+		if strings.TrimSpace(raw) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // roleSet converts a role list into the membership set used for authorisation

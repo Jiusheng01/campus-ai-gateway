@@ -74,7 +74,7 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 		return model.AdminUser{}, adminTokens{}, ErrAdminInternal
 	}
 
-	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles)
+	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles, nil)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrAdminUsernameTaken):

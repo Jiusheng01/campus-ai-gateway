@@ -614,6 +614,37 @@ RETURNING `+tenantColumns,
 	return out, nil
 }
 
+// TenantPath returns the materialized path of one tenant.
+//
+// It exists for the paths that hold an id from a request body and need to know
+// whether that tenant exists at all before deciding anything else — scoping an
+// administrator to a tenant, for instance. Answering with ErrTenantNotFound
+// keeps the caller from having to distinguish "no such tenant" from "the query
+// failed".
+func (p *Postgres) TenantPath(ctx context.Context, tenantID string) (string, error) {
+	var path string
+	err := p.Pool.QueryRow(ctx, `SELECT path FROM gateway_tenant WHERE id=$1::uuid`, tenantID).Scan(&path)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrTenantNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// TenantExists reports whether a tenant id names a row. It is the cheap form of
+// TenantPath for callers that only need to reject a bad id before writing a
+// foreign key that would fail with an opaque constraint error.
+func (p *Postgres) TenantExists(ctx context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, nil
+	}
+	var ok bool
+	err := p.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM gateway_tenant WHERE id=$1::uuid)`, tenantID).Scan(&ok)
+	return ok, err
+}
+
 // TenantIsDescendant reports whether target sits inside scope's subtree.
 //
 // The check is a prefix comparison on the materialized path, which is the whole

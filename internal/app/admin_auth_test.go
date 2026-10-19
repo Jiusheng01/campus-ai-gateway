@@ -56,46 +56,71 @@ func TestParseAdminRolesDropsRolelessGroups(t *testing.T) {
 }
 
 func TestAdminPrincipalPermissions(t *testing.T) {
+	scope := "11111111-1111-1111-1111-111111111111"
 	cases := []struct {
 		role   string
+		scope  *string
 		method string
 		path   string
 		want   bool
 	}{
-		{"auditor", http.MethodGet, "/admin/request-logs", true},
-		{"auditor", http.MethodPost, "/admin/models", false},
+		{"auditor", nil, http.MethodGet, "/admin/request-logs", true},
+		{"auditor", nil, http.MethodPost, "/admin/models", false},
 		// The summary and the trend are reads of telemetry the same roles
 		// already see, so they follow the pages they feed rather than opening
 		// a new grant.
-		{"auditor", http.MethodGet, "/admin/request-logs/summary", true},
-		{"auditor", http.MethodGet, "/admin/status/trend", true},
-		{"operator", http.MethodGet, "/admin/status/trend", true},
-		{"gateway_admin", http.MethodGet, "/admin/status/trend", true},
+		{"auditor", nil, http.MethodGet, "/admin/request-logs/summary", true},
+		{"auditor", nil, http.MethodGet, "/admin/status/trend", true},
+		{"operator", nil, http.MethodGet, "/admin/status/trend", true},
+		{"gateway_admin", nil, http.MethodGet, "/admin/status/trend", true},
 		// Reading a chart is not revoking a credential.
-		{"auditor", http.MethodDelete, "/admin/api-keys/x", false},
-		{"operator", http.MethodDelete, "/admin/api-keys/x", false},
-		{"gateway_admin", http.MethodPost, "/admin/providers", true},
-		{"gateway_admin", http.MethodPut, "/admin/tenants/x", false},
-		// P1-02: the global form of tenant_admin no longer reaches tenant or
-		// key management. The role still exists as a stored value, but it
-		// grants nothing.
-		{"tenant_admin", http.MethodPut, "/admin/tenants/x", false},
-		{"tenant_admin", http.MethodGet, "/admin/tenants", false},
-		{"tenant_admin", http.MethodPost, "/admin/api-keys", false},
-		{"tenant_admin", http.MethodGet, "/admin/status", false},
-		{"tenant_admin", http.MethodGet, "/admin/status/trend", false},
-		{"operator", http.MethodPost, "/admin/model-test", true},
+		{"auditor", nil, http.MethodDelete, "/admin/api-keys/x", false},
+		{"operator", nil, http.MethodDelete, "/admin/api-keys/x", false},
+		{"gateway_admin", nil, http.MethodPost, "/admin/providers", true},
+		{"gateway_admin", nil, http.MethodPut, "/admin/tenants/x", false},
+		// A tenant_admin without a scope is the withdrawn global grant and
+		// still reaches nothing. The scope is what turns the role on.
+		{"tenant_admin", nil, http.MethodPut, "/admin/tenants/x", false},
+		{"tenant_admin", nil, http.MethodGet, "/admin/tenants", false},
+		{"tenant_admin", nil, http.MethodPost, "/admin/api-keys", false},
+		{"tenant_admin", nil, http.MethodGet, "/admin/status", false},
+		{"tenant_admin", nil, http.MethodGet, "/admin/status/trend", false},
+		// Scoped, the same role reaches the three surfaces it administers.
+		{"tenant_admin", &scope, http.MethodGet, "/admin/tenants", true},
+		{"tenant_admin", &scope, http.MethodPost, "/admin/tenants", true},
+		{"tenant_admin", &scope, http.MethodPut, "/admin/tenants/x", true},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/tenants/x/usage", true},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/api-keys", true},
+		{"tenant_admin", &scope, http.MethodPost, "/admin/api-keys", true},
+		{"tenant_admin", &scope, http.MethodDelete, "/admin/api-keys/x", true},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/model-quotas", true},
+		{"tenant_admin", &scope, http.MethodPut, "/admin/model-quotas", true},
+		// /admin/status is the deployment-wide dashboard: it carries no scope
+		// to narrow, so a scoped administrator is refused it rather than shown
+		// every tenant's traffic. The same reasoning already refused the trend
+		// chart, which is the same numbers grouped by time.
+		{"tenant_admin", &scope, http.MethodGet, "/admin/status", false},
+		// Scoping a role is not a promotion: it opens exactly three surfaces,
+		// not the whole control plane.
+		{"tenant_admin", &scope, http.MethodGet, "/admin/providers", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/models", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/request-logs", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/users", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/admin-audit", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/security-events", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/status/trend", false},
+		{"operator", nil, http.MethodPost, "/admin/model-test", true},
 		// A plain member reaches nothing but its own account.
-		{"member", http.MethodGet, "/admin/status", false},
-		{"member", http.MethodGet, "/admin/status/trend", false},
-		{"member", http.MethodGet, "/admin/request-logs", false},
-		{"member", http.MethodGet, "/admin/request-logs/summary", false},
+		{"member", nil, http.MethodGet, "/admin/status", false},
+		{"member", nil, http.MethodGet, "/admin/status/trend", false},
+		{"member", nil, http.MethodGet, "/admin/request-logs", false},
+		{"member", nil, http.MethodGet, "/admin/request-logs/summary", false},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
-		p := adminPrincipal{User: "u", Roles: map[string]bool{tc.role: true}}
+		p := adminPrincipal{User: "u", Roles: map[string]bool{tc.role: true}, ScopeTenantID: tc.scope}
 		if got := p.can(req); got != tc.want {
-			t.Fatalf("%s %s as %s = %v, want %v", tc.method, tc.path, tc.role, got, tc.want)
+			t.Fatalf("%s %s as %s (scope %v) = %v, want %v", tc.method, tc.path, tc.role, tc.scope, got, tc.want)
 		}
 	}
 }

@@ -246,7 +246,36 @@ WHERE tenant_id=$1::uuid
 	return v, err
 }
 
+// APIKeyTenantID reports which tenant owns a key. The scoped admin layer uses
+// it to decide whether a key addressed by id in the URL is inside the caller's
+// subtree — the check has to happen against the stored row, not against the
+// body, because the body is what the caller is trying to change.
+//
+// A missing key returns pgx.ErrNoRows, which the handlers already translate
+// into 404.
+func (p *Postgres) APIKeyTenantID(ctx context.Context, id string) (string, error) {
+	var tenantID string
+	err := p.Pool.QueryRow(ctx, `SELECT tenant_id::text FROM gateway_api_key WHERE id=$1::uuid`, id).Scan(&tenantID)
+	return tenantID, err
+}
+
 func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error) {
+	return p.listAPIKeys(ctx, nil)
+}
+
+// ListAPIKeysInSubtree returns the keys of one tenant and its descendants. It
+// is the scoped counterpart of ListAPIKeys and exists so a tenant_admin's key
+// list is narrowed in the query rather than in the browser: a filter applied
+// after the rows are read still ships every other department's keys over the
+// wire, and one forgotten filter would show them.
+func (p *Postgres) ListAPIKeysInSubtree(ctx context.Context, scopeTenantID string) ([]model.APIKeyAdmin, error) {
+	if scopeTenantID == "" {
+		return p.listAPIKeys(ctx, nil)
+	}
+	return p.listAPIKeys(ctx, &scopeTenantID)
+}
+
+func (p *Postgres) listAPIKeys(ctx context.Context, scopeTenantID *string) ([]model.APIKeyAdmin, error) {
 	// The usage columns are aggregated from the request log rather than read
 	// from a counter on the key. A stored counter would have to be incremented
 	// on the hot path and would drift the moment a request was logged but its
@@ -256,6 +285,10 @@ func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error)
 	// LEFT JOIN LATERAL, not a plain join: an aggregate subquery always returns
 	// one row, so the outer join never drops a key that has served no traffic.
 	// It rides idx_gateway_request_log_api_key_created.
+	//
+	// The scope predicate is a prefix comparison on the tenant's materialized
+	// path, the same test the tenant list uses, so "inside my subtree" has one
+	// definition across the admin API.
 	rows, err := p.Pool.Query(ctx, `
 SELECT
 	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
@@ -270,8 +303,10 @@ LEFT JOIN LATERAL (
 	FROM gateway_request_log l
 	WHERE l.api_key_id = k.id
 ) u ON true
+WHERE $1::uuid IS NULL
+   OR t.path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id=$1::uuid)
 ORDER BY k.created_at DESC
-`)
+`, scopeTenantID)
 	if err != nil {
 		return nil, err
 	}

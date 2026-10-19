@@ -66,7 +66,7 @@ type adminStore interface {
 	FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error)
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
-	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, scopeTenantID *string) (model.AdminUser, error)
 	// UpdateAdminUserAccount is the only way an existing account is changed.
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.
@@ -74,6 +74,9 @@ type adminStore interface {
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
+	// TenantExists backs the check that a tenant_admin's scope names a real
+	// tenant before the foreign key would reject it with a constraint error.
+	TenantExists(ctx context.Context, tenantID string) (bool, error)
 
 	CreateAdminSession(ctx context.Context, s model.AdminSession) (model.AdminSession, error)
 	FindAdminSessionByID(ctx context.Context, sid string) (model.AdminSession, error)
@@ -603,12 +606,13 @@ func (a *adminAuthService) authenticate(ctx context.Context, accessToken string)
 	}
 
 	return adminPrincipal{
-		UserID:    user.ID,
-		Username:  user.Username,
-		User:      user.Username,
-		Roles:     filterAdminRoles(user.Roles),
-		SessionID: session.SID,
-		AuthMode:  "session",
+		UserID:        user.ID,
+		Username:      user.Username,
+		User:          user.Username,
+		Roles:         filterAdminRoles(user.Roles),
+		SessionID:     session.SID,
+		AuthMode:      "session",
+		ScopeTenantID: user.ScopeTenantID,
 	}, nil
 }
 

@@ -34,6 +34,11 @@ type fakeAdminStore struct {
 	sessions map[string]model.AdminSession
 	seq      int
 
+	// missingTenantID is the one tenant id TenantExists reports as absent. The
+	// fake has no tenant table, so it needs a single well-known miss to test
+	// the "scope names a tenant that does not exist" branch.
+	missingTenantID string
+
 	// rotateCalls records (sid, oldHash, newHash) for rotation assertions.
 	rotateCalls []string
 
@@ -168,7 +173,7 @@ func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displ
 	return u, nil
 }
 
-func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
+func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string, scopeTenantID *string) (model.AdminUser, error) {
 	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
 		return model.AdminUser{}, storage.ErrAdminUsernameTaken
 	}
@@ -178,7 +183,8 @@ func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, ha
 	u := model.AdminUser{
 		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
 		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
-		CreatedAt: now, UpdatedAt: now,
+		ScopeTenantID: scopeTenantID,
+		CreatedAt:     now, UpdatedAt: now,
 	}
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id
@@ -205,18 +211,28 @@ func (f *fakeAdminStore) UpdateAdminUserAccount(_ context.Context, id string, m 
 	if m.DisplayName != nil {
 		next.DisplayName = *m.DisplayName
 	}
+	switch {
+	case m.ClearScope:
+		next.ScopeTenantID = nil
+	case m.ScopeTenantID != nil:
+		scope := *m.ScopeTenantID
+		next.ScopeTenantID = &scope
+	}
 
 	changes := storage.AdminUserChangeSet{
-		OldRoles:       current.Roles,
-		NewRoles:       next.Roles,
-		OldStatus:      current.Status,
-		NewStatus:      next.Status,
-		OldDisplayName: current.DisplayName,
-		NewDisplayName: next.DisplayName,
+		OldRoles:         current.Roles,
+		NewRoles:         next.Roles,
+		OldStatus:        current.Status,
+		NewStatus:        next.Status,
+		OldDisplayName:   current.DisplayName,
+		NewDisplayName:   next.DisplayName,
+		OldScopeTenantID: current.ScopeTenantID,
+		NewScopeTenantID: next.ScopeTenantID,
 	}
 	changes.RolesChanged = canonicalRoles(current.Roles) != canonicalRoles(next.Roles)
 	changes.StatusChanged = current.Status != next.Status
 	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
+	changes.ScopeChanged = !sameFakeScope(current.ScopeTenantID, next.ScopeTenantID)
 
 	// The real store evaluates this against the final state, inside the same
 	// transaction as the write; the fake must not be more permissive than that
@@ -242,6 +258,24 @@ func (f *fakeAdminStore) UpdateAdminUserAccount(_ context.Context, id string, m 
 // mistaken for a change.
 func canonicalRoles(roles []string) string {
 	return strings.Join(NormalizeAccountRoles(roles), ",")
+}
+
+// sameFakeScope mirrors storage.sameScope: two nil values are the same scope.
+func sameFakeScope(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// TenantExists answers true for anything non-empty. The fake has no tenant
+// table; the service tests that care about a missing tenant set
+// missingTenantID instead.
+func (f *fakeAdminStore) TenantExists(_ context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, nil
+	}
+	return tenantID != f.missingTenantID, nil
 }
 
 func isEnabledSuperAdmin(u model.AdminUser) bool {

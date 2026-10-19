@@ -19,6 +19,16 @@ type adminPrincipal struct {
 	Roles     map[string]bool
 	SessionID string
 	AuthMode  string
+	// ScopeTenantID is the subtree a tenant_admin is confined to, or nil for
+	// every account whose authority is not bounded by a tenant. It is read from
+	// the account row on each request, so moving a scope takes effect
+	// immediately rather than at the next token refresh.
+	ScopeTenantID *string
+}
+
+// scoped reports whether the principal's authority is bounded to a subtree.
+func (p adminPrincipal) scoped() bool {
+	return p.ScopeTenantID != nil && *p.ScopeTenantID != ""
 }
 
 type adminPrincipalKey struct{}
@@ -145,6 +155,15 @@ func parseAdminRoles(raw string) map[string]bool {
 	parts := make([]string, 0, 4)
 	for _, item := range strings.Split(raw, ",") {
 		role := strings.TrimSpace(item)
+		// tenant_admin is a scoped role, and this path carries no scope: the
+		// headers say who the caller is and which groups they hold, not which
+		// subtree they administer. Honouring the name here would create exactly
+		// the unbounded grant the role was withdrawn for, so a proxy that still
+		// sends it gets a plain member. A scoped administrator has to be created
+		// through the user management API, where a scope is part of the request.
+		if role == RoleTenantAdmin {
+			continue
+		}
 		if role == RoleMember || IsManagementRole(role) {
 			parts = append(parts, role)
 		}
@@ -214,13 +233,28 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	// There is deliberately no tenant_admin branch. Its global form granted
-	// every tenant and every API key with no resource scope, so a holder could
-	// read and rewrite any tenant's credentials. The confirmed design puts
-	// tenant_admin *inside* a tenant, and until that membership model exists
-	// there is no correct scope to grant — so the role grants nothing rather
-	// than everything. An account still carrying the value is administratively
-	// inert and can be reassigned by a super administrator.
+	// tenant_admin is the scoped administrator. It reaches the tenant, API key
+	// and model-quota surfaces and nothing else, and every one of those
+	// handlers narrows the request to the principal's subtree before touching
+	// the database — this branch decides which endpoints are addressable, the
+	// handler decides which rows.
+	//
+	// A tenant_admin without a scope grants nothing. Validation refuses to
+	// create one, so this is defence in depth rather than an expected state:
+	// an unscoped tenant_admin is the unbounded global grant the role used to
+	// be, and the one thing that must not happen is for it to fall back to it.
+	if p.Roles[RoleTenantAdmin] && p.scoped() {
+		switch {
+		case path == "/admin/tenants",
+			strings.HasPrefix(path, "/admin/tenants/"),
+			path == "/admin/api-keys",
+			strings.HasPrefix(path, "/admin/api-keys/"),
+			path == "/admin/model-quotas",
+			strings.HasPrefix(path, "/admin/model-quotas/"),
+			path == "/admin/status":
+			return true
+		}
+	}
 	return false
 }
 

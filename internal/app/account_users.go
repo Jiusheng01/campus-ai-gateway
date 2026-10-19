@@ -27,8 +27,13 @@ type adminUserView struct {
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
 	Status      int      `json:"status"`
-	LastLoginAt *string  `json:"last_login_at"`
-	CreatedAt   string   `json:"created_at"`
+	// ScopeTenantID is the subtree a tenant_admin is confined to and is null
+	// for every other account. The console needs it to show which department an
+	// administrator belongs to; it is not a credential, so there is no reason
+	// to withhold it.
+	ScopeTenantID *string `json:"scope_tenant_id"`
+	LastLoginAt   *string `json:"last_login_at"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 func adminUserViewFrom(u model.AdminUser) adminUserView {
@@ -38,13 +43,14 @@ func adminUserViewFrom(u model.AdminUser) adminUserView {
 		lastLogin = &formatted
 	}
 	return adminUserView{
-		ID:          u.ID,
-		Username:    u.Username,
-		DisplayName: u.DisplayName,
-		Roles:       NormalizeAccountRoles(u.Roles),
-		Status:      u.Status,
-		LastLoginAt: lastLogin,
-		CreatedAt:   u.CreatedAt.UTC().Format(time.RFC3339),
+		ID:            u.ID,
+		Username:      u.Username,
+		DisplayName:   u.DisplayName,
+		Roles:         NormalizeAccountRoles(u.Roles),
+		Status:        u.Status,
+		ScopeTenantID: u.ScopeTenantID,
+		LastLoginAt:   lastLogin,
+		CreatedAt:     u.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -56,6 +62,9 @@ type userUpdate struct {
 	DisplayName *string
 	Roles       *[]string
 	Status      *int
+	// ScopeTenantID is the subtree a tenant_admin is confined to. An empty
+	// string means "no scope"; the field being nil means "leave it alone".
+	ScopeTenantID *string
 }
 
 // listUsers returns every account plus the summary counts.
@@ -120,6 +129,17 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 		mutation.DisplayName = &name
 	}
 
+	// The role and the scope are one grant, so they are judged together and
+	// against the state the account will be in afterwards — not against the
+	// fields the request happened to carry. A patch that only changes the scope
+	// has to know the account is still a tenant_admin; a patch that demotes an
+	// account to member has to clear the scope it can no longer use.
+	if in.Roles != nil || in.ScopeTenantID != nil {
+		if err := a.planScopeGrant(ctx, targetID, in, &mutation); err != nil {
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, err
+		}
+	}
+
 	updated, changes, err := a.store.UpdateAdminUserAccount(ctx, targetID, mutation)
 	if err != nil {
 		switch {
@@ -150,6 +170,76 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 		log.Printf("user management: account %s changed but its sessions could not be revoked: %v", targetID, err)
 	}
 	return updated, changes, nil
+}
+
+// planScopeGrant resolves the tenant_admin role and its subtree into the
+// mutation that will be written, and refuses the combinations that would leave
+// the database holding a grant nobody can enforce.
+//
+// It reads the account first because the decision depends on the *result*, not
+// on the request: "demote to member" must clear a scope the request never
+// mentioned, and "change the scope only" must not be read as "remove the role".
+//
+// The scope is also checked against the tenant table. Without it a typo would
+// reach the foreign key and come back as a 500 describing a constraint name,
+// which tells the operator nothing about the field they got wrong.
+func (a *adminAuthService) planScopeGrant(ctx context.Context, targetID string, in userUpdate, mutation *storage.AdminUserMutation) error {
+	current, err := a.store.FindAdminUserByID(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return ErrAdminUserNotFound
+		}
+		return ErrAdminInternal
+	}
+
+	roles := NormalizeAccountRoles(current.Roles)
+	if in.Roles != nil {
+		roles = NormalizeAccountRoles(*in.Roles)
+	}
+
+	// The scope the account should end up with, resolved from the outcome
+	// rather than from the fields present:
+	//
+	//   - the request named one, so that is the intent;
+	//   - it named none but the account remains a tenant_admin, so the current
+	//     one is retained (a role edit that keeps the role must not silently
+	//     strip the subtree);
+	//   - it named none and the account is no longer a tenant_admin, so there
+	//     is nothing left to scope.
+	scope := ""
+	switch {
+	case in.ScopeTenantID != nil:
+		scope = strings.TrimSpace(*in.ScopeTenantID)
+	case hasRole(roles, RoleTenantAdmin) && current.ScopeTenantID != nil:
+		scope = strings.TrimSpace(*current.ScopeTenantID)
+	}
+
+	if err := ValidateAccountScope(roles, scope); err != nil {
+		return err
+	}
+	if scope != "" {
+		exists, err := a.store.TenantExists(ctx, scope)
+		if err != nil {
+			return ErrAdminInternal
+		}
+		if !exists {
+			return ErrAdminTenantNotFound
+		}
+	}
+
+	if in.Roles != nil {
+		mutation.Roles = &roles
+	}
+	switch {
+	case scope == "" && current.ScopeTenantID != nil:
+		// Demoted, or the scope was explicitly cleared. Either way the column
+		// must stop naming a subtree: a stale scope on a non-tenant_admin is a
+		// boundary that looks real and is not.
+		mutation.ClearScope = true
+	case scope != "":
+		mutation.ScopeTenantID = &scope
+	}
+	return nil
 }
 
 // revokeReasonForChange names the reason recorded on the revoked sessions, so
@@ -216,6 +306,10 @@ type adminUserUpdateRequest struct {
 	DisplayName *string   `json:"display_name"`
 	Roles       *[]string `json:"roles"`
 	Status      *int      `json:"status"`
+	// ScopeTenantID carries the subtree for a tenant_admin. Sending "" clears
+	// it, which is only valid when the account is not (or is no longer) a
+	// tenant_admin; omitting the field leaves the current scope alone.
+	ScopeTenantID *string `json:"scope_tenant_id"`
 }
 
 // handleAdminUserByID serves PATCH /admin/users/{id}.
@@ -252,9 +346,10 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, changes, err := s.adminAuth.updateUser(r.Context(), targetID, userUpdate{
-		DisplayName: in.DisplayName,
-		Roles:       in.Roles,
-		Status:      in.Status,
+		DisplayName:   in.DisplayName,
+		Roles:         in.Roles,
+		Status:        in.Status,
+		ScopeTenantID: in.ScopeTenantID,
 	})
 	if err != nil {
 		s.auditAdminAuth(r, "user.update_failed", statusForAdminError(err), principal.Username)
@@ -278,6 +373,7 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 			"roles":          changes.RolesChanged,
 			"status":         changes.StatusChanged,
 			"display_name":   changes.DisplayNameChanged,
+			"scope":          changes.ScopeChanged,
 			"authentication": changes.AuthenticationChanged(),
 		},
 	})
@@ -295,9 +391,16 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 // happened to contain a roles field would put events in the trail that never
 // took place.
 func accountAuditActions(changes storage.AdminUserChangeSet) []string {
-	actions := make([]string, 0, 3)
+	actions := make([]string, 0, 4)
 	if changes.RolesChanged {
 		actions = append(actions, "user.role.update")
+	}
+	// A scope change is its own event. "This administrator now covers the
+	// college of computer science" is exactly the kind of change an auditor
+	// needs to find on its own, not inferred from a role edit that happened to
+	// accompany it.
+	if changes.ScopeChanged {
+		actions = append(actions, "user.scope.update")
 	}
 	if changes.StatusChanged {
 		if changes.NewStatus == model.AdminStatusDisabled {

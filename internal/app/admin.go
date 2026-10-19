@@ -174,6 +174,11 @@ func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
 		"session_id": p.SessionID,
 		"roles":      roles,
 		"auth_mode":  p.AuthMode,
+		// The console needs to know whether it is looking at the whole gateway
+		// or one subtree: the tenant tree, the key list and the quota editor all
+		// render differently, and a scoped administrator must not be offered a
+		// "create root tenant" button the API will refuse.
+		"scope_tenant_id": p.ScopeTenantID,
 	})
 }
 
@@ -342,7 +347,18 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListTenants(r.Context())
+		// A scoped administrator sees their own subtree and nothing above or
+		// beside it. The narrowing happens in the query, not after the rows
+		// are read, so the other departments never leave the database.
+		var (
+			items []model.Tenant
+			err   error
+		)
+		if scope := adminScopeTenantID(r); scope != "" {
+			items, err = s.pg.ListTenantsInSubtree(r.Context(), scope)
+		} else {
+			items, err = s.pg.ListTenants(r.Context())
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list tenants", reqID)
 			return
@@ -357,6 +373,22 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 		if err := validateTenant(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
+		}
+		// A scoped administrator creates tenants underneath themselves. The
+		// parent is required rather than defaulted: "create a root tenant" is
+		// not something this role can ask for, and silently attaching the new
+		// node to their own tenant would produce a tree the operator did not
+		// describe.
+		if scope := adminScopeTenantID(r); scope != "" {
+			parent := model.NormalizeOptionalID(in.ParentID)
+			if parent == nil {
+				httpx.Error(w, http.StatusBadRequest, "parent_required",
+					"parent_id is required when creating a tenant inside a scope", reqID)
+				return
+			}
+			if !s.requireTenantInScope(w, r, *parent, reqID) {
+				return
+			}
 		}
 		out, err := s.pg.CreateTenant(r.Context(), in)
 		if err != nil {
@@ -381,6 +413,9 @@ func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !s.requireTenantInScope(w, r, id, reqID) {
+		return
+	}
 	stats, err := s.pg.TenantUsageStats(r.Context(), id)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant usage could not be loaded", reqID)
@@ -399,6 +434,13 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
 	if id == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// A scoped administrator may not rewrite the tenant they are scoped to:
+	// that row holds the ceiling someone above them set, and raising your own
+	// limit is the one edit that makes the hierarchy decorative. Descendants
+	// remain editable — delegating a department's quota is the job.
+	if !s.requireTenantWritable(w, r, id, reqID) {
 		return
 	}
 	var in model.Tenant
@@ -422,7 +464,15 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListAPIKeys(r.Context())
+		var (
+			items []model.APIKeyAdmin
+			err   error
+		)
+		if scope := adminScopeTenantID(r); scope != "" {
+			items, err = s.pg.ListAPIKeysInSubtree(r.Context(), scope)
+		} else {
+			items, err = s.pg.ListAPIKeys(r.Context())
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list API keys", reqID)
 			return
@@ -436,6 +486,12 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateAPIKey(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", err, reqID)
+			return
+		}
+		// The key is issued for a tenant in the caller's subtree. A key minted
+		// for a tenant outside it would be a credential the issuer cannot see,
+		// revoke or reason about.
+		if !s.requireTenantInScope(w, r, in.TenantID, reqID) {
 			return
 		}
 		plain, prefix, digest, err := security.NewAPIKey(s.cfg.KeyHMACSecret)
@@ -475,6 +531,9 @@ func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if !s.requireAPIKeyInScope(w, r, id, reqID) {
+		return
+	}
 	var in model.APIKeyAdmin
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
@@ -482,6 +541,13 @@ func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request, id, reqID 
 	}
 	if err := validateAPIKey(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", err, reqID)
+		return
+	}
+	// Both ends of the move are checked: the key must already belong to the
+	// caller's subtree, and the tenant it is being moved to must be in it too.
+	// Without the second check a scoped administrator could take a key they may
+	// edit and hand it to a department they do not administer.
+	if !s.requireTenantInScope(w, r, in.TenantID, reqID) {
 		return
 	}
 	out, err := s.pg.UpdateAPIKey(r.Context(), id, in)
@@ -516,6 +582,9 @@ func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request, id, reqID 
 		// does not exist — and it must not reach the database, where the cast
 		// would fail the whole statement.
 		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+	if !s.requireAPIKeyInScope(w, r, id, reqID) {
 		return
 	}
 	_, _, digest, err := security.NewAPIKey(s.cfg.KeyHMACSecret)

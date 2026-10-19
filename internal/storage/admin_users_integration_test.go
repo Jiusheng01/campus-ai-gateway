@@ -133,7 +133,7 @@ func quoteIdent(name string) string {
 func insertAccount(t *testing.T, pg *Postgres, username string, roles []string, status int) model.AdminUser {
 	t.Helper()
 	ctx := context.Background()
-	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles)
+	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles, nil)
 	if err != nil {
 		t.Fatalf("insert %s: %v", username, err)
 	}
@@ -213,8 +213,55 @@ func TestAdminUserStatsCountsRolesTheWayTheGatewayDoes(t *testing.T) {
 	}
 }
 
-// --- concurrent super-administrator invariant ------------------------------
+// A tenant_admin is an administrator only when it names a subtree. The role
+// alone is the withdrawn global grant, and counting it as an administrator
+// would put an account in the "admins" column that can administer nothing.
+//
+// The scope is what the count keys off, so the two rows below differ in exactly
+// one column and must land in different buckets.
+func TestAdminUserStatsCountsOnlyScopedTenantAdmins(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
 
+	tenant, err := pg.CreateTenant(ctx, model.Tenant{Code: "stats-scope", Name: "Stats Scope", Status: 1})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// insertAccount writes no scope, so both rows start unscoped; one is then
+	// promoted through the same mutation path the API uses.
+	insertAccount(t, pg, "legacy-admin", []string{"tenant_admin"}, model.AdminStatusEnabled)
+	promoted := insertAccount(t, pg, "scoped-admin", []string{"tenant_admin"}, model.AdminStatusEnabled)
+
+	roles := []string{"tenant_admin"}
+	scoped, _, err := pg.UpdateAdminUserAccount(ctx, promoted.ID, AdminUserMutation{
+		Roles:         &roles,
+		ScopeTenantID: &tenant.ID,
+	})
+	if err != nil {
+		t.Fatalf("scope the account: %v", err)
+	}
+	if scoped.ScopeTenantID == nil || *scoped.ScopeTenantID != tenant.ID {
+		t.Fatalf("scope = %v, want %s", scoped.ScopeTenantID, tenant.ID)
+	}
+
+	stats, err := pg.AdminUserStats(ctx)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.Total != 2 {
+		t.Fatalf("total = %d, want 2", stats.Total)
+	}
+	if stats.Admins != 1 {
+		t.Fatalf("admins = %d, want 1: only the scoped tenant_admin administers anything", stats.Admins)
+	}
+	if stats.Members != 1 {
+		t.Fatalf("members = %d, want 1: the unscoped tenant_admin is inert", stats.Members)
+	}
+}
+
+// --- concurrent super-administrator invariant ------------------------------
 func TestConcurrentDemotionOfTwoSuperAdminsKeepsOne(t *testing.T) {
 	pg := testPostgres(t)
 	clearAccounts(t, pg)

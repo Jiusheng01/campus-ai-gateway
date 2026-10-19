@@ -119,6 +119,18 @@ var (
 	// enabled super administrator.
 	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
 
+	// ErrAdminTenantNotFound means a request named a tenant id that does not
+	// exist — typically the scope of a tenant_admin. It is a 400 rather than a
+	// 404 because the bad id arrived in a request body, not in the URL.
+	ErrAdminTenantNotFound = errors.New("the referenced tenant does not exist")
+
+	// ErrAdminTenantOutOfScope means the caller's authority does not reach the
+	// tenant the request is about. It is a 403, and it is deliberately distinct
+	// from "not found": the caller is a legitimate administrator of some other
+	// subtree, and telling them the row exists but is not theirs is both true
+	// and more useful than pretending it vanished.
+	ErrAdminTenantOutOfScope = errors.New("the tenant is outside the administrator's scope")
+
 	// ErrAdminInternal is the catch-all for unexpected storage failures. The
 	// underlying error is logged, never returned to the client.
 	ErrAdminInternal = errors.New("administrator authentication failed")
@@ -178,6 +190,10 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "account_created_login_failed"
 	case errors.Is(err, ErrAdminLastSuperAdmin):
 		return http.StatusConflict, "last_super_admin"
+	case errors.Is(err, ErrAdminTenantNotFound):
+		return http.StatusBadRequest, "tenant_not_found"
+	case errors.Is(err, ErrAdminTenantOutOfScope):
+		return http.StatusForbidden, "tenant_out_of_scope"
 	case errors.Is(err, ErrAdminPasswordWeak):
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):
