@@ -117,12 +117,24 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleModelRouteByID(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/"):
 		s.handleModelByID(w, r)
-	case r.URL.Path == "/admin/tenants":
-		s.handleTenants(w, r)
-	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/usage"):
-		s.handleTenantUsage(w, r)
-	case strings.HasPrefix(r.URL.Path, "/admin/tenants/"):
-		s.handleTenantByID(w, r)
+	case r.URL.Path == "/admin/tenants" || strings.HasPrefix(r.URL.Path, "/admin/tenants/"):
+		// The suffix routes are matched before the node route, because
+		// "/admin/tenants/{id}/usage" would otherwise be read as a tenant whose
+		// id happens to contain a slash.
+		switch tenantPathKind(r.URL.Path) {
+		case tenantPathCollection:
+			s.handleTenants(w, r)
+		case tenantPathAllocation:
+			s.handleTenantAllocation(w, r)
+		case tenantPathUsage:
+			s.handleTenantUsage(w, r)
+		case tenantPathNode:
+			s.handleTenantByID(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	case r.URL.Path == "/admin/model-quotas":
+		s.handleModelQuotas(w, r)
 	case r.URL.Path == "/admin/api-keys":
 		s.handleAPIKeys(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
@@ -147,6 +159,41 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleSecurityEvents(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// Kinds of /admin/tenants URL, so the suffix routes win over the node route.
+const (
+	tenantPathCollection = "collection"
+	tenantPathNode       = "node"
+	tenantPathUsage      = "usage"
+	tenantPathAllocation = "allocation"
+)
+
+// tenantPathKind classifies a /admin/tenants path.
+//
+// It returns "" for anything that is neither a node nor one of the two known
+// suffixes. That matters: a tenant id is a uuid and never contains a slash, so
+// "/admin/tenants/{id}/{anything else}" is a URL nothing serves, and answering
+// 404 is more honest than handing the whole tail to the node handler as an id.
+func tenantPathKind(path string) string {
+	if path == "/admin/tenants" {
+		return tenantPathCollection
+	}
+	rest := strings.TrimPrefix(path, "/admin/tenants/")
+	if rest == "" {
+		return ""
+	}
+	if !strings.Contains(rest, "/") {
+		return tenantPathNode
+	}
+	switch {
+	case strings.HasSuffix(path, "/allocation"):
+		return tenantPathAllocation
+	case strings.HasSuffix(path, "/usage"):
+		return tenantPathUsage
+	default:
+		return ""
 	}
 }
 
