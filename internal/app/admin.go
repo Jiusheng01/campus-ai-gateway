@@ -129,6 +129,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeyByID(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
+	case r.URL.Path == "/admin/request-logs/usage":
+		s.handleRequestLogsUsage(w, r)
 	case r.URL.Path == "/admin/request-logs/summary":
 		s.handleRequestLogsSummary(w, r)
 	case r.URL.Path == "/admin/request-logs/facets":
@@ -703,6 +705,133 @@ func (s *Server) handleRequestLogsSummary(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleRequestLogsUsage answers the operator's three usage questions in one
+// call: how much traffic the filter covers, how much of the tenant's quota that
+// is, and which API keys are consuming it.
+//
+// It takes exactly the same query parameters as the detail page and the summary
+// (requestLogFilterFrom), and every aggregate runs over the same predicate, so
+// the numbers cannot describe a different set of rows than the list beneath
+// them.
+//
+// The quota field reflects a single tenant's limits. Which tenant that is
+// follows the least-surprising reading: the explicit tenant filter if there is
+// one, otherwise the tenant the filtered rows belong to — and when the filter
+// spans more than one tenant there is no single denominator, so every quota
+// dimension (and every by-key quota share) is null rather than a made-up
+// percentage. Within those limits, used is Postgres-derived day/month usage and
+// limit is the tenant's configured limit; an unset limit (<= 0) is null, never
+// 0%.
+func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	f, err := requestLogFilterFrom(r, 0)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_filter", err.Error(), reqID)
+		return
+	}
+
+	out := model.RequestLogUsage{}
+
+	summary, err := s.pg.SummarizeRequestLogs(r.Context(), f)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to aggregate request logs", reqID)
+		return
+	}
+	out.Totals.Requests = summary.Requests
+	out.Totals.Errors = summary.Errors
+	out.Totals.InputTokens = summary.InputTokens
+	out.Totals.OutputTokens = summary.OutputTokens
+	out.Totals.TotalTokens = summary.TotalTokens
+	out.Totals.AvgLatencyMS = summary.AvgLatencyMS
+	out.Totals.P95LatencyMS = summary.P95LatencyMS
+	out.Totals.FailoverCount = summary.FailoverCount
+
+	byKey, err := s.pg.GroupRequestLogsByKey(r.Context(), f)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to group request logs by key", reqID)
+		return
+	}
+	out.ByKey = byKey
+
+	// Quota is only expressible against a single tenant's limits.
+	tenantID, err := s.resolveUsageTenant(r.Context(), f)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
+		return
+	}
+	if tenantID != "" {
+		tenant, err := s.pg.TenantByID(r.Context(), tenantID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
+			return
+		}
+		stats, err := s.pg.TenantUsageStats(r.Context(), tenantID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
+			return
+		}
+		out.Totals.Quota = model.RequestLogQuota{
+			DailyToken:     quotaUsage(stats.DailyTokens, tenant.DailyTokenLimit),
+			MonthlyToken:   quotaUsage(stats.MonthlyTokens, tenant.MonthlyTokenLimit),
+			MonthlyRequest: quotaUsage(stats.MonthlyRequests, tenant.MonthlyRequestLimit),
+		}
+		fillQuotaShares(out.ByKey, tenant.MonthlyTokenLimit)
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
+
+// resolveUsageTenant names the single tenant a quota can be quoted against, or
+// returns "" when the filter spans tenants (or matches none).
+func (s *Server) resolveUsageTenant(ctx context.Context, f storage.RequestLogFilter) (string, error) {
+	if f.TenantID != "" {
+		return f.TenantID, nil
+	}
+	ids, err := s.pg.DistinctRequestTenants(ctx, f)
+	if err != nil {
+		return "", err
+	}
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	return "", nil
+}
+
+// quotaUsage derives the share of a limit a used amount represents, or nil when
+// the tenant has no limit for that dimension (limit <= 0) — the "not set" case
+// must not render as 0%.
+func quotaUsage(used, limit int64) *model.QuotaDimension {
+	if limit <= 0 {
+		return nil
+	}
+	return &model.QuotaDimension{
+		Used:  used,
+		Limit: limit,
+		Pct:   usagePct(used, limit),
+	}
+}
+
+// fillQuotaShares sets each key's QuotaShare from its tokens against the
+// tenant's monthly token limit. It is only called in the single-tenant case; a
+// mix of tenants leaves every share null because there is no one denominator.
+func fillQuotaShares(keys []model.APIKeyUsage, monthlyLimit int64) {
+	if monthlyLimit <= 0 {
+		return
+	}
+	for i := range keys {
+		pct := usagePct(keys[i].Tokens, monthlyLimit)
+		keys[i].QuotaShare = &pct
+	}
+}
+
+func usagePct(used, limit int64) float64 {
+	return float64(used) * 100 / float64(limit)
 }
 
 // handleRequestLogFacets answers the option lists for the log filters.

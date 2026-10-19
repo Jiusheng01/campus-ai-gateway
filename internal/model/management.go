@@ -153,6 +153,61 @@ type RequestLogSummary struct {
 	FailoverCount int64   `json:"failover_count"`
 }
 
+// RequestLogUsage is the usage view for one filter selection: the same totals
+// as the summary, the tenant's quota consumption against its limits, and the
+// aggregated usage per API key. The totals and the by-key grouping come from
+// the exact predicate the detail page and the summary use, so the three always
+// describe the same set of rows.
+type RequestLogUsage struct {
+	Totals RequestLogUsageTotals `json:"totals"`
+	ByKey  []APIKeyUsage         `json:"by_key"`
+}
+
+type RequestLogUsageTotals struct {
+	Requests      int64           `json:"requests"`
+	Errors        int64           `json:"errors"`
+	InputTokens   int64           `json:"input_tokens"`
+	OutputTokens  int64           `json:"output_tokens"`
+	TotalTokens   int64           `json:"total_tokens"`
+	AvgLatencyMS  float64         `json:"avg_latency_ms"`
+	P95LatencyMS  float64         `json:"p95_latency_ms"`
+	FailoverCount int64           `json:"failover_count"`
+	Quota         RequestLogQuota `json:"quota"`
+}
+
+// RequestLogQuota is the tenant quota share for one filter selection. Each
+// dimension is nil when that dimension has no configured limit (limit <= 0), so
+// the console can render "not set" instead of a misleading 0%.
+type RequestLogQuota struct {
+	DailyToken     *QuotaDimension `json:"daily_token"`
+	MonthlyToken   *QuotaDimension `json:"monthly_token"`
+	MonthlyRequest *QuotaDimension `json:"monthly_request"`
+}
+
+// QuotaDimension is one quota dimension: what the tenant has used (derived from
+// the request log for the day/month), what it is limited to, and the percentage
+// of the limit that used represents.
+type QuotaDimension struct {
+	Used  int64   `json:"used"`
+	Limit int64   `json:"limit"`
+	Pct   float64 `json:"pct"`
+}
+
+// APIKeyUsage is one API key's share of the filtered usage, and what fraction of
+// its tenant's monthly token limit that represents.
+//
+// QuotaShare is a *float64 rather than a float because a key whose tenant has no
+// monthly token limit cannot report a meaningful share; the console renders that
+// as "not set", matching the null the totals return for an unset limit.
+type APIKeyUsage struct {
+	APIKeyID   string   `json:"api_key_id"`
+	Name       string   `json:"name"`
+	KeyPrefix  string   `json:"key_prefix"`
+	Requests   int64    `json:"requests"`
+	Tokens     int64    `json:"tokens"`
+	QuotaShare *float64 `json:"quota_share"`
+}
+
 // RequestLogBucket is one point of the traffic trend.
 //
 // Bucket is a wall-clock label produced by the database in the caller's UTC
