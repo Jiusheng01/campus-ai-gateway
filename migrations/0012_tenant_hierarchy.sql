@@ -1,4 +1,4 @@
--- 0010_tenant_hierarchy.sql
+-- 0012_tenant_hierarchy.sql
 -- M3.1: multi-level tenant hierarchy (school -> dept -> teacher -> student).
 -- Replay-safe: every statement is idempotent, so the dev scripts can re-apply it.
 --

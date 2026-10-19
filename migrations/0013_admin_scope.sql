@@ -1,4 +1,4 @@
--- 0011_admin_scope.sql
+-- 0013_admin_scope.sql
 -- Confines a tenant administrator to one subtree of the tenant hierarchy.
 --
 -- NULL means global reach: super administrators and gateway administrators see

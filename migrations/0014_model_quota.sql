@@ -1,4 +1,4 @@
--- 0012_model_quota.sql
+-- 0014_model_quota.sql
 -- Per-model token quota: a second quota axis next to the tenant one.
 --
 -- Until now a tenant held exactly one token budget. A request consumed the
