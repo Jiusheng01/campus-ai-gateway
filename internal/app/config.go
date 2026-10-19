@@ -58,6 +58,10 @@ const adminRefreshReplayGraceDefault = 5 * time.Second
 const (
 	DataPlaneThinkWatch = "thinkwatch"
 	DataPlaneDirect     = "direct"
+	// DataPlaneShadow runs ThinkWatch as the serving plane while the direct
+	// plane computes and records the decision it would have made, so the two can
+	// be compared before the cutover. It is a cutover aid, not a steady state.
+	DataPlaneShadow = "shadow"
 )
 
 type Config struct {
@@ -344,13 +348,19 @@ func (c Config) UsesThinkWatch() bool {
 	return c.DataPlane != DataPlaneDirect
 }
 
+// ShadowDirect reports whether the direct plane should record the decision it
+// would have made while ThinkWatch serves the request.
+func (c Config) ShadowDirect() bool {
+	return c.DataPlane == DataPlaneShadow
+}
+
 // DataPlaneMode returns the resolved mode, defaulting to ThinkWatch for the
 // same reason UsesThinkWatch does.
 func (c Config) DataPlaneMode() string {
-	if c.UsesThinkWatch() {
+	if c.DataPlane == "" {
 		return DataPlaneThinkWatch
 	}
-	return DataPlaneDirect
+	return c.DataPlane
 }
 
 // resolveDataPlane turns DATA_PLANE and THINKWATCH_URL into one answer.
@@ -382,6 +392,16 @@ func resolveDataPlane(requested, thinkWatchURL string) (string, error) {
 		return DataPlaneThinkWatch, nil
 	case DataPlaneDirect:
 		return DataPlaneDirect, nil
+	case DataPlaneShadow:
+		// Shadow exists to compare against ThinkWatch, so ThinkWatch has to be
+		// there to serve the request.
+		if thinkWatchURL == "" {
+			return "", errors.New("DATA_PLANE=shadow requires THINKWATCH_URL")
+		}
+		if err := validateUpstreamURL(thinkWatchURL); err != nil {
+			return "", err
+		}
+		return DataPlaneShadow, nil
 	case DataPlaneThinkWatch:
 		if thinkWatchURL == "" {
 			return "", errors.New("DATA_PLANE=thinkwatch requires THINKWATCH_URL")
@@ -391,7 +411,7 @@ func resolveDataPlane(requested, thinkWatchURL string) (string, error) {
 		}
 		return DataPlaneThinkWatch, nil
 	default:
-		return "", errors.New("DATA_PLANE must be one of auto, direct or thinkwatch")
+		return "", errors.New("DATA_PLANE must be one of auto, direct, thinkwatch or shadow")
 	}
 }
 

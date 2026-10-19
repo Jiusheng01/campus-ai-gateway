@@ -183,6 +183,10 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			// has to justify its own grant.
 			path == "/admin/status/trend",
 			strings.HasPrefix(path, "/admin/request-logs"),
+			// The shadow report is routing evidence read from the same request
+			// and attempt records the log endpoints already expose, so it is the
+			// same read-only grant.
+			path == "/admin/shadow-report",
 			path == "/admin/admin-audit",
 			path == "/admin/security-events":
 			return true

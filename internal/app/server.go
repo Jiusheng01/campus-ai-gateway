@@ -161,10 +161,17 @@ func NewServer(cfg Config) (*Server, error) {
 		log.Printf("data plane: ThinkWatch Core at %s", cfg.ThinkWatchURL)
 	} else {
 		s.upstream = http.HandlerFunc(s.serveDirect)
+		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
+	}
+	// The direct plane's state is built whenever it will be consulted — either as
+	// the serving plane or as the shadow that records what it would have chosen.
+	if !cfg.UsesThinkWatch() || cfg.ShadowDirect() {
 		s.transport = &transportPool{}
 		s.selector = newRouteSelector()
 		s.breaker = newCircuitBreaker()
-		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
+	}
+	if cfg.ShadowDirect() {
+		log.Printf("data plane: shadow — ThinkWatch serves, the direct plane records its decision for comparison")
 	}
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
@@ -573,6 +580,15 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "model_forbidden", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
 		httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
 		return
+	}
+
+	// Shadow mode: ThinkWatch serves the request below, but the direct plane
+	// records the channel it would have chosen, so the two decisions can be
+	// compared for the same request id before the cutover.
+	if s.cfg.ShadowDirect() {
+		if decision, ok := s.shadowDecision(r.Context(), envelope.Model); ok {
+			attempts.record(decision)
+		}
 	}
 
 	reserveAmount := estimateTPM(body, envelope)

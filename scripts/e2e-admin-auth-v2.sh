@@ -84,7 +84,7 @@ API_KEY_HMAC_SECRET="campus-local-test-secret" \
 ADMIN_SESSION_SECRET="e2e-admin-session-secret-at-least-32-bytes-long" \
 HTTP_ADDR=":18081" \
 ADMIN_AUTH_MODE="trusted-header" \
-ADMIN_PROXY_SECRET="e2e-proxy-secret" \
+ADMIN_PROXY_SECRET="e2e-proxy-secret-0123456789abcdef" \
 "$WORK/campus-gateway-e2e.exe" > "$WORK/server-th.log" 2>&1 &
 SRV_TH=$!
 
@@ -276,7 +276,7 @@ title "16. trusted-header 模式"
 check "无 secret 的 whoami" "$(code $TH/admin/whoami)" "401"
 check "伪造用户头但无 secret" "$(code -H 'X-Forwarded-User: attacker' -H 'X-Forwarded-Groups: super_admin' $TH/admin/whoami)" "401"
 check "错误 secret" "$(code -H 'X-Campus-Auth-Secret: wrong' -H 'X-Forwarded-User: u' $TH/admin/whoami)" "401"
-TH_OK=$(body -H 'X-Campus-Auth-Secret: e2e-proxy-secret' -H 'X-Forwarded-User: zhang.san' \
+TH_OK=$(body -H 'X-Campus-Auth-Secret: e2e-proxy-secret-0123456789abcdef' -H 'X-Forwarded-User: zhang.san' \
   -H 'X-Forwarded-Groups: gateway_admin,auditor' $TH/admin/whoami)
 check "有效身份头 whoami" "$(printf '%s' "$TH_OK" | codeof)" ""
 case "$TH_OK" in *'"auth_mode":"trusted-header"'*) ok "whoami 报告 auth_mode=trusted-header" ;; *) bad "auth_mode 异常: $TH_OK" ;; esac
@@ -288,13 +288,17 @@ title "17. 五角色 RBAC 回归（trusted-header）"
 rbac() {
   local role="$1" path="$2" method="$3" want="$4"
   local got
-  got=$(code -X "$method" -H 'X-Campus-Auth-Secret: e2e-proxy-secret' -H "X-Forwarded-User: u-$role" \
+  got=$(code -X "$method" -H 'X-Campus-Auth-Secret: e2e-proxy-secret-0123456789abcdef' -H "X-Forwarded-User: u-$role" \
     -H "X-Forwarded-Groups: $role" -H 'Content-Type: application/json' -d '{}' "$TH$path")
   check "$role $method $path" "$got" "$want"
 }
 rbac super_admin    /admin/status        GET  200
-rbac super_admin    /admin/thinkwatch/sync POST 200
-rbac gateway_admin  /admin/thinkwatch/sync POST 200
+# These instances run the direct data plane (no THINKWATCH_URL), so the sync
+# endpoint answers 409 data_plane_direct — there is nothing to synchronise to.
+# The rows still prove the RBAC matrix: the roles that may reach it are let
+# through (not 403) and the others are refused below.
+rbac super_admin    /admin/thinkwatch/sync POST 409
+rbac gateway_admin  /admin/thinkwatch/sync POST 409
 rbac gateway_admin  /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
 # Phase 1 (P1-02): the global tenant_admin grant was withdrawn. The role now
 # fails closed at the RBAC layer — 403 before the handler — instead of reaching

@@ -139,6 +139,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleRequestLogFacets(w, r)
 	case r.URL.Path == "/admin/request-logs/export":
 		s.handleRequestLogsExport(w, r)
+	case r.URL.Path == "/admin/shadow-report":
+		s.handleShadowReport(w, r)
 	case r.URL.Path == "/admin/quota-rebuild":
 		s.handleQuotaRebuild(w, r)
 	case r.URL.Path == "/admin/admin-audit":
@@ -685,6 +687,57 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
+}
+
+// handleShadowReport compares the direct plane's shadow decisions with what
+// ThinkWatch actually served, over a window.
+//
+// It only means anything while the deployment runs DATA_PLANE=shadow: outside
+// that mode there are no shadow rows to compare, and answering an empty report
+// would read as "the planes agree" rather than "there is nothing to compare".
+func (s *Server) handleShadowReport(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	if !s.cfg.ShadowDirect() {
+		httpx.Error(w, http.StatusConflict, "data_plane_not_shadow",
+			"The shadow report is only available while DATA_PLANE=shadow", reqID)
+		return
+	}
+
+	window := 24 * time.Hour
+	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			httpx.Error(w, http.StatusBadRequest, "invalid_window", "window must be a positive duration such as 24h", reqID)
+			return
+		}
+		window = d
+	}
+	limit := 100
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 1000 {
+			httpx.Error(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 1000", reqID)
+			return
+		}
+		limit = n
+	}
+
+	sampled, mismatched, mismatches, err := s.pg.ShadowReport(r.Context(), time.Now().UTC().Add(-window), limit)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the shadow report", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window":         window.String(),
+		"sampled":        sampled,
+		"mismatched":     mismatched,
+		"data":           mismatches,
+	})
 }
 
 // handleRequestLogAttempts returns one request's Routing Attempt chain.
