@@ -40,6 +40,40 @@ export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:str
 export type RequestLogSummary={requests:number;errors:number;input_tokens:number;output_tokens:number;total_tokens:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number}
 
 /**
+ * QuotaDimension is one quota band: what the tenant has used, its configured
+ * limit, and the share of the limit that represents.
+ *
+ * It is null on the wire when the tenant has no limit for that band. A 0% would
+ * read as "the quota is untouched", which is the opposite of "there is no quota
+ * to touch", so the two cases are kept apart rather than flattened.
+ */
+export type QuotaDimension={used:number;limit:number;pct:number}
+
+/**
+ * RequestLogQuota is the quota consumption for the one tenant the filter
+ * describes. Every band is null both when that band has no limit and when the
+ * filter spans more than one tenant, in which case there is no single
+ * denominator to quote a share against.
+ */
+export type RequestLogQuota={daily_token:QuotaDimension|null;monthly_token:QuotaDimension|null;monthly_request:QuotaDimension|null}
+
+/** One API key's share of the filtered usage; `quota_share` is null for the same reasons a quota band is. */
+export type APIKeyUsage={api_key_id:string;name:string;key_prefix:string;requests:number;tokens:number;quota_share:number|null}
+
+/** The totals are the summary's, so the strip above the table cannot describe a different set of rows than the summary endpoint would. */
+export type RequestLogUsageTotals=RequestLogSummary&{quota:RequestLogQuota}
+
+/**
+ * RequestLogUsage is the aggregate for one filter selection: the totals, the
+ * tenant quota consumption, and the same usage grouped by API key.
+ *
+ * All three are computed over the identical predicate as the log table — the
+ * same query string is sent to every endpoint on the page — so none of them can
+ * describe a different selection than the list beneath them.
+ */
+export type RequestLogUsage={totals:RequestLogUsageTotals;by_key:APIKeyUsage[]}
+
+/**
  * One point of the traffic trend.
  *
  * `bucket` is a wall-clock label the server formatted in this browser's UTC
@@ -400,6 +434,18 @@ export async function fetchTrend(from:Date,to:Date,bucket:'hour'|'day'){
  */
 export async function summarizeRequestLogs(query:string){
   return api<RequestLogSummary>(`/admin/request-logs/summary?${query}`)
+}
+
+/**
+ * fetchRequestLogUsage reads the usage-and-quota aggregate for a filter.
+ *
+ * It takes the identical query string as the log table and the summary, for the
+ * same reason the summary does: the section it feeds sits directly above that
+ * table, so a total, a quota share or a per-key breakdown computed over some
+ * other selection would be worse than showing nothing at all.
+ */
+export async function fetchRequestLogUsage(query:string){
+  return api<RequestLogUsage>(`/admin/request-logs/usage?${query}`)
 }
 
 /**
