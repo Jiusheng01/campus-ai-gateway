@@ -141,9 +141,12 @@ func usageSeedTenant(t *testing.T, pg *storage.Postgres, code string, daily, mon
 	ctx := context.Background()
 	tenant, err := pg.CreateTenant(ctx, model.Tenant{
 		Code: code, Name: code, Status: 1,
-		DailyTokenLimit:     daily,
-		MonthlyTokenLimit:   monthlyTokens,
-		MonthlyRequestLimit: monthlyReqs,
+		// The limits are three-state pointers, but this fixture always states a
+		// value (0 included): the tests using it are about the usage panel's
+		// arithmetic, not about inheritance.
+		DailyTokenLimit:     &daily,
+		MonthlyTokenLimit:   &monthlyTokens,
+		MonthlyRequestLimit: &monthlyReqs,
 	})
 	if err != nil {
 		t.Fatalf("create tenant %s: %v", code, err)

@@ -177,13 +177,22 @@ WHERE m.id=$1::uuid
 // two writes' RETURNING clauses. Spelling it once means a column added to the
 // tenant cannot be selected by three queries and forgotten by the fourth, which
 // is exactly how a quota dimension silently reads as zero.
-const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency`
+// tenantColumns is the canonical projection of a tenant row. Every query that
+// returns a full tenant uses it, and it must stay in sync with scanTenant in
+// tenant_hierarchy.go. Spelling it once means a column added to the tenant
+// cannot be selected by three queries and forgotten by the fourth, which is
+// exactly how a quota dimension silently reads as zero.
+//
+// The six limit columns are nullable by design (NULL = inherit), so they scan
+// into *int64. allowed_models is nullable for the same reason: NULL means
+// "inherit", while a present "[]" means "deny every model".
+const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, parent_id::text, path, depth, kind, allowed_models`
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT `+tenantColumns+`
 FROM gateway_tenant
-ORDER BY name
+ORDER BY path
 `)
 	if err != nil {
 		return nil, err
@@ -192,8 +201,8 @@ ORDER BY name
 
 	var out []model.Tenant
 	for rows.Next() {
-		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency); err != nil {
+		v, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -201,24 +210,10 @@ ORDER BY name
 	return out, rows.Err()
 }
 
-func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING `+tenantColumns+`
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
-}
-
-func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, updated_at=NOW()
-WHERE id=$1::uuid
-RETURNING `+tenantColumns+`
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
-}
+// CreateTenant and UpdateTenant live in tenant_hierarchy.go: a tenant row now
+// carries a materialized path and a depth, both derived from its parent, so the
+// write has to read the parent first. Keeping a second plain-INSERT version here
+// would let a caller create a tenant with no path.
 
 // TenantUsageStats reports a tenant's usage for the current day and month. It is
 // the numerator of the quota share the console shows.

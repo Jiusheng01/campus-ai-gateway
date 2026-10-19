@@ -774,7 +774,12 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if tenantID != "" {
-		tenant, err := s.pg.TenantByID(r.Context(), tenantID)
+		// The denominator has to be the tenant's EFFECTIVE limit, not its own
+		// declaration: under a hierarchy a tenant usually declares nothing and
+		// inherits from an ancestor, so reading the column directly would show
+		// "used 40,000 / limit —" for a tenant that is actually capped at
+		// 50,000 by its school.
+		limits, err := s.pg.EffectiveTenantLimits(r.Context(), tenantID)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
 			return
@@ -785,11 +790,11 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		out.Totals.Quota = model.RequestLogQuota{
-			DailyToken:     quotaUsage(stats.DailyTokens, tenant.DailyTokenLimit),
-			MonthlyToken:   quotaUsage(stats.MonthlyTokens, tenant.MonthlyTokenLimit),
-			MonthlyRequest: quotaUsage(stats.MonthlyRequests, tenant.MonthlyRequestLimit),
+			DailyToken:     quotaUsage(stats.DailyTokens, limits.DailyTokenLimit),
+			MonthlyToken:   quotaUsage(stats.MonthlyTokens, limits.MonthlyTokenLimit),
+			MonthlyRequest: quotaUsage(stats.MonthlyRequests, limits.MonthlyRequestLimit),
 		}
-		fillQuotaShares(out.ByKey, tenant.MonthlyTokenLimit)
+		fillQuotaShares(out.ByKey, limits.MonthlyTokenLimit)
 	}
 
 	writeJSON(w, http.StatusOK, out)
@@ -942,7 +947,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=campus-gateway-request-logs.csv")
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"created_at","request_id","tenant_id","requested_model","actual_model","provider","upstream_model","route_priority","attempts","failover","tokens","latency_ms","status_code","error_code"})
+	_ = cw.Write([]string{"created_at", "request_id", "tenant_id", "requested_model", "actual_model", "provider", "upstream_model", "route_priority", "attempts", "failover", "tokens", "latency_ms", "status_code", "error_code"})
 	for _, v := range items {
 		_ = cw.Write([]string{
 			v.CreatedAt.Format(time.RFC3339), v.RequestID, v.TenantID, v.RequestedModel, v.ActualModel,
@@ -953,6 +958,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	}
 	cw.Flush()
 }
+
 // reservedCredentialEnvPrefixes names the environment-variable families the
 // gateway process itself owns.
 //
@@ -1055,8 +1061,17 @@ func validateModel(v *model.ModelConfig) string {
 func validateTenant(v *model.Tenant) string {
 	v.Code = strings.TrimSpace(v.Code)
 	v.Name = strings.TrimSpace(v.Name)
-	if v.Code == "" || v.Name == "" {
-		return "code and name are required"
+	// The messages name the field that is actually missing. "code and name are
+	// required" for an operator who only forgot the code is the kind of message
+	// that sends them looking at the wrong input.
+	if v.Code == "" && v.Name == "" {
+		return "tenant code and name are required"
+	}
+	if v.Code == "" {
+		return "tenant code is required"
+	}
+	if v.Name == "" {
+		return "tenant name is required"
 	}
 	if v.Status == 0 {
 		v.Status = 1
@@ -1064,12 +1079,47 @@ func validateTenant(v *model.Tenant) string {
 	if v.Status != 1 && v.Status != 2 {
 		return "status must be 1 (enabled) or 2 (disabled)"
 	}
-	if v.DailyTokenLimit < 0 || v.MonthlyTokenLimit < 0 || v.MonthlyRequestLimit < 0 || v.MonthlyBudgetMicros < 0 {
-		return "tenant quota values cannot be negative"
+	v.Kind = strings.TrimSpace(v.Kind)
+	if v.Kind == "" {
+		v.Kind = model.TenantKindTenant
 	}
-	if v.RPMLimit < 0 || v.TPMLimit < 0 || v.MaxConcurrency < 0 {
-		return "tenant rate limit values cannot be negative"
+	// The column is free text so a deployment could add a level, but the console
+	// only knows how to render these five. Accepting an unknown value here would
+	// store a tenant the UI cannot display.
+	switch v.Kind {
+	case model.TenantKindSchool, model.TenantKindDept, model.TenantKindTeacher,
+		model.TenantKindStudent, model.TenantKindTenant:
+	default:
+		return "kind must be one of school, dept, teacher, student, tenant"
 	}
+	if v.MonthlyBudgetMicros < 0 {
+		return "monthly_budget_micros cannot be negative"
+	}
+	// nil means "inherit", which is not a value to validate. Only a declared
+	// value can be negative, and a negative cap is meaningless: it would reject
+	// every request, including one that spends no tokens.
+	//
+	// The field name is part of the message because the console shows it
+	// verbatim: "a quota cannot be negative" leaves the operator to guess which
+	// of seven inputs is wrong.
+	for _, limit := range []struct {
+		field string
+		value *int64
+	}{
+		{"daily_token_limit", v.DailyTokenLimit},
+		{"monthly_token_limit", v.MonthlyTokenLimit},
+		{"monthly_request_limit", v.MonthlyRequestLimit},
+		{"rpm_limit", v.RPMLimit},
+		{"tpm_limit", v.TPMLimit},
+		{"max_concurrency", v.MaxConcurrency},
+	} {
+		if limit.value != nil && *limit.value < 0 {
+			return limit.field + " cannot be negative"
+		}
+	}
+	// nil stays nil (inherit); an empty but non-nil list stays empty (deny every
+	// model). Collapsing the two here would silently invert the access rule.
+	v.AllowedModels = model.NormalizeModelList(v.AllowedModels)
 	return ""
 }
 

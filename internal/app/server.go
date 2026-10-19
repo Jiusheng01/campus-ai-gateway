@@ -400,19 +400,37 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 			allowed[m] = struct{}{}
 		}
+
+		// Resolve the tenant chain once, here. Every limit check walks it, so
+		// doing it at authentication time keeps the request path from reading
+		// the tenant table again -- and, more importantly, means the admission
+		// path never sees a NULL limit column it would have to interpret.
+		chain, err := s.pg.FindTenantChainByPath(r.Context(), k.TenantPath)
+		if err != nil {
+			s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: k.TenantID, APIKeyID: k.ID, EventType: "tenant_chain_unavailable", ClientIP: s.clientIPFrom(r)})
+			httpx.Error(w, http.StatusInternalServerError, "internal_error", "Unable to resolve the tenant hierarchy", reqID)
+			return
+		}
+
+		// Access is the intersection of the key's allowlist and the chain's,
+		// never a widening: a key may only narrow what its tenant allows.
+		// ComposeAccess keeps "no allowlist anywhere" (every model) distinct
+		// from "an allowlist that happens to be empty" (no model) -- collapsing
+		// those two is the inverted default AllModelsWildcard exists to remove.
+		tenantAllowed, tenantRestricted := storage.ResolveAccess(chain)
+		effectiveAccess, accessRestricted := storage.ComposeAccess(
+			allowed, !allModels,
+			tenantAllowed, tenantRestricted,
+		)
+
 		id := model.Identity{
-			TenantID:       k.TenantID,
-			APIKeyID:       k.ID,
-			AllowedModels:  allowed,
-			AllModels:      allModels,
-			AllowedIPs:     k.AllowedIPs,
-			RPMLimit:       k.RPMLimit,
-			TPMLimit:       k.TPMLimit,
-			MaxConcurrency: k.MaxConcurrency,
-			RouteGroup:     k.RouteGroup,
-			DailyTokenLimit: k.DailyTokenLimit,
-			MonthlyTokenLimit: k.MonthlyTokenLimit,
-			MonthlyRequestLimit: k.MonthlyRequestLimit,
+			TenantID:      k.TenantID,
+			APIKeyID:      k.ID,
+			AllowedModels: effectiveAccess,
+			AllModels:     !accessRestricted,
+			AllowedIPs:    k.AllowedIPs,
+			RouteGroup:    k.RouteGroup,
+			TenantChain:   storage.ResolveQuotas(chain),
 		}
 
 		s.pg.TouchAPIKey(r.Context(), k.ID)
@@ -434,8 +452,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	attempts := newAttemptRecorder()
 	r = r.WithContext(withAttemptRecorder(r.Context(), attempts))
 	var envelope requestEnvelope
-	var reservation *ratelimit.TPMReservation
-	var tenantReservation *ratelimit.TenantQuotaReservation
+	// Both reservations are chain reservations: a request charges every level of
+	// the tenant hierarchy it belongs to, so settling or refunding has to touch
+	// the same set of counters the admission path did.
+	var reservation, tenantReservation *ratelimit.ChainReservation
 	defer func() {
 		actualModel, inputTokens, outputTokens, totalTokens := parseUsage(aw.capture.Bytes(), envelope.Stream)
 		status := aw.status
@@ -483,24 +503,28 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		_ = s.pg.InsertRequestAttempts(ctx, reqID, attempts.list())
 	}()
 
-	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
+	// Every limit below is checked against the whole tenant chain, not just the
+	// key's own tenant. A parent's budget therefore caps its entire subtree
+	// without any separate rollup, and the rejection names the level that ran
+	// out instead of leaving the operator to guess.
+	allowed, rejected, err := s.limit.AllowTenantRequestChain(r.Context(), id.TenantChain)
 	if err != nil {
 		stateUnavailable(aw, reqID)
 		return
 	}
 	if !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r)})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_request_quota_exceeded", ClientIP: s.clientIPFrom(r), Detail: rejectionDetail(rejected)})
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_request_quota_exceeded", "Tenant monthly request quota exceeded", reqID)
 		return
 	}
 
-	allowed, err = s.limit.AllowRPM(r.Context(), id.TenantID, id.RPMLimit)
+	allowed, rejected, err = s.limit.AllowRPMChain(r.Context(), id.TenantChain)
 	if err != nil {
 		stateUnavailable(aw, reqID)
 		return
 	}
 	if !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: s.clientIPFrom(r)})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: s.clientIPFrom(r), Detail: rejectionDetail(rejected)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
 		return
 	}
@@ -555,17 +579,46 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reserveAmount := estimateTPM(body, envelope)
-	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
+
+	// The model axis joins the same reservation as the tenant axis. The two are
+	// ANDed inside one script, which preserves the guarantee that a rejection
+	// writes nothing at all: a request that would drain the campus-wide pool for
+	// a model must not leave the tenant's own counters incremented.
+	var modelLevels []model.ModelQuotaLevel
+	if envelope.Model != "" {
+		modelLevels, err = s.pg.ResolveModelQuotaLevels(r.Context(), id.TenantChain, envelope.Model)
+		if err != nil {
+			httpx.Error(aw, http.StatusInternalServerError, "database_error", "Unable to resolve the model quota", reqID)
+			return
+		}
+	}
+
+	tenantReservation, allowed, rejected, err = s.limit.ReserveTokenChain(r.Context(), id.TenantChain, modelLevels, reserveAmount)
 	if err != nil {
 		stateUnavailable(aw, reqID)
 		return
 	}
 	if !allowed {
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tenant_token_quota_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
-		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
+		// The rejection is reported as a model event only when a model pool is
+		// what refused. Collapsing the two into one event type would hide the
+		// single most useful fact about the refusal -- whether the caller ran
+		// out of their own budget or of the shared one.
+		eventType := "tenant_token_quota_exceeded"
+		message := "Tenant token quota exceeded"
+		tenantID := id.TenantID
+		if rejected != nil && rejected.TenantID != "" {
+			tenantID = rejected.TenantID
+		}
+		if rejected != nil && rejected.ModelAlias != "" {
+			eventType = "model_token_quota_exceeded"
+			message = "Model token quota exceeded"
+		}
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: tenantID, APIKeyID: id.APIKeyID, EventType: eventType, ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model, Detail: rejectionDetail(rejected)})
+		httpx.Error(aw, http.StatusTooManyRequests, eventType, message, reqID)
 		return
 	}
-	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.TenantID, reserveAmount, id.TPMLimit)
+
+	reservation, allowed, rejected, err = s.limit.ReserveTPMChain(r.Context(), id.TenantChain, reserveAmount)
 	if err != nil {
 		_ = tenantReservation.Refund(r.Context())
 		stateUnavailable(aw, reqID)
@@ -573,12 +626,12 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed {
 		_ = tenantReservation.Refund(r.Context())
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model, Detail: rejectionDetail(rejected)})
 		httpx.Error(aw, http.StatusTooManyRequests, "token_limit_exceeded", "Token rate limit exceeded", reqID)
 		return
 	}
 
-	release, allowed, err := s.limit.AcquireConcurrencySlot(r.Context(), id.TenantID, id.MaxConcurrency)
+	release, allowed, rejected, err := s.limit.AcquireConcurrencyChain(r.Context(), id.TenantChain)
 	if err != nil {
 		_ = reservation.Refund(r.Context())
 		_ = tenantReservation.Refund(r.Context())
@@ -588,7 +641,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	if !allowed {
 		_ = reservation.Refund(r.Context())
 		_ = tenantReservation.Refund(r.Context())
-		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
+		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "concurrency_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model, Detail: rejectionDetail(rejected)})
 		httpx.Error(aw, http.StatusTooManyRequests, "concurrency_limit_exceeded", "Concurrency limit exceeded", reqID)
 		return
 	}
@@ -605,6 +658,17 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 // the difference between an outage and a policy decision.
 func stateUnavailable(aw http.ResponseWriter, reqID string) {
 	httpx.Error(aw, http.StatusServiceUnavailable, "enforcement_state_unavailable", "Rate limit enforcement state is unavailable", reqID)
+}
+
+// rejectionDetail renders the level that refused a reservation for the security
+// event. The label is what makes a 429 actionable: "level=计算机学院" tells an
+// operator whose budget ran out, while a bare event type only says that some
+// budget did.
+func rejectionDetail(rj *ratelimit.QuotaRejection) string {
+	if rj == nil {
+		return ""
+	}
+	return "level=" + rj.Label
 }
 
 // maxRequestBody bounds how much of a business request the gateway will buffer.

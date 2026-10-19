@@ -40,54 +40,146 @@ type ModelRoute struct {
 }
 
 type Tenant struct {
-	ID                  string `json:"id"`
-	Code                string `json:"code"`
-	Name                string `json:"name"`
-	Status              int    `json:"status"`
-	DailyTokenLimit     int64  `json:"daily_token_limit"`
-	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
-	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
-	// The minute-level rate limits live on the Tenant, not on the Key: the
-	// Tenant is the rate-limit boundary (see GLOSSARY.md and ADR-0015), so every
-	// key it owns shares one budget. Zero means unlimited.
-	RPMLimit       int64 `json:"rpm_limit"`
-	TPMLimit       int64 `json:"tpm_limit"`
-	MaxConcurrency int64 `json:"max_concurrency"`
+	ID     string `json:"id"`
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Status int    `json:"status"`
+
+	// Hierarchy (0013). ParentID is nil for a root; Path is the materialized
+	// path "/<root>/.../<self>/" that makes a subtree a prefix compare.
+	ParentID *string `json:"parent_id"`
+	Path     string  `json:"path"`
+	Depth    int     `json:"depth"`
+	Kind     string  `json:"kind"`
+
+	// The six enforced limits are three-state since 0013:
+	//
+	//	nil -> inherit from the nearest ancestor that declares a value
+	//	  0 -> explicitly unlimited
+	//	 >0 -> this tenant's own cap
+	//
+	// They are pointers rather than int64 because "inherit" has no numeric
+	// representation. A plain int64 would force the console to choose between
+	// freezing a child at its parent's current value and writing 0, which
+	// reads as unlimited and lets the child exceed the parent.
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	MonthlyRequestLimit *int64 `json:"monthly_request_limit"`
+	RPMLimit            *int64 `json:"rpm_limit"`
+	TPMLimit            *int64 `json:"tpm_limit"`
+	MaxConcurrency      *int64 `json:"max_concurrency"`
+
 	// MonthlyBudgetMicros is stored but not enforced: no price data exists, so
 	// there is nothing to charge against it. It is no longer offered in the
 	// console — a quota field an operator can set and nothing reads is worse
 	// than an absent one, because it reads as a guarantee. Kept so the column
-	// and any historical value survive until real metering lands.
+	// and any historical value survive until real metering lands. It also keeps
+	// the two-state convention it was created with: a third state on a column
+	// nothing reads would only add a distinction to explain.
 	MonthlyBudgetMicros int64 `json:"monthly_budget_micros"`
+
+	// AllowedModels is the access axis, deliberately separate from quota:
+	//
+	//	nil -> inherit (intersect) with ancestors
+	//	[]  -> explicitly deny every model
+	//	set -> this tenant's own allowlist
+	//
+	// Access narrows down the tree; quota inherits down the tree. Sharing one
+	// resolution rule between them would make an empty allowlist mean "no
+	// restriction", which is the inverted default AllModelsWildcard exists to
+	// remove.
+	AllowedModels []string `json:"allowed_models"`
+}
+
+// Tenant kinds. The hierarchy is school -> dept -> teacher -> student, but the
+// column is free text so a deployment can add its own levels. TenantKindTenant
+// is the neutral default, and is what legacy flat rows were backfilled to.
+const (
+	TenantKindSchool  = "school"
+	TenantKindDept    = "dept"
+	TenantKindTeacher = "teacher"
+	TenantKindStudent = "student"
+	TenantKindTenant  = "tenant"
+)
+
+// InheritsAllowedModels reports whether this tenant defers its model allowlist
+// to its ancestors. An empty-but-non-nil list means "deny everything", which is
+// deliberately distinct from inheriting.
+func (t Tenant) InheritsAllowedModels() bool { return t.AllowedModels == nil }
+
+// TenantAllocation is the set of limits one level hands down to another: "how
+// much" (quota) and "which models" (access). It is a full replacement, not a
+// patch -- an omitted field means "inherit", which is the same thing as
+// explicitly sending null.
+//
+// The two axes resolve differently and the fields reflect that: quota values
+// inherit from the nearest ancestor that sets one, while AllowedModels is
+// intersected with every ancestor so a child can never widen its parent's
+// access.
+type TenantAllocation struct {
+	DailyTokenLimit     *int64   `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64   `json:"monthly_token_limit"`
+	MonthlyRequestLimit *int64   `json:"monthly_request_limit"`
+	MonthlyBudgetMicros *int64   `json:"monthly_budget_micros"`
+	RPMLimit            *int64   `json:"rpm_limit"`
+	TPMLimit            *int64   `json:"tp_limit"`
+	MaxConcurrency      *int64   `json:"max_concurrency"`
+	AllowedModels       []string `json:"allowed_models"`
+}
+
+// EffectiveLimits is the resolved view of a tenant: what it actually gets once
+// inheritance has been applied, rather than what it explicitly sets. Reporting
+// both is what makes a hierarchy debuggable -- "I set 5,000,000 but it stops at
+// 1,000,000" has to be answerable without reading the database.
+//
+// The numbers here are concrete, with 0 meaning "no cap", which is the opposite
+// convention from Tenant (where nil means inherit). That is intentional: this
+// type only exists to answer "what applies", and by the time a value reaches it
+// the inheritance question has already been settled.
+type EffectiveLimits struct {
+	TenantID            string `json:"tenant_id"`
+	DailyTokenLimit     int64  `json:"daily_token_limit"`
+	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
+	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
+	RPMLimit            int64  `json:"rpm_limit"`
+	TPMLimit            int64  `json:"tpm_limit"`
+	MaxConcurrency      int64  `json:"max_concurrency"`
+	MonthlyBudgetMicros int64  `json:"monthly_budget_micros"`
+	// ModelAccessRestricted distinguishes "no allowlist applies" (every model)
+	// from "an allowlist applies and it happens to be empty" (no model).
+	ModelAccessRestricted bool     `json:"model_access_restricted"`
+	AllowedModels         []string `json:"allowed_models"`
+	Depth                 int      `json:"depth"`
+	Path                  string   `json:"path"`
 }
 
 type TenantUsageStats struct {
-	TenantID       string `json:"tenant_id"`
-	DailyRequests  int64  `json:"daily_requests"`
-	MonthlyRequests int64 `json:"monthly_requests"`
-	DailyTokens    int64  `json:"daily_tokens"`
-	MonthlyTokens  int64  `json:"monthly_tokens"`
+	TenantID        string `json:"tenant_id"`
+	DailyRequests   int64  `json:"daily_requests"`
+	MonthlyRequests int64  `json:"monthly_requests"`
+	DailyTokens     int64  `json:"daily_tokens"`
+	MonthlyTokens   int64  `json:"monthly_tokens"`
 }
 
 type APIKeyAdmin struct {
-	ID             string     `json:"id"`
-	TenantID       string     `json:"tenant_id"`
-	TenantCode     string     `json:"tenant_code"`
-	TenantName     string     `json:"tenant_name"`
-	Name           string     `json:"name"`
-	KeyPrefix      string     `json:"key_prefix"`
-	Status         int        `json:"status"`
-	ExpireAt       *time.Time `json:"expire_at,omitempty"`
-	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
-	AllowedModels  []string   `json:"allowed_models"`
-	AllowedIPs     []string   `json:"allowed_ips"`
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	TenantCode    string     `json:"tenant_code"`
+	TenantName    string     `json:"tenant_name"`
+	Name          string     `json:"name"`
+	KeyPrefix     string     `json:"key_prefix"`
+	Status        int        `json:"status"`
+	ExpireAt      *time.Time `json:"expire_at,omitempty"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	AllowedModels []string   `json:"allowed_models"`
+	AllowedIPs    []string   `json:"allowed_ips"`
 	// RouteGroup is reserved. Neither data plane consults it, and the console
 	// no longer offers it for editing, because an input that stores a value
 	// nothing reads tells the operator a constraint is in force when it is not.
 	// It is still accepted on write so that editing an existing key cannot fail
 	// on a field the operator never touched.
-	RouteGroup     string     `json:"route_group"`
-	CreatedAt      time.Time  `json:"created_at"`
+	RouteGroup string    `json:"route_group"`
+	CreatedAt  time.Time `json:"created_at"`
 	// Usage is the key's cumulative consumption, aggregated from the request
 	// log rather than stored on the key. Keeping it derived means the number
 	// cannot drift from the log it claims to summarise, and a revoked key
@@ -161,9 +253,9 @@ type DashboardStats struct {
 }
 
 type ProviderStats struct {
-	Provider    string  `json:"provider"`
-	Requests    int64   `json:"requests"`
-	SuccessRate float64 `json:"success_rate"`
+	Provider     string  `json:"provider"`
+	Requests     int64   `json:"requests"`
+	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 }
 
