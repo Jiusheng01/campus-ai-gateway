@@ -380,11 +380,24 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		attempts    int
 	)
 	recorder := attemptRecorderFrom(r.Context())
+	tried := 0
 	for _, route := range routes {
 		attempts++
+		// A channel whose circuit is open is skipped, not tried: that is the
+		// whole point of the breaker. It still leaves a line in the chain so the
+		// console can tell "not tried" from "tried and failed".
+		if s.breaker != nil && !s.breaker.allow(route.Provider) {
+			recordAttempt(recorder, model.RequestAttempt{
+				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
+				Outcome: model.AttemptSkipped,
+			})
+			continue
+		}
+		tried++
 		started := time.Now()
 		resp, err := s.attemptDirect(r, body, envelope, route)
 		if err != nil {
+			s.recordBreaker(route.Provider, false)
 			lastErr = err
 			lastStatus = 0
 			lastBody = nil
@@ -396,6 +409,7 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
+			s.recordBreaker(route.Provider, false)
 			// Drain a little of the body so the connection can be reused, and
 			// keep it for the server-side log. It is never copied to the client:
 			// an upstream body is not a trusted place to quote operator-facing
@@ -411,11 +425,24 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
+		// The channel answered: a 2xx, or a terminal 4xx that is the request's
+		// fault rather than the channel's, so it still counts as a healthy
+		// answer for the breaker.
+		s.recordBreaker(route.Provider, true)
 		recordAttempt(recorder, model.RequestAttempt{
 			AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
 			Outcome: model.AttemptServed, StatusCode: resp.StatusCode, LatencyMS: time.Since(started).Milliseconds(),
 		})
 		writeDirectResponse(w, resp, route, attempts)
+		return
+	}
+
+	if tried == 0 {
+		// Every line was circuit-broken, so nothing was actually attempted. Say
+		// so rather than reporting an empty "all channels failed" with no status.
+		log.Printf("direct: request %s model %q had every channel circuit-broken", reqID, oneLine(envelope.Model))
+		httpx.Error(w, http.StatusServiceUnavailable, "channels_circuit_open",
+			"no channel is currently available; every line is circuit-broken", reqID)
 		return
 	}
 
@@ -475,6 +502,15 @@ func recordAttempt(a *attemptRecorder, attempt model.RequestAttempt) {
 		return
 	}
 	a.record(attempt)
+}
+
+// recordBreaker applies one attempt's verdict to its provider's circuit, if a
+// breaker is configured. A nil breaker is the case for a probe or a Server
+// built without the direct plane.
+func (s *Server) recordBreaker(provider string, ok bool) {
+	if s.breaker != nil {
+		s.breaker.record(provider, ok)
+	}
 }
 
 // attemptErrorKind classifies an attempt failure for telemetry. It returns the
@@ -772,19 +808,43 @@ func rewriteJSONModel(body []byte, upstream string) ([]byte, bool) {
 	return out, true
 }
 
-// shouldFailover reports whether another line has a chance of doing better.
-//
-// A 400 means the request is wrong and every channel will say so, so failing
-// over would only multiply the latency. A rejected credential, a missing model,
-// a rate limit or a server error are all channel-specific, which is exactly
-// what a second line is for.
-func shouldFailover(status int) bool {
+// attemptClass is how one upstream answer is read. It is the single definition
+// of "retryable vs the request's fault", shared by the failover decision and the
+// circuit breaker's failure count so the two cannot drift apart.
+type attemptClass int
+
+const (
+	// attemptServed: the channel answered usefully.
+	attemptServed attemptClass = iota
+	// attemptFailover: the answer is channel-specific (a bad credential, a
+	// missing model, a rate limit, a server error). Another line may do better,
+	// and the channel is to blame.
+	attemptFailover
+	// attemptTerminal: the request itself is wrong, so every channel will say the
+	// same. Do not fail over, and do not blame the channel.
+	attemptTerminal
+)
+
+func classifyAttempt(status int) attemptClass {
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
 		http.StatusRequestTimeout, http.StatusTooManyRequests:
-		return true
+		return attemptFailover
 	}
-	return status >= 500
+	if status >= 500 {
+		return attemptFailover
+	}
+	if status >= 400 {
+		return attemptTerminal
+	}
+	return attemptServed
+}
+
+// shouldFailover reports whether another line has a chance of doing better. A
+// 400 means the request is wrong and every channel will say so, so failing over
+// would only multiply the latency.
+func shouldFailover(status int) bool {
+	return classifyAttempt(status) == attemptFailover
 }
 
 // serveModelTestDirect runs the admin connectivity test without ThinkWatch.

@@ -30,6 +30,7 @@ func newDirectTestServer(t *testing.T, table routeTable) *Server {
 		routeAt:    time.Now(),
 		transport:  &transportPool{},
 		selector:   newRouteSelector(),
+		breaker:    newCircuitBreaker(),
 	}
 }
 

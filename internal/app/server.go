@@ -58,6 +58,10 @@ type Server struct {
 	// which line of a priority band starts a request. In-memory scheduling
 	// state; losing it on restart only resets the rotation.
 	selector *routeSelector
+
+	// breaker is the per-provider circuit: a channel that keeps failing is
+	// skipped for a cooldown instead of being tried on every request.
+	breaker *circuitBreaker
 }
 
 type requestEnvelope struct {
@@ -159,6 +163,7 @@ func NewServer(cfg Config) (*Server, error) {
 		s.upstream = http.HandlerFunc(s.serveDirect)
 		s.transport = &transportPool{}
 		s.selector = newRouteSelector()
+		s.breaker = newCircuitBreaker()
 		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
 	}
 	if cfg.SessionAuthEnabled() {

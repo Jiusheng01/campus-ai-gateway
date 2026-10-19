@@ -227,6 +227,12 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.UsesThinkWatch() {
 		out["thinkwatch"] = thinkwatchOK
 	}
+	// The per-provider circuits are only meaningful for the direct plane, which
+	// is the only one that breaks them. Exposing them lets an operator see why a
+	// channel is not being used instead of guessing.
+	if !s.cfg.UsesThinkWatch() && s.breaker != nil {
+		out["circuits"] = s.breaker.circuits()
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
