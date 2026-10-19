@@ -557,6 +557,18 @@ const (
 	headerAttempts      = "X-Gateway-Attempts"
 )
 
+// The legacy names ThinkWatch Core still writes while it remains a supported
+// data plane. The parser accepts both, so the request log stays populated
+// whichever plane answered; the writer only ever emits the X-Gateway-* names.
+const (
+	legacyHeaderProvider      = "X-ThinkWatch-Provider"
+	legacyHeaderUpstreamModel = "X-ThinkWatch-Upstream-Model"
+	legacyHeaderRoutePriority = "X-ThinkWatch-Route-Priority"
+	legacyHeaderAttempts      = "X-ThinkWatch-Attempts"
+	// legacyHeaderUpstream carries a provider name, not an upstream model.
+	legacyHeaderUpstream = "X-ThinkWatch-Upstream"
+)
+
 // clientSafeFailure returns the part of an attempt error that is safe to show
 // the caller, or "" when nothing is.
 //

@@ -780,21 +780,33 @@ func (t routeTelemetry) Failover() bool {
 	return t.Attempts > 1
 }
 
+// parseRouteTelemetry reads the data plane's attribution off the response.
+//
+// It accepts both the X-Gateway-* names the direct plane writes and the legacy
+// X-ThinkWatch-* names, because ThinkWatch is still a supported data plane and
+// reports through its own headers; without the fallback, switching back to it
+// would silently blank the request log's routing fields.
 func parseRouteTelemetry(h http.Header) routeTelemetry {
+	get := func(gateway, legacy string) string {
+		if v := strings.TrimSpace(h.Get(gateway)); v != "" {
+			return v
+		}
+		return strings.TrimSpace(h.Get(legacy))
+	}
 	v := routeTelemetry{
-		Provider:      strings.TrimSpace(h.Get(headerProvider)),
-		UpstreamModel: strings.TrimSpace(h.Get(headerUpstreamModel)),
+		Provider:      get(headerProvider, legacyHeaderProvider),
+		UpstreamModel: get(headerUpstreamModel, legacyHeaderUpstreamModel),
 	}
-	// Compatibility fallback: current ThinkWatch Core exposes the resolved
-	// provider name as X-Gateway-Upstream. It is a provider, not an upstream
-	// model, so it must not be read into UpstreamModel.
+	// ThinkWatch reports the resolved provider name as X-ThinkWatch-Upstream. It
+	// is a provider, not an upstream model, so it must not be read into
+	// UpstreamModel.
 	if v.Provider == "" {
-		v.Provider = strings.TrimSpace(h.Get("X-Gateway-Upstream"))
+		v.Provider = strings.TrimSpace(h.Get(legacyHeaderUpstream))
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get(headerRoutePriority))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerRoutePriority, legacyHeaderRoutePriority)); err == nil && n > 0 {
 		v.RoutePriority = n
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get(headerAttempts))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerAttempts, legacyHeaderAttempts)); err == nil && n > 0 {
 		v.Attempts = n
 	}
 	return v

@@ -6,24 +6,40 @@ import (
 )
 
 // TestParseRouteTelemetryCurrentThinkWatchContract covers the P2 regression:
-// current ThinkWatch Core reports the resolved provider name through
-// X-Gateway-Upstream, which must be read as Provider (not as upstream model).
+// ThinkWatch Core reports the resolved provider name through
+// X-ThinkWatch-Upstream, which must be read as Provider (not as upstream model).
+// It stays a legacy name because ThinkWatch remains a supported data plane.
 func TestParseRouteTelemetryCurrentThinkWatchContract(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-Gateway-Upstream", "qwen")
+	h.Set(legacyHeaderUpstream, "qwen")
 
 	got := parseRouteTelemetry(h)
 	if got.Provider != "qwen" {
 		t.Fatalf("Provider = %q, want %q", got.Provider, "qwen")
 	}
 	if got.UpstreamModel != "" {
-		t.Fatalf("UpstreamModel = %q, want empty (X-Gateway-Upstream is a provider name)", got.UpstreamModel)
+		t.Fatalf("UpstreamModel = %q, want empty (X-ThinkWatch-Upstream is a provider name)", got.UpstreamModel)
 	}
 	if got.RoutePriority != 0 || got.Attempts != 0 {
 		t.Fatalf("unexpected priority/attempts: %d/%d", got.RoutePriority, got.Attempts)
 	}
 	if got.Failover() {
 		t.Fatalf("Failover must stay false without attempt telemetry")
+	}
+}
+
+// The parser reads the legacy ThinkWatch header set too, so switching back to
+// ThinkWatch does not blank the request log's routing fields.
+func TestParseRouteTelemetryReadsTheLegacyThinkWatchHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set(legacyHeaderProvider, "deepseek")
+	h.Set(legacyHeaderUpstreamModel, "deepseek-chat")
+	h.Set(legacyHeaderRoutePriority, "2")
+	h.Set(legacyHeaderAttempts, "3")
+
+	got := parseRouteTelemetry(h)
+	if got.Provider != "deepseek" || got.UpstreamModel != "deepseek-chat" || got.RoutePriority != 2 || got.Attempts != 3 {
+		t.Fatalf("legacy headers not parsed: %+v", got)
 	}
 }
 
