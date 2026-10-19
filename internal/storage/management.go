@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -171,9 +172,16 @@ WHERE m.id=$1::uuid
 	return v, nil
 }
 
+// tenantColumns is the projection every tenant read shares — the list, the
+// single-row read the usage endpoint needs for its quota denominator, and the
+// two writes' RETURNING clauses. Spelling it once means a column added to the
+// tenant cannot be selected by three queries and forgotten by the fourth, which
+// is exactly how a quota dimension silently reads as zero.
+const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros`
+
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
-SELECT id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+SELECT `+tenantColumns+`
 FROM gateway_tenant
 ORDER BY name
 `)
@@ -197,7 +205,7 @@ func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tena
 	err := p.Pool.QueryRow(ctx, `
 INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+RETURNING `+tenantColumns+`
 `, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
 	return v, err
 }
@@ -207,23 +215,39 @@ func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) 
 UPDATE gateway_tenant
 SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, updated_at=NOW()
 WHERE id=$1::uuid
-RETURNING id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros
+RETURNING `+tenantColumns+`
 `, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros)
 	return v, err
 }
 
+// TenantUsageStats reports a tenant's usage for the current day and month. It is
+// the numerator of the quota share the console shows.
+//
+// The day and month boundaries are computed here, in UTC, and passed as
+// instants. That is deliberate: the limiting side buckets on UTC too — the
+// limiter's period keys come from time.Now().UTC() (tenantDayBucket /
+// tenantMonthBucket) and a Quota Counter rebuild reads the log over the same UTC
+// windows — so the number the panel shows is the window the gate actually
+// enforced. Computing the boundary as date_trunc('day', NOW()) inside the query
+// would instead follow the database session's TimeZone, and a deployment whose
+// Postgres runs in UTC+8 would file the eight hours after local midnight under
+// the previous day, making the console's "used" disagree with the counter that
+// refused the request.
 func (p *Postgres) TenantUsageStats(ctx context.Context, tenantID string) (model.TenantUsageStats, error) {
 	var v model.TenantUsageStats
 	v.TenantID = tenantID
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	err := p.Pool.QueryRow(ctx, `
 SELECT
-	COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW()))::bigint,
-	COUNT(*) FILTER (WHERE created_at >= date_trunc('month', NOW()))::bigint,
-	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= date_trunc('day', NOW())),0)::bigint,
-	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())),0)::bigint
+	COUNT(*) FILTER (WHERE created_at >= $2::timestamptz)::bigint,
+	COUNT(*) FILTER (WHERE created_at >= $3::timestamptz)::bigint,
+	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= $2::timestamptz),0)::bigint,
+	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= $3::timestamptz),0)::bigint
 FROM gateway_request_log
 WHERE tenant_id=$1::uuid
-`, tenantID).Scan(&v.DailyRequests, &v.MonthlyRequests, &v.DailyTokens, &v.MonthlyTokens)
+`, tenantID, dayStart, monthStart).Scan(&v.DailyRequests, &v.MonthlyRequests, &v.DailyTokens, &v.MonthlyTokens)
 	return v, err
 }
 

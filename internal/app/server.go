@@ -175,7 +175,78 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s.routes()
 	s.bootstrapAdminUser(ctx)
+	s.limit.SetQuotaRebuildSource(s.currentMonthQuotaUsage)
+	s.rebuildQuotaCounters(ctx)
 	return s, nil
+}
+
+// currentMonthQuotaUsage aggregates the settled request log for the current UTC
+// month — exactly the window the gate's live counters cover. The monthly keys
+// ("YYYYMM") span month-to-date and the daily keys ("YYYYMMDD") are a subset of
+// it. Bucketing from the first of the month rather than from today is what
+// makes a reconstructed monthly counter correct: starting at midnight today
+// would re-arm the month counter with only today's share and under-count the
+// rest of the month, so the gate would over-admit for the remainder of it.
+func (s *Server) currentMonthQuotaUsage(ctx context.Context) ([]model.QuotaSettledRow, error) {
+	now := time.Now().UTC()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return s.pg.DailySettledQuota(ctx, from, from.AddDate(0, 1, 0))
+}
+
+// runQuotaRebuild is the single rebuild routine behind all three triggers — the
+// startup reconstruction, the limiter's missing-counter hot path and the manual
+// endpoint. Keeping one implementation means the three cannot drift into three
+// subtly different baselines, and it reads the settled month-to-date usage from
+// the request log (the durable truth) before resetting the Redis counters to it.
+func (s *Server) runQuotaRebuild(ctx context.Context) (ratelimit.RebuildResult, error) {
+	settled, err := s.currentMonthQuotaUsage(ctx)
+	if err != nil {
+		return ratelimit.RebuildResult{}, fmt.Errorf("aggregate request log: %w", err)
+	}
+	return s.limit.RebuildQuotaCounters(ctx, settled)
+}
+
+// rebuildQuotaCounters reconstructs the Redis tenant quota counters from the
+// settled request log on startup, so a gateway that comes up after a Redis
+// flush — or any cache loss — restores the gate to the settled baseline rather
+// than resetting every counter to zero and over-admitting tenants.
+//
+// It is deliberately best-effort: a failure must not take the gateway down,
+// only be logged, because the live reserve/reconcile path keeps the counters
+// warm from then on and the manual reconciliation trigger can retry.
+func (s *Server) rebuildQuotaCounters(ctx context.Context) {
+	res, err := s.runQuotaRebuild(ctx)
+	if err != nil {
+		log.Printf("quota rebuild: %v", err)
+		return
+	}
+	log.Printf("quota rebuild: reconstructed %d daily, %d monthly token, %d monthly request counter(s) from the request log",
+		res.DailyTokens, res.MonthlyTokens, res.MonthlyReqs)
+}
+
+// handleQuotaRebuild is the manual reconciliation trigger for the Quota
+// Counters: an operator can rebuild the Redis counters from the settled request
+// log on demand — after repairing an incident, or when the live numbers are
+// suspected to have drifted. It shares the exact rebuild the startup and
+// missing-counter triggers use, so all three produce the same baseline.
+func (s *Server) handleQuotaRebuild(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	res, err := s.runQuotaRebuild(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "quota_rebuild_failed", "Unable to rebuild the quota counters from the request log", reqID)
+		return
+	}
+	log.Printf("quota rebuild: manual reconciliation reconstructed %d daily, %d monthly token, %d monthly request counter(s)",
+		res.DailyTokens, res.MonthlyTokens, res.MonthlyReqs)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"daily_token_counters":     res.DailyTokens,
+		"monthly_token_counters":   res.MonthlyTokens,
+		"monthly_request_counters": res.MonthlyReqs,
+	})
 }
 
 // bootstrapAdminUser creates an initial administrator from ADMIN_BOOTSTRAP_USERNAME

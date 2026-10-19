@@ -766,6 +766,63 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .summaryCell.warning b { color: var(--warning); }
 .summaryCell.danger b { color: var(--danger); }
 
+/* --- usage and quota ------------------------------------------------------ */
+
+/* The usage section reuses the summary strip's fluid grid for the totals the
+   operator already read, then adds the two rows the log page was missing: quota
+   consumption against the tenant's limits, and the same usage broken down by
+   API key. All three come from one request over one predicate, so they cannot
+   disagree with each other or with the table below. */
+.usageSection { border-bottom: 1px solid var(--border); }
+.usageHead {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 15px 20px 12px;
+}
+.usageHead h3 { margin: 0; font-size: var(--fs-lead); font-weight: 700; }
+.usageHead span { font-size: 12px; color: var(--text-faint); }
+
+.quotaStrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+}
+.quotaCell {
+  background: var(--surface);
+  padding: 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.quotaCell small { color: var(--text-faint); font-size: 11.5px; }
+.quotaCell .quotaValue { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quotaCell .quotaMeta { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.quotaCell.danger .quotaValue { color: var(--danger); }
+.quotaCell.warning .quotaValue { color: var(--warning); }
+/* The bar is carried over from the tenant drawer's progress rows rather than
+   redrawn, so a nearly-exhausted quota reads the same on both screens. */
+.quotaCell .progressTrack { margin-top: 1px; }
+
+.usageKeysHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 13px 20px 6px;
+}
+.usageKeysHead h4 { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.usageKeysHead span { font-size: 11.5px; color: var(--text-faint); }
+.usageKeyCell { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.usageEmpty { margin: 0; padding: 6px 20px 16px; font-size: 12.5px; color: var(--text-muted); }
+/* The row a drill came from. Without it a filter change looks like the table
+   merely reloaded, with no visible link back to the key that was clicked.
+   Written with the table element so it holds against the generic row hover. */
+table.data tbody tr.drilledRow { background: var(--primary-soft); }
+
 /* --- charts --------------------------------------------------------------- */
 
 .chart { display: flex; flex-direction: column; gap: 8px; }

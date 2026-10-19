@@ -1,6 +1,6 @@
 import {useCallback, useMemo, useState} from 'react'
 import {Copy, Download, FileClock, Search, X} from 'lucide-react'
-import {api, download, listRequestLogFacets, summarizeRequestLogs, type RequestLog, type RequestLogFacets, type RequestLogSummary} from '../api'
+import {api, download, fetchRequestLogUsage, listRequestLogFacets, type RequestLog, type RequestLogFacets, type RequestLogUsage} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge, HttpStatusBadge} from '../components/ui/Badge'
@@ -10,7 +10,7 @@ import {Drawer} from '../components/ui/Drawer'
 import {Table} from '../components/ui/Table'
 import {useToast} from '../components/ui/Toast'
 import {LogDetail} from '../components/logs/LogDetail'
-import {LogSummaryStrip} from '../components/logs/LogSummaryStrip'
+import {UsageQuotaSection} from '../components/logs/UsageQuotaSection'
 import {useResource} from '../lib/useResource'
 import {copyText, ms, num, shortId, when} from '../lib/format'
 
@@ -118,18 +118,20 @@ export function RequestLogsPage() {
     const q = new URLSearchParams(queryString)
     q.set('limit', String(PAGE_SIZE))
     q.set('offset', String(offset))
-    // The summary and the page share one query string, so the numbers above the
-    // table can never describe a different selection than the table below it.
-    const [page, summary] = await Promise.all([
+    // The usage endpoint carries the totals the summary would plus the quota
+    // and the per-key breakdown, so one aggregate call feeds the whole section
+    // above the table. Like the summary, it gets the unfiltered query string:
+    // the strip describes the same selection as the page below it.
+    const [page, usage] = await Promise.all([
       api<{data: RequestLog[]}>(`/admin/request-logs?${q}`),
-      summarizeRequestLogs(queryString),
+      fetchRequestLogUsage(queryString),
     ])
-    return {rows: page.data || [], summary}
+    return {rows: page.data || [], usage}
   }, [queryString, offset])
 
   const {data, loading, error, errorStatus, reload} = useResource(loader, [queryString, offset])
   const rows = data?.rows || []
-  const summary: RequestLogSummary | null = data?.summary || null
+  const usage: RequestLogUsage | null = data?.usage || null
 
   // The option lists are a separate resource: they change only when traffic
   // appears from a new tenant or key, so refetching them on every filter change
@@ -142,6 +144,23 @@ export function RequestLogsPage() {
     setOffset(0)
     setApplied(filters)
     if (offset === 0) reload()
+  }
+
+  /**
+   * Drills the page into one API key.
+   *
+   * It rewrites the *applied* filters rather than the form boxes: the drill acts
+   * on the set the operator is looking at, so an edit typed but not yet
+   * submitted must not ride along inside the new key filter. Rewriting `filters`
+   * too keeps the form showing what is actually being queried — a select whose
+   * value the query no longer matches is the classic "why is this filtered?"
+   * confusion.
+   */
+  const drillKey = (apiKeyID: string) => {
+    const next = {...applied, api_key_id: apiKeyID}
+    setFilters(next)
+    setApplied(next)
+    setOffset(0)
   }
 
   const reset = () => {
@@ -174,6 +193,12 @@ export function RequestLogsPage() {
   const keyOptions = (facets.data?.keys || []).filter(
     k => !applied.tenant_id || k.tenant_id === applied.tenant_id,
   )
+  // A drilled key can be missing from the facet list (the facets query joins the
+  // key table, which the log may predate). A select whose value has no matching
+  // option renders blank, which would hide the filter that is actually applied,
+  // so the drilled key is offered as an option of its own when it is absent.
+  const drilledKey = usage?.by_key.find(k => k.api_key_id === applied.api_key_id)
+  const drilledKeyMissing = applied.api_key_id !== '' && !keyOptions.some(k => k.id === applied.api_key_id)
 
   return (
     <>
@@ -228,6 +253,11 @@ export function RequestLogsPage() {
             <Filter label="API 密钥">
               <select value={filters.api_key_id} onChange={f('api_key_id')}>
                 <option value="">全部 API 密钥</option>
+                {drilledKeyMissing && (
+                  <option value={applied.api_key_id}>
+                    {drilledKey?.name || '已下钻密钥'}（{drilledKey?.key_prefix || shortId(applied.api_key_id)}）
+                  </option>
+                )}
                 {keyOptions.map(k => (
                   <option key={k.id} value={k.id}>
                     {k.name}（{k.key_prefix}）
@@ -264,7 +294,12 @@ export function RequestLogsPage() {
           </p>
         )}
 
-        <LogSummaryStrip summary={summary} loading={loading} />
+        <UsageQuotaSection
+          usage={usage}
+          loading={loading}
+          activeKeyID={applied.api_key_id}
+          onSelectKey={drillKey}
+        />
 
         {loading && !data ? (
           <SkeletonRows rows={8} columns={8} />
@@ -310,7 +345,7 @@ export function RequestLogsPage() {
         <div className="pager">
           <span>
             Offset {offset} · 本页 {rows.length} 条
-            {summary ? ` · 合计 ${num(summary.requests)} 条` : ''}
+            {usage ? ` · 合计 ${num(usage.totals.requests)} 条` : ''}
           </span>
           <div className="pagerActions">
             <Button

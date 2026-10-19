@@ -1,6 +1,6 @@
 import type {RequestLog} from '../../api'
 import {Detail, TelemetryRow} from '../ui/Detail'
-import {ms, when} from '../../lib/format'
+import {ms, num, when} from '../../lib/format'
 
 /**
  * Request detail, split into sections.
@@ -8,8 +8,19 @@ import {ms, when} from '../../lib/format'
  * Telemetry fields (provider, upstream model, priority, attempts) are only
  * populated when ThinkWatch reports them. They render as 未知 rather than a
  * guess — a wrong provider name in a debugging tool is worse than a blank.
+ *
+ * Token figures follow the same rule, and each figure is judged on its own. A
+ * request that never returned a usable `usage` block records every token field
+ * as 0 — "nothing counted", not a genuine zero. But a provider may also report a
+ * total without the input/output split, so a positive total does not make a zero
+ * input or output real; each field shows 未知 unless it holds a value of its own.
+ * That is the conservative direction: an unknown figure is honest, a fabricated
+ * 0 is not (see ADR-0010).
  */
 export function LogDetail({v}: {v: RequestLog}) {
+  const input = v.input_tokens > 0
+  const output = v.output_tokens > 0
+  const total = v.total_tokens > 0
   return (
     <div className="detailStack">
       <Detail
@@ -39,9 +50,9 @@ export function LogDetail({v}: {v: RequestLog}) {
       <Detail
         title="用量"
         rows={[
-          ['Input Tokens', v.input_tokens],
-          ['Output Tokens', v.output_tokens],
-          ['Total Tokens', v.total_tokens],
+          ['Input（Prompt）Tokens', input ? <span className="mono">{num(v.input_tokens)}</span> : <span className="unknown">未知</span>],
+          ['Output（Completion）Tokens', output ? <span className="mono">{num(v.output_tokens)}</span> : <span className="unknown">未知</span>],
+          ['Total Tokens', total ? <span className="mono">{num(v.total_tokens)}</span> : <span className="unknown">未知</span>],
         ]}
       />
       <Detail
