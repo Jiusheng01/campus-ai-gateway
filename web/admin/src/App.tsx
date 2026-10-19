@@ -1,18 +1,25 @@
-import {useEffect,useState,type FormEvent} from 'react'
+import {useEffect,useRef,useState,type FormEvent} from 'react'
 import {
   Activity, AlertTriangle, BarChart3, Boxes, ChevronRight, CircleGauge, Database,
   Eye, EyeOff, FileClock, KeyRound, LayoutDashboard, Loader2, Lock, LogOut, Menu, Moon, Network,
-  RefreshCw, Route, ServerCog, Settings, ShieldAlert, ShieldCheck, Sun, UserRound, Users, X, Zap
+  RefreshCw, Route, ServerCog, Settings, ShieldAlert, ShieldCheck, Sun, UserCog,
+  UserRound, Users, X, Zap
 } from 'lucide-react'
 import {
   api, changePassword, clearSession, download, getAuthConfig, isSessionMode, listSessions, login, logout,
   refreshSession, revokeSession, setAuthMode, setUnauthenticatedHandler, setupAdmin, whoami,
-  type AdminAudit, type AdminSessionView, type ApiKey, type AuthConfig, type DashboardStatus,
-  type ModelConfig, type ModelRoute, type Provider, type RequestLog, type SecurityEvent,
-  type Tenant, type TenantUsage, type WhoAmI
+  ADMIN_ROLES, createAdminUser, listAdminUsers, roleLabel, updateAdminUser, setAdminUserScope,
+  TENANT_KINDS, tenantKindLabel, getTenantAllocation, allocateTenantQuota, moveTenant,
+  listModelQuotas, upsertModelQuota, deleteModelQuota,
+  type AdminAccount, type AdminAudit, type AdminSessionView, type ApiKey, type AuthConfig,
+  type DashboardStatus, type EffectiveLimits, type EffectiveModelQuota, type ModelConfig,
+  type ModelQuota, type ModelQuotaAllocation, type ModelRoute, type Provider,
+  type RequestLog, type SecurityEvent, type Tenant, type TenantAllocation, type TenantQuotaValue,
+  type TenantUsage, type WhoAmI
 } from './api'
+import {F,NumInput,QuotaFields,quotaLabel} from './fields'
 
-type Page='dashboard'|'providers'|'models'|'tenants'|'keys'|'logs'|'audit'|'security'|'settings'
+type Page='dashboard'|'providers'|'models'|'tenants'|'modelQuotas'|'keys'|'logs'|'audit'|'security'|'admins'|'settings'
 type Drawer={kind:string;data?:any}|null
 type Toast={text:string;bad?:boolean}|null
 
@@ -27,17 +34,24 @@ type AuthPhase='loading'|'login'|'setup'|'ready'|'identity'|'unsupported'
 // authModeOf normalises the mode string once so every branch agrees on it.
 const authModeOf=(cfg:AuthConfig|null)=>(cfg?.auth_mode||'').toLowerCase()
 
-const pages:{id:Page;label:string;icon:any}[]=[
+const pages:{id:Page;label:string;icon:any;roles?:string[]}[]=[
   {id:'dashboard',label:'总览',icon:LayoutDashboard},
   {id:'providers',label:'供应商',icon:Network},
   {id:'models',label:'模型与路由',icon:Route},
   {id:'tenants',label:'租户',icon:Users},
+  {id:'modelQuotas',label:'模型额度',icon:CircleGauge},
   {id:'keys',label:'API Key',icon:KeyRound},
   {id:'logs',label:'请求日志',icon:FileClock},
   {id:'audit',label:'管理审计',icon:Database},
   {id:'security',label:'安全事件',icon:ShieldAlert},
+  {id:'admins',label:'管理员',icon:UserCog,roles:['super_admin']},
   {id:'settings',label:'系统设置',icon:Settings},
 ]
+
+// visiblePages hides menu entries the signed-in account cannot use. This is
+// presentation only: every request is still authorised server-side, so a
+// hand-crafted call gets a 403 rather than data.
+const visiblePages=(roles:string[])=>pages.filter(p=>!p.roles||p.roles.some(r=>roles.includes(r)))
 
 type ProviderTemplate={id:string;label:string;values:{name:string;base_url:string;protocol:string;credential_env:string}}
 
@@ -74,11 +88,13 @@ function App(){
   const [providers,setProviders]=useState<Provider[]>([])
   const [models,setModels]=useState<ModelConfig[]>([])
   const [tenants,setTenants]=useState<Tenant[]>([])
+  const [modelQuotas,setModelQuotas]=useState<ModelQuota[]>([])
   const [keys,setKeys]=useState<ApiKey[]>([])
   const [routes,setRoutes]=useState<Record<string,ModelRoute[]>>({})
   const [logs,setLogs]=useState<RequestLog[]>([])
   const [audits,setAudits]=useState<AdminAudit[]>([])
   const [security,setSecurity]=useState<SecurityEvent[]>([])
+  const [adminAccounts,setAdminAccounts]=useState<AdminAccount[]>([])
   const [logOffset,setLogOffset]=useState(0)
   const [filters,setFilters]=useState({model:'',provider:'',status:'',request_id:'',failover:''})
 
@@ -171,6 +187,12 @@ function App(){
         setRoutes(Object.fromEntries(rs))
       }
       if(p==='tenants')setTenants(await list<Tenant>('/admin/tenants'))
+      if(p==='modelQuotas'){
+        // The tenant list feeds the "who holds this pool" picker, so both load
+        // together rather than leaving the form with an empty dropdown.
+        const [q,t,m]=await Promise.all([listModelQuotas(),list<Tenant>('/admin/tenants'),list<ModelConfig>('/admin/models')])
+        setModelQuotas(q);setTenants(t);setModels(m)
+      }
       if(p==='keys'){
         const [k,t,m]=await Promise.all([list<ApiKey>('/admin/api-keys'),list<Tenant>('/admin/tenants'),list<ModelConfig>('/admin/models')])
         setKeys(k);setTenants(t);setModels(m)
@@ -178,6 +200,11 @@ function App(){
       if(p==='logs')await loadLogs()
       if(p==='audit')setAudits(await list<AdminAudit>('/admin/admin-audit?limit=200'))
       if(p==='security')setSecurity(await list<SecurityEvent>('/admin/security-events?limit=200'))
+      if(p==='admins'){
+        // The scope picker needs the tenant tree, so load both together.
+        const [accounts,t]=await Promise.all([listAdminUsers(),list<Tenant>('/admin/tenants')])
+        setAdminAccounts(accounts);setTenants(t)
+      }
       if(p==='settings')setWho(await api<WhoAmI>('/admin/whoami'))
     })
   }
@@ -210,6 +237,16 @@ function App(){
     await api(v.id?'/admin/tenants/'+v.id:'/admin/tenants',{method:v.id?'PUT':'POST',body:JSON.stringify(v)})
     notify('租户已保存');setDrawer(null);setTenants(await list<Tenant>('/admin/tenants'))
   }
+  async function saveModelQuota(v:ModelQuotaAllocation){
+    await upsertModelQuota(v)
+    notify('模型额度已保存');setDrawer(null);await loadPage('modelQuotas')
+  }
+  async function removeModelQuota(tenantId:string|null,alias:string){
+    const who=tenantId?tenants.find(t=>t.id===tenantId)?.name||'该租户':'全校'
+    if(!confirm(`确认删除「${who}」对模型 ${alias} 的额度？删除后该主体将改为继承上级额度。`))return
+    await deleteModelQuota(tenantId,alias)
+    notify('模型额度已删除');await loadPage('modelQuotas')
+  }
   async function saveKey(v:any){
     const out:any=await api(v.id?'/admin/api-keys/'+v.id:'/admin/api-keys',{method:v.id?'PUT':'POST',body:JSON.stringify(v)})
     if(out.api_key)setDrawer({kind:'secret',data:out.api_key});else setDrawer(null)
@@ -226,7 +263,28 @@ function App(){
     setDrawer({kind:'testResult',data:out})
   }
   async function tenantUsage(t:Tenant){
-    const u=await api<TenantUsage>('/admin/tenants/'+t.id+'/usage');setDrawer({kind:'usage',data:{tenant:t,usage:u}})
+    // The usage panel shows effective limits rather than the tenant's own
+    // values: a tenant that inherits everything has null for all four, and
+    // rendering "null / null" would tell the operator nothing about the budget
+    // that is actually being enforced.
+    const [u,view]=await Promise.all([
+      api<TenantUsage>('/admin/tenants/'+t.id+'/usage'),
+      getTenantAllocation(t.id),
+    ])
+    setDrawer({kind:'usage',data:{tenant:t,usage:u,effective:view.effective}})
+  }
+  // The allocation drawer loads the resolved view first: an operator about to
+  // hand down a budget needs to see what the level above already holds, and
+  // what this node currently inherits, before typing a number.
+  async function tenantAllocation(t:Tenant){
+    const view=await getTenantAllocation(t.id)
+    setDrawer({kind:'allocate',data:{tenant:t,view}})
+  }
+  async function saveAllocation(id:string,input:TenantAllocation){
+    const view=await allocateTenantQuota(id,input)
+    notify('额度已分配')
+    setDrawer({kind:'allocate',data:{tenant:view.tenant,view}})
+    setTenants(await list<Tenant>('/admin/tenants'))
   }
 
   // The auth screens replace the whole shell. All hooks above run on every
@@ -246,7 +304,7 @@ function App(){
         <div className="brandMark">AI</div>
         {!collapsed&&<div><b>校园模型网关</b><span>Campus AI Gateway</span></div>}
       </div>
-      <nav>{pages.map(p=><button key={p.id} className={page===p.id?'active':''} onClick={()=>setPage(p.id)} title={p.label}><p.icon/><span>{p.label}</span></button>)}</nav>
+      <nav>{visiblePages(who?.roles||[]).map(p=><button key={p.id} className={page===p.id?'active':''} onClick={()=>setPage(p.id)} title={p.label}><p.icon/><span>{p.label}</span></button>)}</nav>
       <button className="collapseBtn" onClick={()=>{const v=!collapsed;setCollapsed(v);localStorage.setItem('campus_sidebar',v?'1':'0')}}><Menu/></button>
     </aside>
     <section className="workspace">
@@ -263,15 +321,17 @@ function App(){
         {page==='dashboard'&&<Dashboard data={statusData} onRefresh={()=>loadPage('dashboard')}/>}
         {page==='providers'&&<Providers items={providers} onAdd={()=>setDrawer({kind:'provider',data:{status:1,protocol:'openai-chat'}})} onEdit={v=>setDrawer({kind:'provider',data:v})}/>}
         {page==='models'&&<Models items={models} routes={routes} onAdd={()=>setDrawer({kind:'model',data:{status:1}})} onEdit={v=>setDrawer({kind:'model',data:v})} onRoute={(m,r)=>setDrawer({kind:'route',data:{model:m,route:r||{priority:1,weight:100,timeout_ms:60000,status:1}}})} onDeleteRoute={v=>run(()=>deleteRoute(v))} onSync={()=>run(syncThinkWatch)} onTest={()=>setDrawer({kind:'test',data:{model:models.find(x=>x.status===1)?.alias||''}})}/>}
-        {page==='tenants'&&<Tenants items={tenants} onAdd={()=>setDrawer({kind:'tenant',data:{status:1,daily_token_limit:0,monthly_token_limit:0,monthly_request_limit:0,monthly_budget_micros:0}})} onEdit={v=>setDrawer({kind:'tenant',data:v})} onUsage={v=>run(()=>tenantUsage(v))}/>}
+        {page==='tenants'&&<Tenants items={tenants} onAdd={()=>setDrawer({kind:'tenant',data:{status:1,kind:'tenant',daily_token_limit:null,monthly_token_limit:null,monthly_request_limit:null,monthly_budget_micros:null}})} onAddChild={v=>setDrawer({kind:'tenant',data:{status:1,kind:'student',parent_id:v.id,daily_token_limit:null,monthly_token_limit:null,monthly_request_limit:null,monthly_budget_micros:null}})} onEdit={v=>setDrawer({kind:'tenant',data:v})} onUsage={v=>run(()=>tenantUsage(v))} onAllocate={v=>run(()=>tenantAllocation(v))}/>}
+        {page==='modelQuotas'&&<ModelQuotas items={modelQuotas} tenants={tenants} models={models} onAdd={()=>setDrawer({kind:'modelQuota',data:{tenant_id:null,model_alias:'',daily_token_limit:null,monthly_token_limit:null}})} onEdit={v=>setDrawer({kind:'modelQuota',data:v})} onDelete={(t,a)=>run(()=>removeModelQuota(t,a))}/>}
         {page==='keys'&&<Keys items={keys} onAdd={()=>setDrawer({kind:'key',data:{status:1,rpm_limit:60,tpm_limit:100000,max_concurrency:10,allowed_models:[],allowed_ips:[]}})} onEdit={v=>setDrawer({kind:'key',data:v})}/>}
         {page==='logs'&&<Logs rows={logs} filters={filters} setFilters={setFilters} offset={logOffset} onApply={()=>run(()=>loadLogs(true))} onPrev={()=>{const n=Math.max(0,logOffset-50);setLogOffset(n);run(()=>loadLogs(false,n))}} onNext={()=>{const n=logOffset+50;setLogOffset(n);run(()=>loadLogs(false,n))}} onDetail={v=>setDrawer({kind:'log',data:v})} onExport={()=>run(()=>download('/admin/request-logs/export?'+new URLSearchParams(Object.entries(filters).filter(([,v])=>v) as [string,string][]),'campus-gateway-request-logs.csv'))}/>}
         {page==='audit'&&<Audit rows={audits}/>}
         {page==='security'&&<Security rows={security} onDetail={v=>setDrawer({kind:'security',data:v})}/>}
+        {page==='admins'&&<AdminsPage items={adminAccounts} tenants={tenants} currentUsername={who?.username||who?.user||''} onRefresh={()=>loadPage('admins')} onNotice={notify}/>}
         {page==='settings'&&<AccountPage who={who} onNotice={notify} onSignedOut={signOut}/>}
       </main>
     </section>
-    {drawer&&<DrawerView drawer={drawer} providers={providers} tenants={tenants} models={models} onClose={()=>setDrawer(null)} onProvider={v=>run(()=>saveProvider(v))} onModel={v=>run(()=>saveModel(v))} onRoute={(m,v)=>run(()=>saveRoute(m,v))} onTenant={v=>run(()=>saveTenant(v))} onKey={v=>run(()=>saveKey(v))} onTest={(m,p)=>run(()=>modelTest(m,p))}/>}
+    {drawer&&<DrawerView drawer={drawer} providers={providers} tenants={tenants} models={models} onClose={()=>setDrawer(null)} onProvider={v=>run(()=>saveProvider(v))} onModel={v=>run(()=>saveModel(v))} onRoute={(m,v)=>run(()=>saveRoute(m,v))} onTenant={v=>run(()=>saveTenant(v))} onAllocate={(id,v)=>run(()=>saveAllocation(id,v))} onModelQuota={v=>run(()=>saveModelQuota(v))} onKey={v=>run(()=>saveKey(v))} onTest={(m,p)=>run(()=>modelTest(m,p))}/>}
     {toast&&<div className={'toast '+(toast.bad?'bad':'')}>{toast.bad?<AlertTriangle/>:<Zap/>}{toast.text}</div>}
   </div>
 }
@@ -329,15 +389,110 @@ function Models({items,routes,onAdd,onEdit,onRoute,onDeleteRoute,onSync,onTest}:
  </div>
 }
 
-function Tenants({items,onAdd,onEdit,onUsage}:{items:Tenant[];onAdd:()=>void;onEdit:(v:Tenant)=>void;onUsage:(v:Tenant)=>void}){
- return <Panel title="租户管理" sub="Tenant 是校园部门/系统的配额与 Key 隔离边界。" actions={<button className="btn primary" onClick={onAdd}>新增租户</button>}>
-  {items.length?<div className="tenantGrid">{items.map(v=><article className="tenantCard" key={v.id}><div><span className="eyebrow">{v.code}</span><h3>{v.name}</h3></div>{status(v.status)}
+function Tenants({items,onAdd,onAddChild,onEdit,onUsage,onAllocate}:{items:Tenant[];onAdd:()=>void;onAddChild:(v:Tenant)=>void;onEdit:(v:Tenant)=>void;onUsage:(v:Tenant)=>void;onAllocate:(v:Tenant)=>void}){
+ return <Panel title="租户与分级分配" sub="租户是一棵树：学校 → 院系 → 教师 → 学生。上级给下级分配额度，请求会同时计入链上每一级。" actions={<button className="btn primary" onClick={onAdd}>新增根租户</button>}>
+  {items.length?<div className="tenantGrid">{items.map(v=><article className={'tenantCard depth-'+Math.min(v.depth||0,4)} key={v.id}>
+   <div className="tenantHead">
+    {/* depth 直接来自物化路径，前端不再自己推导层级 */}
+    {(v.depth||0)>0&&<span className="treeMark" aria-hidden>└</span>}
+    <div><span className="eyebrow">{v.code} · {tenantKindLabel(v.kind)}</span><h3>{v.name}</h3></div>
+   </div>
+   {status(v.status)}
    <div className="quotaRows"><Quota label="日 Token" n={v.daily_token_limit}/><Quota label="月 Token" n={v.monthly_token_limit}/><Quota label="月请求" n={v.monthly_request_limit}/></div>
-   <div className="cardActions"><button className="btn secondary" onClick={()=>onUsage(v)}>查看用量</button><button className="btn ghost" onClick={()=>onEdit(v)}>编辑</button></div>
+   <div className="cardActions">
+    <button className="btn secondary" onClick={()=>onAllocate(v)}>分配额度</button>
+    <button className="btn secondary" onClick={()=>onUsage(v)}>查看用量</button>
+    <button className="btn ghost" onClick={()=>onAddChild(v)}>建下级</button>
+    <button className="btn ghost" onClick={()=>onEdit(v)}>编辑</button>
+   </div>
   </article>)}</div>:<Empty text="尚未创建租户"/>}
  </Panel>
 }
-function Quota({label,n}:{label:string;n:number}){return <div><span>{label}</span><b>{n?fmt(n):'不限'}</b></div>}
+
+// Quota renders a tri-state value. null means the tenant inherits from the
+// nearest ancestor that sets one, which must not be shown as "0" or "不限" --
+// those are different states and the operator has to be able to tell them apart.
+function Quota({label,n}:{label:string;n:number|null|undefined}){
+ const text=quotaLabel(n,fmt)
+ return <div><span>{label}</span><b className={n===null||n===undefined?'inherited':''}>{text}</b></div>
+}
+
+// QuotaText is Quota without the label, for table cells.
+function QuotaText({n}:{n:TenantQuotaValue}){
+ return <b className={n===null||n===undefined?'inherited':''}>{quotaLabel(n,fmt)}</b>
+}
+
+// ModelQuotas manages the per-model pools. One pool per model, held either by
+// the whole campus (the shared pool, which is the root every tenant inherits
+// from) or by a single tenant.
+//
+// The pools are deliberately not merged into one total. The unit is tokens, and
+// a token of one model is not a token of another, so a combined figure would be
+// a sum of incomparable quantities -- it could neither describe cost nor guide
+// allocation.
+function ModelQuotas({items,tenants,models,onAdd,onEdit,onDelete}:{items:ModelQuota[];tenants:Tenant[];models:ModelConfig[];onAdd:()=>void;onEdit:(v:ModelQuota)=>void;onDelete:(tenantId:string|null,alias:string)=>void}){
+ // Shared pools first: they are the ceiling every tenant inherits from, so
+ // reading the table top-down matches the order the chain resolves in.
+ const shared=items.filter(v=>v.tenant_id===null)
+ const perTenant=items.filter(v=>v.tenant_id!==null)
+ const rows=[...shared,...perTenant]
+ return <div className="stack">
+  <Panel title="模型额度池" sub="每个模型一个独立的池：先给模型设一个全校共享的上限，再按租户逐级收窄。请求会同时计入模型链和租户链，任一超限即拒绝。" actions={<button className="btn primary" onClick={onAdd}>新增模型额度</button>}>
+   {rows.length?<Table heads={['持有主体','模型','每日 Token','每月 Token','']}>
+    {rows.map(v=><tr key={(v.tenant_id||'shared')+':'+v.model_alias}>
+     <td>{v.tenant_id?<b>{v.tenant_name||v.tenant_code}</b>:<span className="badge ok">全校共享池</span>}</td>
+     <td className="mono">{v.model_alias}</td>
+     <td><QuotaText n={v.daily_token_limit}/></td>
+     <td><QuotaText n={v.monthly_token_limit}/></td>
+     <td className="rowActions"><button className="link" onClick={()=>onEdit(v)}>编辑</button><button className="link dangerText" onClick={()=>onDelete(v.tenant_id,v.model_alias)}>删除</button></td>
+    </tr>)}
+   </Table>:<Empty text="尚未配置任何模型额度"/>}
+  </Panel>
+  <Panel title="怎么理解这些池子" sub="三点容易踩空的地方。">
+   <ul className="hintList">
+    <li><b>全校共享池是根。</b>它被用满时，全校对该模型的调用都会被拒绝，不论各租户自己还剩多少。</li>
+    <li><b>租户设 0（不限额）不能突破共享池。</b>0 只是取消该租户自己的那一层上限，共享池是独立的一层，仍然生效。</li>
+    <li><b>留空 = 继承。</b>子级不配就取最近配过的祖先；删除某行同样等于回到继承。</li>
+   </ul>
+  </Panel>
+ </div>
+}
+
+function ModelQuotaForm({value,tenants,models,onSave}:{value:any;tenants:Tenant[];models:ModelConfig[];onSave:(v:ModelQuotaAllocation)=>void}){
+ const [v,setV]=useState(()=>({
+  tenant_id:value.tenant_id??null,
+  model_alias:value.model_alias||'',
+  daily_token_limit:value.daily_token_limit??null,
+  monthly_token_limit:value.monthly_token_limit??null,
+ }))
+ // The subject and the model are the row's identity. Changing either would be a
+ // create, not an edit, so on an existing row they are shown but locked --
+ // silently writing a second row is worse than a moment's friction.
+ const locked=!!value.model_alias
+ const isShared=v.tenant_id===null
+ const activeModels=models.filter(m=>m.status===1)
+ return <Form onSubmit={()=>onSave({...v})}>
+  <F label="持有主体" hint="「全校共享池」是所有租户共用的根；选具体租户则只约束该租户及其下级。">
+   <select value={v.tenant_id||''} disabled={locked} onChange={e=>setV({...v,tenant_id:e.target.value||null})}>
+    <option value="">全校共享池（所有租户共用）</option>
+    {tenants.map(t=><option key={t.id} value={t.id}>{'　'.repeat(Math.min(t.depth||0,4))}{t.name}（{t.code}）</option>)}
+   </select>
+  </F>
+  <F label="模型" hint="每个模型一个独立的池；不同模型的 token 不可比，不合并计算。">
+   {locked?<input value={v.model_alias} disabled/>:
+    activeModels.length?<select value={v.model_alias} onChange={e=>setV({...v,model_alias:e.target.value})}>
+     <option value="">请选择模型</option>
+     {activeModels.map(m=><option key={m.id} value={m.alias}>{m.alias}</option>)}
+    </select>:<input value={v.model_alias} placeholder="模型别名" onChange={e=>setV({...v,model_alias:e.target.value})}/>}
+  </F>
+  <div className="formGrid">
+   <F label="每日 Token 上限" hint="留空=继承 · 0=不限额"><NumInput value={v.daily_token_limit} onValue={n=>setV({...v,daily_token_limit:n})}/></F>
+   <F label="每月 Token 上限" hint="留空=继承 · 0=不限额"><NumInput value={v.monthly_token_limit} onValue={n=>setV({...v,monthly_token_limit:n})}/></F>
+  </div>
+  {isShared&&<div className="notice"><ShieldCheck/>全校共享池是这条链的根：所有租户对该模型的用量都会同时计入它。它被用满时，全校对该模型的调用都会被拒绝。</div>}
+  {!isShared&&<div className="notice"><ShieldCheck/>子级只能收窄，不能超过上级对同一模型持有的额度；配一个不在白名单内的模型会被直接拒绝。</div>}
+ </Form>
+}
 
 function Keys({items,onAdd,onEdit}:{items:ApiKey[];onAdd:()=>void;onEdit:(v:ApiKey)=>void}){
  return <Panel title="Virtual API Key" sub="完整 Key 只在创建时显示一次，数据库仅保存前缀与 HMAC 摘要。" actions={<button className="btn primary" onClick={onAdd}>创建 Key</button>}>
@@ -665,16 +820,142 @@ function AccountPage({who,onNotice,onSignedOut}:{who:WhoAmI|null;onNotice:(t:str
 // Shared presentational helpers
 // ---------------------------------------------------------------------------
 
+// AdminsPage lets a super administrator create accounts and assign roles. The
+// server refuses the same operations for every other role, so this page is a
+// convenience layer over the API rather than the security boundary.
+function AdminsPage({items,tenants,currentUsername,onRefresh,onNotice}:{items:AdminAccount[];tenants:Tenant[];currentUsername:string;onRefresh:()=>Promise<void>;onNotice:(t:string,bad?:boolean)=>void}){
+  const [creating,setCreating]=useState(false)
+  const [editing,setEditing]=useState('')
+  const [editRoles,setEditRoles]=useState<string[]>([])
+  const [editScope,setEditScope]=useState('')
+  const [draft,setDraft]=useState({username:'',display_name:'',password:'',roles:['auditor'] as string[],scope_tenant_id:''})
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+
+  const toggle=(list:string[],role:string)=>list.includes(role)?list.filter(r=>r!==role):[...list,role]
+
+  // The scope select lists every tenant in tree order, indented by depth. An
+  // empty value means "no scope", which reaches every tenant -- that is a real
+  // grant, so it is labelled as such rather than left blank.
+  const scopeOptions=<>
+    <option value="">（无作用域 · 可管理全部租户）</option>
+    {tenants.map(t=><option key={t.id} value={t.id}>{'　'.repeat(t.depth||0)}{t.name}（{t.code}）</option>)}
+  </>
+
+  async function submitCreate(e:FormEvent){
+    e.preventDefault();setError('')
+    if(!draft.username.trim()){setError('请填写用户名。');return}
+    if(!draft.roles.length){setError('请至少选择一个角色。');return}
+    setBusy(true)
+    try{
+      await createAdminUser({
+        username:draft.username.trim(),display_name:draft.display_name.trim(),
+        password:draft.password,roles:draft.roles,
+        scope_tenant_id:draft.scope_tenant_id||null,
+      })
+      onNotice('管理员账号已创建')
+      setDraft({username:'',display_name:'',password:'',roles:['auditor'],scope_tenant_id:''})
+      setCreating(false)
+      await onRefresh()
+    }catch(err:any){setError(err?.message||'创建失败')}
+    finally{setBusy(false)}
+  }
+
+  async function saveRoles(id:string){
+    if(!editRoles.length){onNotice('请至少保留一个角色',true);return}
+    setBusy(true)
+    try{
+      await updateAdminUser(id,{roles:editRoles})
+      await setAdminUserScope(id,editScope||null)
+      onNotice('角色与作用域已更新')
+      setEditing('')
+      await onRefresh()
+    }catch(err:any){onNotice(err?.message||'更新失败',true)}
+    finally{setBusy(false)}
+  }
+
+  async function toggleStatus(u:AdminAccount){
+    const next=u.status===1?2:1
+    if(next===2&&!confirm('确认停用「'+u.username+'」？该账号会立即被踢下线。'))return
+    setBusy(true)
+    try{
+      await updateAdminUser(u.id,{status:next})
+      onNotice(next===2?'账号已停用':'账号已启用')
+      await onRefresh()
+    }catch(err:any){onNotice(err?.message||'操作失败',true)}
+    finally{setBusy(false)}
+  }
+
+  return <div className="settingsGrid">
+    <Panel title="管理员账号" sub="只有超级管理员可以创建账号与分配角色。角色变更即时生效，无需重新登录。">
+      <div className="panelFoot">
+        <button className="btn primary" disabled={busy} onClick={()=>{setCreating(v=>!v);setError('')}}>
+          {creating?<><X/>取消</>:<><UserCog/>新建管理员</>}
+        </button>
+      </div>
+      {creating&&<form className="form" onSubmit={submitCreate}>
+        <div className="formGrid">
+          <F label="用户名"><input value={draft.username} autoComplete="off" onChange={e=>setDraft({...draft,username:e.target.value})}/></F>
+          <F label="显示名"><input value={draft.display_name} autoComplete="off" onChange={e=>setDraft({...draft,display_name:e.target.value})}/></F>
+        </div>
+        <F label="初始密码" hint="至少 10 位，且需包含字母、数字、符号中的至少两类。请通过安全渠道交给本人。">
+          <input type="password" autoComplete="new-password" value={draft.password} onChange={e=>setDraft({...draft,password:e.target.value})}/>
+        </F>
+        <F label="角色">
+          <div className="rolePicker">{ADMIN_ROLES.map(r=><label key={r} className={'roleChip '+(draft.roles.includes(r)?'on':'')}><input type="checkbox" checked={draft.roles.includes(r)} onChange={()=>setDraft({...draft,roles:toggle(draft.roles,r)})}/><span>{roleLabel(r)}</span></label>)}</div>
+        </F>
+        <F label="租户作用域" hint="指定后，该账号只能管理这个租户的子孙节点（不含该租户自身，避免自行加额度）。">
+          <select value={draft.scope_tenant_id} onChange={e=>setDraft({...draft,scope_tenant_id:e.target.value})}>{scopeOptions}</select>
+        </F>
+        {error&&<div className="authError"><AlertTriangle/>{error}</div>}
+        <div className="formActions">
+          <button className="btn primary" type="submit" disabled={busy||!draft.username.trim()||!draft.password}>
+            {busy?<><Loader2 className="spin"/>正在创建</>:<><UserCog/>创建账号</>}
+          </button>
+        </div>
+      </form>}
+      {items.length
+        ? <Table heads={['用户名','显示名','角色','作用域','状态','最后登录','操作']}>
+            {items.map(u=><tr key={u.id}>
+              <td><b>{u.username}</b>{u.username===currentUsername&&<span className="badge ok">当前账号</span>}</td>
+              <td>{u.display_name||'—'}</td>
+              <td>{editing===u.id
+                ? <div className="rolePicker">{ADMIN_ROLES.map(r=><label key={r} className={'roleChip '+(editRoles.includes(r)?'on':'')}><input type="checkbox" checked={editRoles.includes(r)} onChange={()=>setEditRoles(toggle(editRoles,r))}/><span>{roleLabel(r)}</span></label>)}</div>
+                : <span className="roleTags">{u.roles.map(r=><span key={r} className="badge">{roleLabel(r)}</span>)}</span>}</td>
+              <td>{editing===u.id
+                ? <select value={editScope} onChange={e=>setEditScope(e.target.value)}>{scopeOptions}</select>
+                : (u.scope_tenant_id
+                    ? <span className="badge">{tenants.find(t=>t.id===u.scope_tenant_id)?.name||u.scope_tenant_id}</span>
+                    : <span className="badge warn">全部租户</span>)}</td>
+              <td>{status(u.status)}</td>
+              <td>{when(u.last_login_at)}</td>
+              <td>
+                {editing===u.id
+                  ? <div className="rowActions"><button className="btn primary" disabled={busy||!editRoles.length} onClick={()=>saveRoles(u.id)}>保存</button><button className="btn secondary" onClick={()=>setEditing('')}>取消</button></div>
+                  : <div className="rowActions">
+                      <button className="btn secondary" disabled={u.username===currentUsername} title={u.username===currentUsername?'不能修改自己的角色与作用域':''} onClick={()=>{setEditing(u.id);setEditRoles(u.roles.slice());setEditScope(u.scope_tenant_id||'')}}>改角色/作用域</button>
+                      <button className="btn secondary" disabled={u.username===currentUsername} title={u.username===currentUsername?'不能停用自己的账号':''} onClick={()=>toggleStatus(u)}>{u.status===1?'停用':'启用'}</button>
+                    </div>}
+              </td>
+            </tr>)}
+          </Table>
+        : <Empty text="还没有管理员账号"/>}
+    </Panel>
+  </div>
+}
+
 function Table({heads,children}:{heads:string[];children:any}){return <div className="tableWrap"><table><thead><tr>{heads.map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{children}</tbody></table></div>}
 
-function DrawerView({drawer,providers,tenants,models,onClose,onProvider,onModel,onRoute,onTenant,onKey,onTest}:{drawer:Drawer;providers:Provider[];tenants:Tenant[];models:ModelConfig[];onClose:()=>void;onProvider:(v:any)=>void;onModel:(v:any)=>void;onRoute:(m:ModelConfig,v:any)=>void;onTenant:(v:any)=>void;onKey:(v:any)=>void;onTest:(m:string,p:string)=>void}){
+function DrawerView({drawer,providers,tenants,models,onClose,onProvider,onModel,onRoute,onTenant,onAllocate,onModelQuota,onKey,onTest}:{drawer:Drawer;providers:Provider[];tenants:Tenant[];models:ModelConfig[];onClose:()=>void;onProvider:(v:any)=>void;onModel:(v:any)=>void;onRoute:(m:ModelConfig,v:any)=>void;onTenant:(v:any)=>void;onAllocate:(id:string,v:TenantAllocation)=>void;onModelQuota:(v:ModelQuotaAllocation)=>void;onKey:(v:any)=>void;onTest:(m:string,p:string)=>void}){
  if(!drawer)return null
  const d=drawer.data||{}
  return <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><aside className="drawer"><div className="drawerHead"><div><span className="eyebrow">ADMIN</span><h2>{drawerTitle(drawer.kind)}</h2></div><button className="iconBtn" onClick={onClose}><X/></button></div><div className="drawerBody">
   {drawer.kind==='provider'&&<ProviderForm value={d} onSave={onProvider}/>}
   {drawer.kind==='model'&&<ModelForm value={d} providers={providers} onSave={onModel}/>}
   {drawer.kind==='route'&&<RouteForm value={d.route} model={d.model} providers={providers} onSave={onRoute}/>}
-  {drawer.kind==='tenant'&&<TenantForm value={d} onSave={onTenant}/>}
+  {drawer.kind==='tenant'&&<TenantForm value={d} tenants={tenants} onSave={onTenant}/>}
+  {drawer.kind==='allocate'&&<AllocationPanel tenant={d.tenant} view={d.view} models={models} onSave={onAllocate}/>}
+  {drawer.kind==='modelQuota'&&<ModelQuotaForm value={d} tenants={tenants} models={models} onSave={onModelQuota}/>}
   {drawer.kind==='key'&&<KeyForm value={d} tenants={tenants} models={models} onSave={onKey}/>}
   {drawer.kind==='log'&&<LogDetail v={d}/>}
   {drawer.kind==='security'&&<SecurityDetail v={d}/>}
@@ -684,7 +965,7 @@ function DrawerView({drawer,providers,tenants,models,onClose,onProvider,onModel,
   {drawer.kind==='testResult'&&<TestResult value={d}/>}
  </div></aside></div>
 }
-const drawerTitle=(k:string)=>({provider:'供应商配置',model:'对外模型配置',route:'线路配置',tenant:'租户配置',key:'API Key 配置',log:'请求详情',security:'安全事件详情',usage:'租户用量',secret:'新 Key 已生成',test:'模型测试',testResult:'模型测试结果'} as any)[k]||'详情'
+const drawerTitle=(k:string)=>({provider:'供应商配置',model:'对外模型配置',route:'线路配置',tenant:'租户配置',allocate:'额度分配',modelQuota:'模型额度配置',key:'API Key 配置',log:'请求详情',security:'安全事件详情',usage:'租户用量',secret:'新 Key 已生成',test:'模型测试',testResult:'模型测试结果'} as any)[k]||'详情'
 
 function ProviderForm({value,onSave}:{value:any;onSave:(v:any)=>void}){
  const [v,setV]=useState(value)
@@ -710,19 +991,145 @@ function ProviderForm({value,onSave}:{value:any;onSave:(v:any)=>void}){
  </Form>
 }
 function ModelForm({value,providers,onSave}:{value:any;providers:Provider[];onSave:(v:any)=>void}){const [v,setV]=useState(()=>({...value,provider_id:value.provider_id||providers[0]?.id||''}));return <Form onSubmit={()=>onSave(v)}><F label="对外模型名称" hint="业务系统调用 /v1/* API 时使用的 model 名称。"><input value={v.alias||''} onChange={e=>setV({...v,alias:e.target.value})}/></F><F label="主供应商" hint="默认使用的模型供应商。"><select value={v.provider_id||providers[0]?.id||''} onChange={e=>setV({...v,provider_id:e.target.value})}>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></F><F label="主线路模型" hint="该供应商实际调用的上游模型名称。"><input value={v.upstream_model||''} onChange={e=>setV({...v,upstream_model:e.target.value})}/></F><div className="notice"><Route/>保存后可继续添加备用线路，用于故障切换。</div><StatusField v={v} setV={setV}/></Form>}
-function RouteForm({value,model,providers,onSave}:{value:any;model:ModelConfig;providers:Provider[];onSave:(m:ModelConfig,v:any)=>void}){const [v,setV]=useState(()=>({...value,provider_id:value.provider_id||providers[0]?.id||''}));return <Form onSubmit={()=>onSave(model,v)}><div className="notice"><Route/>业务仍然调用 <b>{model.alias}</b>，这里只配置实际上游线路。</div><F label="供应商"><select value={v.provider_id||providers[0]?.id||''} onChange={e=>setV({...v,provider_id:e.target.value})}>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></F><F label="上游模型"><input value={v.upstream_model||''} onChange={e=>setV({...v,upstream_model:e.target.value})}/></F><div className="formGrid"><F label="优先级"><input type="number" min="1" value={v.priority} onChange={e=>setV({...v,priority:+e.target.value})}/></F><F label="权重"><input type="number" min="0" value={v.weight} onChange={e=>setV({...v,weight:+e.target.value})}/></F><F label="超时时间（ms）"><input type="number" min="1" value={v.timeout_ms} onChange={e=>setV({...v,timeout_ms:+e.target.value})}/></F></div><StatusField v={v} setV={setV}/></Form>}
-function TenantForm({value,onSave}:{value:any;onSave:(v:any)=>void}){const [v,setV]=useState(value);return <Form onSubmit={()=>onSave(v)}><div className="formGrid"><F label="租户编码"><input value={v.code||''} onChange={e=>setV({...v,code:e.target.value})}/></F><F label="租户名称"><input value={v.name||''} onChange={e=>setV({...v,name:e.target.value})}/></F></div><div className="formGrid"><Num label="每日 Token 上限" k="daily_token_limit" v={v} setV={setV}/><Num label="每月 Token 上限" k="monthly_token_limit" v={v} setV={setV}/><Num label="每月请求上限" k="monthly_request_limit" v={v} setV={setV}/><Num label="月预算 micros" k="monthly_budget_micros" v={v} setV={setV}/></div><StatusField v={v} setV={setV}/></Form>}
+function RouteForm({value,model,providers,onSave}:{value:any;model:ModelConfig;providers:Provider[];onSave:(m:ModelConfig,v:any)=>void}){const [v,setV]=useState(()=>({...value,provider_id:value.provider_id||providers[0]?.id||''}));return <Form onSubmit={()=>onSave(model,v)}><div className="notice"><Route/>业务仍然调用 <b>{model.alias}</b>，这里只配置实际上游线路。</div><F label="供应商"><select value={v.provider_id||providers[0]?.id||''} onChange={e=>setV({...v,provider_id:e.target.value})}>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></F><F label="上游模型"><input value={v.upstream_model||''} onChange={e=>setV({...v,upstream_model:e.target.value})}/></F><div className="formGrid"><F label="优先级"><NumInput value={v.priority} placeholder="1" onValue={n=>setV((prev:any)=>({...prev,priority:n??0}))}/></F><F label="权重"><NumInput value={v.weight} placeholder="0" onValue={n=>setV((prev:any)=>({...prev,weight:n??0}))}/></F><F label="超时时间（ms）"><NumInput value={v.timeout_ms} placeholder="60000" onValue={n=>setV((prev:any)=>({...prev,timeout_ms:n??0}))}/></F></div><StatusField v={v} setV={setV}/></Form>}
+function TenantForm({value,tenants,onSave}:{value:any;tenants:Tenant[];onSave:(v:any)=>void}){
+ const [v,setV]=useState(value)
+ const [errors,setErrors]=useState<Record<string,string>>({})
+ // A tenant cannot be its own parent, and moving a node under its own subtree
+ // would detach it from the tree, so descendants are filtered out too.
+ const forbidden=new Set<string>([v.id,...tenants.filter(t=>v.id&&t.path.includes('/'+v.id+'/')).map(t=>t.id)].filter(Boolean) as string[])
+ const parents=tenants.filter(t=>!forbidden.has(t.id))
+ // Validate before the round trip. The server answers with one generic message
+ // ("code and name are required"), so an operator who filled in the name but
+ // missed the code got a toast that never said which field was at fault.
+ const submit=()=>{
+  const next:Record<string,string>={}
+  if(!String(v.code||'').trim()) next.code='请填写租户编码'
+  if(!String(v.name||'').trim()) next.name='请填写租户名称'
+  setErrors(next)
+  if(Object.keys(next).length) return
+  onSave(v)
+ }
+ const setField=(k:string,val:any)=>{
+  setV((prev:any)=>({...prev,[k]:val}))
+  setErrors(prev=>{if(!prev[k])return prev;const n={...prev};delete n[k];return n})
+ }
+ return <Form onSubmit={submit}>
+  <div className="formGrid">
+   <F label="租户编码" error={errors.code}>
+    <input className={errors.code?'invalid':undefined} value={v.code||''} onChange={e=>setField('code',e.target.value)}/></F>
+   <F label="租户名称" error={errors.name}>
+    <input className={errors.name?'invalid':undefined} value={v.name||''} onChange={e=>setField('name',e.target.value)}/></F>
+  </div>
+  <div className="formGrid">
+   <F label="层级类型"><select value={v.kind||'tenant'} onChange={e=>setV({...v,kind:e.target.value})}>{TENANT_KINDS.map(k=><option key={k} value={k}>{tenantKindLabel(k)}（{k}）</option>)}</select></F>
+   <F label="上级租户" hint="留空即根租户；创建后改用「分配额度」调额度">
+    <select value={v.parent_id||''} onChange={e=>setV({...v,parent_id:e.target.value||null})}>
+     <option value="">（无 · 根租户）</option>
+     {parents.map(t=><option key={t.id} value={t.id}>{'　'.repeat(t.depth||0)}{t.name}（{t.code}）</option>)}
+    </select>
+   </F>
+  </div>
+  {v.id&&<div className="formNote">父级变更请用租户卡片上的「编辑」保存；额度请用「分配额度」，那里会校验不能超过上级持有量。</div>}
+  <QuotaFields v={v} setV={setV}/>
+  <StatusField v={v} setV={setV}/>
+ </Form>
+}
+
+// NumInput / F / QuotaFields live in ./fields so they can be unit tested.
+
+
+// AllocationPanel is the delegation view: it shows what the parent level holds
+// (the ceiling), what this node currently inherits, and lets the operator hand
+// down a narrower budget. The ceiling is not decoration -- the server rejects
+// anything above it, so showing it up front is what keeps the form usable.
+function AllocationPanel({tenant,view,models,onSave}:{tenant:Tenant;view:any;models:ModelConfig[];onSave:(id:string,v:TenantAllocation)=>void}){
+ const eff:EffectiveLimits|undefined=view?.effective
+ const effModels:EffectiveModelQuota[]=view?.effective_models||[]
+ const [form,setForm]=useState<Record<string,number|null>>({
+  daily_token_limit:tenant.daily_token_limit,
+  monthly_token_limit:tenant.monthly_token_limit,
+  monthly_request_limit:tenant.monthly_request_limit,
+  monthly_budget_micros:tenant.monthly_budget_micros,
+ })
+ // null = inherit, so "inherit" is the default and must survive a round trip.
+ const [modelsMode,setModelsMode]=useState<'inherit'|'list'|'deny'>(tenant.allowed_models===null?'inherit':(tenant.allowed_models.length?'list':'deny'))
+ const [picked,setPicked]=useState<string[]>(tenant.allowed_models||[])
+ const set=(k:string,val:number|null)=>setForm(f=>({...f,[k]:val}))
+
+ const submit=()=>{
+  const body:TenantAllocation={...form}
+  body.allowed_models=modelsMode==='inherit'?null:(modelsMode==='deny'?[]:picked)
+  onSave(tenant.id,body)
+ }
+
+ const dims:[string,string,number|undefined][]=[
+  ['daily_token_limit','每日 Token',eff?.daily_token_limit],
+  ['monthly_token_limit','每月 Token',eff?.monthly_token_limit],
+  ['monthly_request_limit','每月请求',eff?.monthly_request_limit],
+  ['monthly_budget_micros','月预算 micros',eff?.monthly_budget_micros],
+ ]
+ return <div className="allocPanel">
+  <div className="allocTarget"><span className="eyebrow">{tenant.code} · {tenantKindLabel(tenant.kind)}</span><h3>{tenant.name}</h3></div>
+  <Detail title="当前生效值（已含继承）" rows={dims.map(([k,label,val])=>[label,val?fmt(val):'不限额'])}/>
+  {/* The model axis resolves the same way (inherit from the nearest level that
+      sets a value) but is configured on its own page, because a model quota is
+      a map of model -> numbers rather than one row of numbers. Showing the
+      resolved result here keeps "why does it stop at 100?" answerable in one
+      place. */}
+  {effModels.length>0&&<Detail title="按模型生效额度（已含继承）" rows={effModels.map((m:EffectiveModelQuota)=>[m.model_alias,
+    (m.own?'本租户设定':'继承自 '+m.set_by)+' · 日 '+(m.daily_token_limit?fmt(m.daily_token_limit):'不限')+' · 月 '+(m.monthly_token_limit?fmt(m.monthly_token_limit):'不限')])}/>}
+  <Form onSubmit={submit}>
+   <div className="formGrid">
+    {dims.map(([k,label])=>(
+     <F key={k} label={label} hint="留空=继承 · 0=不限额">
+      <NumInput value={form[k]} onValue={n=>set(k,n)}/>
+     </F>
+    ))}
+   </div>
+   <F label="可用模型" hint="只能收窄，不能超出上级白名单">
+    <select value={modelsMode} onChange={e=>setModelsMode(e.target.value as any)}>
+     <option value="inherit">继承上级</option>
+     <option value="list">指定白名单</option>
+     <option value="deny">禁止全部模型</option>
+    </select>
+   </F>
+   {modelsMode==='list'&&<div className="checks">{models.filter(m=>m.status===1).map(m=><label key={m.id}><input type="checkbox" checked={picked.includes(m.alias)} onChange={e=>setPicked(e.target.checked?[...picked,m.alias]:picked.filter(x=>x!==m.alias))}/>{m.alias}</label>)}</div>}
+   {eff&&eff.model_access_restricted&&<div className="formNote">上级当前可用的模型：{eff.allowed_models?.length?eff.allowed_models.join('、'):'（无，上级已禁止全部）'}</div>}
+  </Form>
+ </div>
+}
 function KeyForm({value,tenants,models,onSave}:{value:any;tenants:Tenant[];models:ModelConfig[];onSave:(v:any)=>void}){const [v,setV]=useState(()=>({...value,tenant_id:value.tenant_id||tenants[0]?.id||''}));const allowed=v.allowed_models||[];return <Form onSubmit={()=>onSave(v)}><F label="名称"><input value={v.name||''} onChange={e=>setV({...v,name:e.target.value})}/></F><F label="租户"><select value={v.tenant_id||tenants[0]?.id||''} onChange={e=>setV({...v,tenant_id:e.target.value})}>{tenants.map(t=><option key={t.id} value={t.id}>{t.name} ({t.code})</option>)}</select></F><F label="允许模型"><div className="checks">{models.map(m=><label key={m.id}><input type="checkbox" checked={allowed.includes(m.alias)} onChange={e=>setV({...v,allowed_models:e.target.checked?[...allowed,m.alias]:allowed.filter((x:string)=>x!==m.alias)})}/>{m.alias}</label>)}</div></F><F label="允许 IP / CIDR（每行一个）"><textarea rows={4} value={(v.allowed_ips||[]).join('\n')} onChange={e=>setV({...v,allowed_ips:e.target.value.split(/\n|,/).map((x:string)=>x.trim()).filter(Boolean)})}/></F><div className="formGrid"><Num label="RPM" k="rpm_limit" v={v} setV={setV}/><Num label="TPM" k="tpm_limit" v={v} setV={setV}/><Num label="最大并发" k="max_concurrency" v={v} setV={setV}/><F label="Route Group"><input value={v.route_group||''} onChange={e=>setV({...v,route_group:e.target.value})}/></F></div><F label="过期时间（ISO，可留空）"><input value={v.expire_at||''} onChange={e=>setV({...v,expire_at:e.target.value||undefined})}/></F><StatusField v={v} setV={setV}/></Form>}
-function Num({label,k,v,setV}:{label:string;k:string;v:any;setV:any}){return <F label={label}><input type="number" min="0" value={v[k]||0} onChange={e=>setV({...v,[k]:+e.target.value})}/></F>}
+function Num({label,k,v,setV}:{label:string;k:string;v:any;setV:any}){return <F label={label}><NumInput value={v[k]??0} placeholder="0" onValue={n=>setV((prev:any)=>({...prev,[k]:n??0}))}/></F>}
 function StatusField({v,setV}:{v:any;setV:any}){return <F label="状态"><select value={v.status||1} onChange={e=>setV({...v,status:+e.target.value})}><option value="1">启用</option><option value="2">停用</option></select></F>}
-function F({label,children,hint}:{label:string;children:any;hint?:string}){return <label className="field"><span>{label}</span>{children}{hint&&<small className="hint">{hint}</small>}</label>}
 function Form({children,onSubmit}:{children:any;onSubmit:()=>void}){return <form className="form" onSubmit={e=>{e.preventDefault();onSubmit()}}>{children}<div className="formActions"><button className="btn primary" type="submit">保存</button></div></form>}
 
 function LogDetail({v}:{v:RequestLog}){return <div className="detailStack"><Detail title="基础信息" rows={[['Request ID',v.request_id],['时间',when(v.created_at)],['Tenant',v.tenant_id],['API Key',v.api_key_id],['来源 IP',v.client_ip],['HTTP Status',v.status_code],['Error',v.error_code||'—']]}/><Detail title="线路" rows={[['请求模型',v.requested_model],['实际模型',v.actual_model||'未知'],['供应商',v.provider||'未知'],['上游模型',v.upstream_model||'未知'],['线路优先级',v.route_priority||'未知'],['尝试次数',v.attempts||'未知'],['故障切换',v.failover?'是':'否']]}/><Detail title="Usage" rows={[['Input Tokens',v.input_tokens],['Output Tokens',v.output_tokens],['Total Tokens',v.total_tokens]]}/><Detail title="Timing" rows={[['Latency',ms(v.latency_ms)],['Stream',v.stream?'是':'否']]}/></div>}
 function SecurityDetail({v}:{v:SecurityEvent}){return <Detail title={v.event_type} rows={[['时间',when(v.created_at)],['Request ID',v.request_id||'—'],['Tenant',v.tenant_id||'—'],['API Key',v.api_key_id||'—'],['来源 IP',v.client_ip||'—'],['模型',v.requested_model||'—'],['详情',v.detail||'—']]}/>}
 function Detail({title,rows}:{title:string;rows:[string,any][]}){return <section className="detailBox"><h3>{title}</h3>{rows.map(([k,v])=><div className="detailRow" key={k}><span>{k}</span><b className={String(v).length>35?'mono wrap':''}>{unknown(v)}</b></div>)}</section>}
-function UsageDetail({data}:{data:{tenant:Tenant;usage:TenantUsage}}){const {tenant:t,usage:u}=data;return <div className="detailStack"><Detail title={t.name} rows={[['今日请求',u.daily_requests],['本月请求',u.monthly_requests],['今日 Tokens',u.daily_tokens],['本月 Tokens',u.monthly_tokens]]}/><section className="detailBox"><h3>配额</h3><Progress label="日 Token" used={u.daily_tokens} limit={t.daily_token_limit}/><Progress label="月 Token" used={u.monthly_tokens} limit={t.monthly_token_limit}/><Progress label="月请求" used={u.monthly_requests} limit={t.monthly_request_limit}/></section></div>}
-function Progress({label,used,limit}:{label:string;used:number;limit:number}){const pct=limit?Math.min(100,used/limit*100):0;return <div className="progress"><div><span>{label}</span><b>{fmt(used)} / {limit?fmt(limit):'不限'}</b></div><i><em style={{width:pct+'%'}}/></i></div>}
+function UsageDetail({data}:{data:{tenant:Tenant;usage:TenantUsage;effective?:EffectiveLimits}}){
+ const {tenant:t,usage:u,effective:e}=data
+ return <div className="detailStack">
+  <Detail title={t.name} rows={[['今日请求',u.daily_requests],['本月请求',u.monthly_requests],['今日 Tokens',u.daily_tokens],['本月 Tokens',u.monthly_tokens]]}/>
+  <section className="detailBox"><h3>配额（生效值）</h3>
+   <Progress label="日 Token" used={u.daily_tokens} limit={e?e.daily_token_limit:t.daily_token_limit}/>
+   <Progress label="月 Token" used={u.monthly_tokens} limit={e?e.monthly_token_limit:t.monthly_token_limit}/>
+   <Progress label="月请求" used={u.monthly_requests} limit={e?e.monthly_request_limit:t.monthly_request_limit}/>
+   {e&&<div className="formNote">{e.model_access_restricted
+     ?'可用模型：'+(e.allowed_models?.length?e.allowed_models.join('、'):'（已禁止全部模型）')
+     :'可用模型：不限（未配置白名单）'}</div>}
+  </section>
+ </div>
+}
+function Progress({label,used,limit}:{label:string;used:number;limit:number|null|undefined}){
+ // A null limit means "inherited from an ancestor that sets nothing", which is
+ // not the same as 0 ("unlimited"). Both end up with no bar, but the label has
+ // to say which one it is.
+ const unlimited=limit===null||limit===undefined||limit===0
+ const pct=unlimited?0:Math.min(100,used/limit*100)
+ const text=limit===null||limit===undefined?'继承上级':(limit===0?'不限额':fmt(limit))
+ return <div className="progress"><div><span>{label}</span><b>{fmt(used)} / {text}</b></div><i><em style={{width:pct+'%'}}/></i></div>
+}
 function Secret({value}:{value:string}){return <div className="secretBox"><AlertTriangle/><h3>请立即保存完整 Key</h3><p>完整 Key 只显示一次，刷新或关闭后无法再次查看。</p><code>{value}</code><button className="btn primary" onClick={()=>navigator.clipboard.writeText(value)}>复制 Key</button></div>}
 function TestForm({value,models,onTest}:{value:any;models:ModelConfig[];onTest:(m:string,p:string)=>void}){const [m,setM]=useState(value.model);const [p,setP]=useState('请只回复：MODEL_OK');return <Form onSubmit={()=>onTest(m,p)}><F label="对外模型"><select value={m} onChange={e=>setM(e.target.value)}>{models.filter(x=>x.status===1).map(x=><option key={x.id}>{x.alias}</option>)}</select></F><F label="Prompt"><textarea rows={5} value={p} onChange={e=>setP(e.target.value)}/></F></Form>}
 function TestResult({value:v}:{value:any}){return <div className="detailStack"><div className="secretBox success"><Zap/><h3>模型测试成功</h3><p>{v.content||'(空响应)'}</p></div><Detail title="调用指标" rows={[['Model',v.model],['Input Tokens',v.input_tokens],['Output Tokens',v.output_tokens],['Total Tokens',v.total_tokens],['Latency',ms(v.latency_ms||0)]]}/></div>}

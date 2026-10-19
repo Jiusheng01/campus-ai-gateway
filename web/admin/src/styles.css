@@ -58,6 +58,15 @@ main{max-width:1540px;margin:0 auto;padding:24px 28px 48px}.stack{display:flex;f
 
 .hint{font-size:9px;line-height:1.45;color:var(--muted);font-weight:500}
 
+/* Field-level validation feedback. Colour comes from the theme tokens so both
+   the light and dark palettes stay legible. */
+.err{font-size:9px;line-height:1.45;color:var(--bad);font-weight:600}
+.field.invalid>span{color:var(--bad)}
+input.invalid,select.invalid,textarea.invalid{border-color:var(--bad)}
+input.invalid:focus,select.invalid:focus,textarea.invalid:focus{
+  border-color:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 15%,transparent)
+}
+
 /* ------------------------------------------------------------------ */
 /* Authentication screens                                              */
 /* ------------------------------------------------------------------ */
@@ -91,3 +100,33 @@ main{max-width:1540px;margin:0 auto;padding:24px 28px 48px}.stack{display:flex;f
 .revealBtn:hover{color:var(--text);background:var(--soft)}
 .revealBtn:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
 .revealBtn svg{width:15px;height:15px}
+
+.rolePicker{display:flex;flex-wrap:wrap;gap:6px}
+.roleChip{border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:10px;display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted)}
+.roleChip input{width:auto;margin:0}
+.roleChip.on{border-color:color-mix(in srgb,var(--primary) 45%,var(--line));background:var(--primary-soft);color:var(--text)}
+.roleTags{display:flex;flex-wrap:wrap}
+.rowActions{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+
+/* --- tenant hierarchy ------------------------------------------------------ */
+/* The grid stays three columns, so depth is shown with an accent bar and a
+   branch mark rather than by indenting: an indent inside a grid cell would
+   shrink the card and read as a layout bug. */
+.tenantHead{display:flex;align-items:flex-start;gap:6px}
+.treeMark{color:var(--muted);font-size:12px;line-height:1.5;flex:none}
+.tenantCard.depth-0{border-left:3px solid var(--primary)}
+.tenantCard.depth-1{border-left:3px solid color-mix(in srgb,var(--primary) 62%,var(--line))}
+.tenantCard.depth-2{border-left:3px solid color-mix(in srgb,var(--primary) 38%,var(--line))}
+.tenantCard.depth-3,.tenantCard.depth-4{border-left:3px solid color-mix(in srgb,var(--primary) 20%,var(--line))}
+/* "inherited" is its own state, not a small number: it must not look like a value. */
+.quotaRows b.inherited{color:var(--muted);font-weight:600;font-style:italic}
+.formNote{border:1px solid var(--line);background:var(--soft);border-radius:9px;padding:9px 11px;font-size:10px;line-height:1.6;color:var(--muted)}
+.allocPanel{display:flex;flex-direction:column;gap:12px}
+.allocTarget{border:1px solid var(--line);border-radius:12px;padding:13px;background:var(--soft)}
+.allocTarget h3{margin:4px 0 0;font-size:15px}
+
+/* --- per-model quota pools -------------------------------------------------- */
+/* The three "easy to get wrong" notes. They are a list rather than a paragraph
+   because each one is a separate rule an operator will come back to look up. */
+.hintList{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:7px;font-size:11px;line-height:1.65;color:var(--muted)}
+.hintList b{color:var(--text)}

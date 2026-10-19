@@ -1,7 +1,86 @@
 export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;status:number}
 export type ModelConfig={id:string;alias:string;provider_id:string;provider_name:string;upstream_model:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
-export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number}
+// Tenant quota fields are tri-state, which is why they are nullable:
+//   null -> inherit from the nearest ancestor that sets a value
+//   0    -> explicitly unlimited
+//   >0   -> this tenant's own limit
+export type TenantQuotaValue=number|null
+export type Tenant={
+  id:string;code:string;name:string;status:number
+  kind:string
+  parent_id:string|null
+  path:string
+  depth:number
+  daily_token_limit:TenantQuotaValue
+  monthly_token_limit:TenantQuotaValue
+  monthly_request_limit:TenantQuotaValue
+  monthly_budget_micros:TenantQuotaValue
+  soft_token_limit:TenantQuotaValue
+  allowed_models:string[]|null
+  rpm_limit:number
+  tpm_limit:number
+}
+export type TenantKind='school'|'dept'|'teacher'|'student'|'tenant'
+
+// The full replacement payload for POST /admin/tenants/{id}/quota-allocations.
+// An omitted field means "inherit", the same as sending null.
+export type TenantAllocation={
+  daily_token_limit?:TenantQuotaValue
+  monthly_token_limit?:TenantQuotaValue
+  monthly_request_limit?:TenantQuotaValue
+  monthly_budget_micros?:TenantQuotaValue
+  soft_token_limit?:TenantQuotaValue
+  allowed_models?:string[]|null
+}
+
+// What a tenant actually gets once inheritance has been applied, as opposed to
+// what it explicitly sets. model_access_restricted separates "no allowlist
+// applies" (every model) from "an allowlist applies and it is empty" (no model).
+export type EffectiveLimits={
+  tenant_id:string
+  daily_token_limit:number
+  monthly_token_limit:number
+  monthly_request_limit:number
+  monthly_budget_micros:number
+  model_access_restricted:boolean
+  allowed_models:string[]|null
+  depth:number
+  path:string
+}
+// The per-model quota axis, alongside the tenant one. The same tri-state
+// convention applies to the limits: null inherits, 0 is unlimited, >0 is a cap.
+//
+// tenant_id is null for the system-wide pool of a model -- the pool shared by
+// the whole campus, which is also the root of the model chain. It is not
+// "no tenant": the two are different rows and the backend keys off exactly this
+// distinction.
+export type ModelQuota={
+  tenant_id:string|null
+  tenant_code?:string
+  tenant_name?:string
+  model_alias:string
+  daily_token_limit:TenantQuotaValue
+  monthly_token_limit:TenantQuotaValue
+}
+export type ModelQuotaAllocation={
+  tenant_id?:string|null
+  model_alias:string
+  daily_token_limit?:TenantQuotaValue
+  monthly_token_limit?:TenantQuotaValue
+}
+// The resolved view of one model for one tenant. set_by names the level the
+// value came from, so "I set 300 but it stops at 100" is answerable without a
+// database client; own distinguishes "I configured this" from "I was given it".
+export type EffectiveModelQuota={
+  model_alias:string
+  daily_token_limit:number
+  monthly_token_limit:number
+  set_by:string
+  own:boolean
+}
+export type ModelQuotaView={quota:ModelQuota;effective:EffectiveModelQuota[]}
+export type TenantAllocationView={tenant:Tenant;effective:EffectiveLimits;effective_models?:EffectiveModelQuota[]}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];rpm_limit:number;tpm_limit:number;max_concurrency:number;route_group:string}
 export type RequestLog={request_id:string;tenant_id:string;api_key_id:string;client_ip:string;requested_model:string;actual_model:string;provider:string;upstream_model:string;route_priority:number;attempts:number;failover:boolean;stream:boolean;input_tokens:number;output_tokens:number;total_tokens:number;latency_ms:number;status_code:number;error_code:string;created_at:string}
@@ -203,4 +282,113 @@ export async function whoami(){
 
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
+}
+
+// --- account administration ------------------------------------------------
+//
+// Reachable only by a super_admin. The server refuses every other role with a
+// 403, so hiding the menu entry is a convenience, not the security boundary.
+
+export type AdminAccount={
+  id:string
+  username:string
+  display_name:string
+  roles:string[]
+  status:number
+  // null means the account reaches every tenant.
+  scope_tenant_id:string|null
+  last_login_at:string
+  created_at:string
+}
+
+export const ADMIN_ROLES=['super_admin','gateway_admin','tenant_admin','auditor','operator'] as const
+
+// ROLE_LABELS is what the operator sees. The stored values stay in English so
+// they line up with the server-side allow-list.
+export const ROLE_LABELS:Record<string,string>={
+  super_admin:'超级管理员',
+  gateway_admin:'网关运维',
+  tenant_admin:'租户管理',
+  auditor:'审计只读',
+  operator:'值班操作',
+}
+
+export function roleLabel(role:string){return ROLE_LABELS[role]||role}
+
+export async function listAdminUsers(){
+  const d=await api<{data:AdminAccount[]}>('/admin/admin-users')
+  return d.data||[]
+}
+
+export async function createAdminUser(input:{username:string;display_name:string;password:string;roles:string[];scope_tenant_id?:string|null}){
+  return api<AdminAccount>('/admin/admin-users',{method:'POST',body:JSON.stringify(input)})
+}
+
+export async function updateAdminUser(id:string,input:{roles?:string[];status?:number}){
+  return api<AdminAccount>(`/admin/admin-users/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify(input)})
+}
+
+// setAdminUserScope lives on its own route rather than in the PATCH body: a
+// pointer field cannot tell "clear the scope" apart from "leave it alone", and
+// here that difference is between confining an account and granting it global
+// reach.
+export async function setAdminUserScope(id:string,scopeTenantId:string|null){
+  return api<AdminAccount>(`/admin/admin-users/${encodeURIComponent(id)}/scope`,{
+    method:'POST',body:JSON.stringify({scope_tenant_id:scopeTenantId}),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Tenant hierarchy
+// ---------------------------------------------------------------------------
+
+export const TENANT_KINDS=['school','dept','teacher','student','tenant'] as const
+
+export const TENANT_KIND_LABELS:Record<string,string>={
+  school:'学校',
+  dept:'院系',
+  teacher:'教师',
+  student:'学生',
+  tenant:'通用',
+}
+
+export function tenantKindLabel(kind:string){return TENANT_KIND_LABELS[kind]||kind}
+
+export async function getTenantAllocation(id:string){
+  return api<TenantAllocationView>(`/admin/tenants/${encodeURIComponent(id)}/quota-allocations`)
+}
+
+export async function allocateTenantQuota(id:string,input:TenantAllocation){
+  return api<TenantAllocationView>(`/admin/tenants/${encodeURIComponent(id)}/quota-allocations`,{
+    method:'POST',body:JSON.stringify(input),
+  })
+}
+
+export async function moveTenant(id:string,parentId:string|null){
+  return api<Tenant>(`/admin/tenants/${encodeURIComponent(id)}/move`,{
+    method:'POST',body:JSON.stringify({parent_id:parentId}),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Per-model quota pools
+// ---------------------------------------------------------------------------
+
+export async function listModelQuotas(){
+  const r=await api<{data:ModelQuota[]}>('/admin/model-quotas')
+  return r.data
+}
+
+export async function upsertModelQuota(input:ModelQuotaAllocation){
+  return api<ModelQuotaView>('/admin/model-quotas',{method:'PUT',body:JSON.stringify(input)})
+}
+
+// Deleting a row is how a subject goes back to inheriting, so removal is a
+// first-class operation rather than "set it to null". An absent tenant_id means
+// the system-wide pool -- the same meaning it has on write.
+export async function deleteModelQuota(tenantId:string|null,modelAlias:string){
+  const q=new URLSearchParams()
+  if(tenantId)q.set('tenant_id',tenantId)
+  q.set('model_alias',modelAlias)
+  return api<{removed:boolean}>(`/admin/model-quotas?${q.toString()}`,{method:'DELETE'})
 }
