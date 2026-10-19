@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -254,20 +255,20 @@ func (r *TenantQuotaReservation) Refund(ctx context.Context) error {
 	return err
 }
 
-func (l *Limiter) AllowRPM(ctx context.Context, keyID string, limit int64) (bool, error) {
+func (l *Limiter) AllowRPM(ctx context.Context, tenantID string, limit int64) (bool, error) {
 	if limit <= 0 {
 		return true, nil
 	}
-	key := fmt.Sprintf("gw:rl:key:%s:rpm:%s", keyID, minuteBucket())
+	key := fmt.Sprintf("gw:rl:tenant:%s:rpm:%s", tenantID, minuteBucket())
 	n, err := incrementScript.Run(ctx, l.rdb, []string{key}, 1, 120).Int64()
 	return n <= limit, err
 }
 
-func (l *Limiter) ReserveTPM(ctx context.Context, keyID string, amount, limit int64) (*TPMReservation, bool, error) {
+func (l *Limiter) ReserveTPM(ctx context.Context, tenantID string, amount, limit int64) (*TPMReservation, bool, error) {
 	if amount <= 0 || limit <= 0 {
 		return nil, true, nil
 	}
-	key := fmt.Sprintf("gw:rl:key:%s:tpm:%s", keyID, minuteBucket())
+	key := fmt.Sprintf("gw:rl:tenant:%s:tpm:%s", tenantID, minuteBucket())
 	n, err := incrementScript.Run(ctx, l.rdb, []string{key}, amount, 120).Int64()
 	if err != nil {
 		return nil, false, err
@@ -303,22 +304,77 @@ func (r *TPMReservation) Refund(ctx context.Context) error {
 	return err
 }
 
-func (l *Limiter) AcquireConcurrency(ctx context.Context, keyID string, limit int64) (func(), bool, error) {
+// concurrencySlotLease bounds how long a slot is held before it is reclaimed,
+// even if the holder never releases it (a crashed process, a wedged request).
+// It has to exceed the longest legitimate request — a long SSE stream runs far
+// past the per-attempt timeout — so a slot is not reaped while still in use and
+// re-issued to someone else.
+const concurrencySlotLease = 15 * time.Minute
+
+// concurrencySlotKey is the sorted set holding one tenant's in-flight slots. It
+// is scoped to the Tenant, not the key: the Tenant is the concurrency boundary
+// (ADR-0015), so every key it owns draws from the same pool.
+func concurrencySlotKey(tenantID string) string {
+	return "gw:concurrency:tenant:" + tenantID
+}
+
+// acquireConcurrencySlotScript reserves one slot atomically.
+//
+// A sorted set keyed by member, scored by expiry, replaces the old
+// INCR/EXPIRE/DECR sequence. That sequence was three round trips and could not
+// be made right: a crash between INCR and EXPIRE leaked a slot forever, a
+// failed release left the count too high, and a release after the TTL had
+// lapsed drove it negative. Here the reap (ZREMRANGEBYSCORE), the count
+// (ZCARD), the decision and the reservation (ZADD) happen in one script, and a
+// slot disappears on its own at its deadline — so the count can never go below
+// zero and a dead holder cannot pin a slot.
+var acquireConcurrencySlotScript = redis.NewScript(`
+local now = tonumber(ARGV[1])
+local lease = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if redis.call('ZCARD', KEYS[1]) >= limit then
+  return 0
+end
+redis.call('ZADD', KEYS[1], now + lease, ARGV[4])
+redis.call('PEXPIRE', KEYS[1], lease)
+return 1
+`)
+
+// releaseConcurrencySlotScript frees a slot. ZREM on a member that is not there
+// is a no-op, so releasing twice — or releasing after the slot was reaped — is
+// harmless, and the set can never count below zero.
+var releaseConcurrencySlotScript = redis.NewScript(`
+redis.call('ZREM', KEYS[1], ARGV[1])
+if redis.call('ZCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1])
+end
+return 1
+`)
+
+// AcquireConcurrencySlot reserves one Concurrency Slot for the tenant and
+// returns a release function.
+//
+// A limit of zero means unlimited. When Redis is unreachable the call returns an
+// error and no slot; the caller must treat that as a refusal (fail-closed, per
+// ADR-0007), because admitting on a shared-state failure would let an outage
+// turn into unbounded upstream load.
+func (l *Limiter) AcquireConcurrencySlot(ctx context.Context, tenantID string, limit int64) (func(), bool, error) {
 	if limit <= 0 {
 		return func() {}, true, nil
 	}
-	key := fmt.Sprintf("gw:concurrency:key:%s", keyID)
-	n, err := l.rdb.Incr(ctx, key).Result()
+	key := concurrencySlotKey(tenantID)
+	member := uuid.NewString()
+	allowed, err := acquireConcurrencySlotScript.Run(ctx, l.rdb, []string{key},
+		time.Now().UnixMilli(), concurrencySlotLease.Milliseconds(), limit, member).Int()
 	if err != nil {
 		return nil, false, err
 	}
-	_ = l.rdb.Expire(ctx, key, 15*time.Minute).Err()
-	if n > limit {
-		_ = l.rdb.Decr(ctx, key).Err()
+	if allowed != 1 {
 		return nil, false, nil
 	}
 	release := func() {
-		_ = l.rdb.Decr(context.Background(), key).Err()
+		_ = releaseConcurrencySlotScript.Run(context.Background(), l.rdb, []string{key}, member).Err()
 	}
 	return release, true, nil
 }

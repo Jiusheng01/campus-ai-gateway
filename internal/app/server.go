@@ -488,7 +488,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, err = s.limit.AllowRPM(r.Context(), id.APIKeyID, id.RPMLimit)
+	allowed, err = s.limit.AllowRPM(r.Context(), id.TenantID, id.RPMLimit)
 	if err != nil || !allowed {
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "rpm_exceeded", ClientIP: s.clientIPFrom(r)})
 		httpx.Error(aw, http.StatusTooManyRequests, "rate_limit_exceeded", "Request rate limit exceeded", reqID)
@@ -557,7 +557,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(aw, http.StatusTooManyRequests, "tenant_token_quota_exceeded", "Tenant token quota exceeded", reqID)
 		return
 	}
-	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.APIKeyID, reserveAmount, id.TPMLimit)
+	reservation, allowed, err = s.limit.ReserveTPM(r.Context(), id.TenantID, reserveAmount, id.TPMLimit)
 	if err != nil || !allowed {
 		_ = tenantReservation.Refund(r.Context())
 		s.recordSecurityEvent(r, model.SecurityEvent{RequestID: reqID, TenantID: id.TenantID, APIKeyID: id.APIKeyID, EventType: "tpm_exceeded", ClientIP: s.clientIPFrom(r), RequestedModel: envelope.Model})
@@ -565,7 +565,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	release, allowed, err := s.limit.AcquireConcurrency(r.Context(), id.APIKeyID, id.MaxConcurrency)
+	release, allowed, err := s.limit.AcquireConcurrencySlot(r.Context(), id.TenantID, id.MaxConcurrency)
 	if err != nil || !allowed {
 		_ = reservation.Refund(r.Context())
 		_ = tenantReservation.Refund(r.Context())
