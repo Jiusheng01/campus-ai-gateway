@@ -17,7 +17,7 @@ One OpenAI-compatible endpoint in front of many model providers, with tenants, A
 - **One API, many providers.** Callers keep speaking `/v1/chat/completions`. The gateway resolves the virtual model to a provider, injects that channel's credential and streams the answer back untouched.
 - **The Tenant is the boundary.** Quota, rate limits (RPM / TPM / concurrency) and audit are defined on the Tenant, so a department has one budget rather than one per API key.
 - **Routing that survives a bad channel.** Priority bands, smooth weighted round-robin inside a band, a per-provider circuit breaker that skips a failing channel, and a recorded attempt chain for every request.
-- **Built to be audited.** Business request logs, admin audit and security events are separate records with separate durability guarantees, and no upstream response body is ever written (ADR-0004, ADR-0009).
+- **Built to be audited.** Business request logs, admin audit and security events are separate records with separate durability guarantees, and no upstream response body is ever written. Keeping them apart is deliberate; the [design page](doc/design.md) says which is which.
 
 ---
 
@@ -53,7 +53,7 @@ Data:
   Redis      -> RPM / TPM / concurrency / login throttle
 ```
 
-There is exactly one data plane, implemented in-process: the gateway resolves the model against `gateway_model_route`, injects the channel credential, streams the response, and fails over by priority. It needs PostgreSQL and Redis and nothing else.
+There is exactly one data plane, implemented in-process: the gateway resolves the virtual model against the routes you configured, injects the channel credential, streams the response, and fails over by priority. It needs PostgreSQL and Redis and nothing else.
 
 ---
 
@@ -69,15 +69,15 @@ There is exactly one data plane, implemented in-process: the gateway resolves th
 | Direct data plane | ✅ | the only data plane: priority failover, weighted routing, circuit breaker |
 | Weighted routing | ✅ | smooth weighted round-robin inside a `Route Priority` band |
 | Circuit breaker | ✅ | per provider, closed / open / half-open, instance-local |
-| Per-attempt telemetry | ✅ | every Routing Attempt in `gateway_request_attempt`, shown as an attempt chain |
+| Per-attempt telemetry | ✅ | every routing attempt is recorded, and the console shows the chain for a request |
 | Provider / virtual model / route control plane | ✅ | one virtual model can bind many provider routes |
-| Request ID / request audit | ✅ | PostgreSQL `gateway_request_log` |
+| Request ID / request audit | ✅ | every business request recorded: model, channel, tokens, latency, outcome |
 | SSE transparent proxy | ✅ | streaming responses are not buffered |
 | Admin UI | ✅ | React + TypeScript + Vite, built output embedded into the Go binary |
 | Admin session auth v2 | ✅ | first-run setup, password login, access + refresh, device sessions |
 | Unified accounts & registration | ✅ | public sign-up creates a `member`; only a super admin grants admin roles |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
-| trusted-header / campus SSO boundary | ✅* | gateway side complete; a real campus IdP is still to be accepted |
+| trusted-header / campus SSO boundary | ✅ | gateway side complete; a real campus IdP is still to be accepted |
 | Admin audit / security events | ✅ | kept separate from business request logs |
 | Prometheus / health checks | ✅ | `/healthz`, `/readyz`, `/metrics` |
 | 30,000 RPM | 🧊 frozen | k6 tooling exists; the performance target awaits a representative environment |

@@ -26,7 +26,7 @@
 | `REDIS_PASSWORD` | Redis 密码 | 否 | 空 |
 | `REDIS_DB` | Redis DB 序号 | 否 | `0` |
 | `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥 | 是 | 无 |
-| `DATA_PLANE` | 数据面选择，只接受 `direct` | 否 | `direct` |
+| `DATA_PLANE` | 数据面选择。只接受 `direct`；`auto` 与留空同样解析为 `direct`（`thinkwatch` / `shadow` 已随该数据面一起移除，写了会启动失败） | 否 | `direct` |
 
 ### 管理员认证与会话
 
@@ -79,7 +79,7 @@
 
 | 变量 | 用途 | 必填 | 默认值 |
 | --- | --- | --- | --- |
-| `TEST_DATABASE_URL` | 集成测试使用的 PostgreSQL 连接串 | 仅测试 | `postgres://campus:campus@127.0.0.1:5432/campus_gateway_test?sslmode=disable` |
+| `TEST_DATABASE_URL` | 集成测试使用的 PostgreSQL 连接串（默认值**随测试包不同**：`internal/storage` 与 `internal/migrate` 用 `campus_gateway_test`，`internal/app` 用 `campus_gateway_app_test`） | 仅测试 | 见左 |
 | `TEST_REDIS_ADDR` | 集成测试使用的 Redis 地址 | 仅测试 | `127.0.0.1:6379` |
 
 两个测试变量由 `.github/workflows/ci.yml` 在 CI 中以 service 形式提供；本地不设时依赖数据库的集成测试会 SKIP。
@@ -102,7 +102,7 @@ Provider 只保存：
 
 协议字段：直连数据面只讲 OpenAI 格式，只接受 `openai-chat`；保存 `anthropic` / `gemini` 渠道会被拒绝。
 
-内置模板包括：
+Provider 模板包括：
 
 | Provider | Base URL | Credential Env |
 | --- | --- | --- |
@@ -177,3 +177,16 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 渠道的"凭据环境变量名"只允许指向第三方凭据，**不允许指向网关自用的变量**（`ADMIN_*` / `API_KEY_*` / `DATABASE_*` / `REDIS_*` 等）。数据面在请求时才用 `os.Getenv(名字)` 取值并发往渠道 `base_url`，因此一个能编辑渠道的人如果可以把名字指成网关自己的密钥，就等于可以读走该密钥；这条约束在保存渠道时就拒绝（`validateCredentialEnv`）。
 
 管理员认证不依赖浏览器 localStorage。
+
+---
+
+## 配额与限流：不在环境变量里
+
+这两样都**按 Tenant 在管理台设置**，不是启动参数：
+
+- **Quota（日 / 月用量上限）**：`daily_token_limit`、`monthly_token_limit`、`monthly_request_limit`。定义在 Tenant 上，同租户的**所有 API Key 共享**一份；**0 表示不限**。用量以 `gateway_request_log` 为唯一权威来源，Redis 里的计数只是它可重建的投影。
+- **Rate Limit（每分钟上限与并发）**：`rpm_limit`、`tpm_limit`、`max_concurrency`。同样定义在 Tenant 上，由 Redis 在请求时刻判定，没有持久真相。
+
+两者正交：Quota 管"这个月能用多少"，Rate Limit 管"此刻能打多快"。
+
+> 每个 Key 上还有 `route_group`，以及 Tenant 上的 `monthly_budget_micros`：这两个字段仍在库表与 API 中，但**数据面不读取**，所以管理台已不再提供编辑。详见[已知限制](design.md)。

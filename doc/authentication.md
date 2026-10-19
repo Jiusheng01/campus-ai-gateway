@@ -63,7 +63,7 @@ User
 ├── member          公开注册创建，无管理权限
 ├── auditor         只读观测
 ├── operator        运行状态与模型连通测试
-├── tenant_admin    Phase 1 起不授予任何权限（全局形态已撤回，等同 member）
+├── tenant_admin    暂不授予任何权限（等同 member），待租户内部成员模型落地后启用
 ├── gateway_admin   渠道、模型与线路
 └── super_admin      只能通过首次 Setup 创建，或由现有 super_admin 授予
 ```
@@ -173,7 +173,7 @@ Campus AI Gateway RBAC
 | `gateway_admin` | `/admin/providers*`、`/admin/models*`、`/admin/model-routes*`、`/admin/model-test`、`/admin/model-test-options`、`/admin/status`、`/admin/status/trend` |
 | `operator` | `GET /admin/status`、`GET /admin/status/trend`、`GET /admin/model-test-options`、`POST /admin/model-test`。连通测试是诊断而非编辑：operator 可以跑测试并从收窄的选项列表里选模型，但不能读写模型配置本身 |
 | `auditor` | 仅 `GET`：`/admin/status`、`/admin/status/trend`、`/admin/request-logs*`、`/admin/admin-audit`、`/admin/security-events` |
-| `tenant_admin` | 不做任何授权（没有 tenant_admin 分支）。其全局形态会无范围地放开所有租户与 API Key，因此确认后的设计是把 `tenant_admin` 放进租户**内部**；在该成员模型存在之前没有正确的授权范围，所以该角色**不授予任何权限**而不是授予全部。持有该值的账号处于管理上惰性状态，可由 super_admin 重新分配 |
+| `tenant_admin` | 不授予任何权限。它本意是"某个租户自己的管理员"，但租户内部的成员模型还没做——以全局形态放开就会无范围地覆盖所有租户与 API Key。在正确的授权范围存在之前，这个角色**什么都不授予**（等同 member），而不是授予全部；持有该角色的账号可由 super_admin 重新分配 |
 | `member` | 仅自助接口，无任何管理权限 |
 
 `/admin/status/trend` 与 `/admin/status` 被显式分开列出，而不是用前缀规则覆盖：这样以后该路径下新增的端点必须自己说明授权理由。

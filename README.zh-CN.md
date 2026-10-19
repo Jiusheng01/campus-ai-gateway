@@ -16,8 +16,8 @@
 
 - **一个 API，多个供应商。** 调用方始终只说 `/v1/chat/completions`。网关把虚拟模型解析成 Provider，注入该渠道的凭据，并把响应原样流式回传。
 - **以 Tenant 为边界。** 配额、限流（RPM / TPM / 并发）与审计都定义在 Tenant 上，所以一个院系是一份预算，而不是每把 key 一份。
-- **渠道出问题也扛得住。** 按 `Route Priority` 分带、带内做 smooth weighted round-robin、per-provider 熔断跳过故障渠道，并为每个请求留下完整的 attempt chain。
-- **为审计而设计。** 业务请求日志、管理审计与安全事件是三张彼此分离的记录，耐久级别不同；任何上游响应内容都不会落库（ADR-0004、ADR-0009）。
+- **渠道出问题也扛得住。** 按 `Route Priority` 分组、同组内做 smooth weighted round-robin、per-provider 熔断跳过故障渠道，并为每个请求留下完整的 attempt chain。
+- **为审计而设计。** 业务请求日志、管理审计与安全事件是三张彼此分离的记录，耐久级别不同；任何上游响应内容都不会写入数据库。分开是有意的，[设计页](doc/design.md)说明了各自记什么。
 
 ---
 
@@ -53,7 +53,7 @@
   Redis      -> RPM / TPM / 并发 / 登录限流
 ```
 
-数据面**只有一个**，在网关进程内实现：按 `gateway_model_route` 解析模型、注入渠道凭据、流式回传，并按优先级故障切换。因此只需要 PostgreSQL 与 Redis，别无他物。
+数据面**只有一个**，在网关进程内实现：按你配置的线路解析虚拟模型、注入渠道凭据、流式回传，并按优先级故障切换。因此只需要 PostgreSQL 与 Redis，别无他物。
 
 ---
 
@@ -67,17 +67,17 @@
 | 模型 / IP 白名单 | ✅ | 每个业务 Key 独立 |
 | RPM / TPM / 最大并发 | ✅ | Redis；Token 预占后按最终 usage reconcile |
 | 直连数据面 | ✅ | 唯一数据面：按优先级故障切换、加权路由、熔断 |
-| 加权路由 | ✅ | 同一 `Route Priority` 带内做 smooth weighted round robin |
+| 加权路由 | ✅ | 同一 `Route Priority` 分组内做 smooth weighted round robin |
 | 熔断 | ✅ | per-provider，closed / open / half-open，每实例独立 |
-| 逐次 attempt 遥测 | ✅ | 每次 Routing Attempt 落 `gateway_request_attempt`，请求详情展示 attempt chain |
-| Provider / 虚拟模型 / Route 控制面 | ✅ | 一个虚拟模型可绑定多条 Provider 路线 |
-| Request ID / 请求审计 | ✅ | PostgreSQL `gateway_request_log` |
+| 逐次 attempt 遥测 | ✅ | 每次 Routing Attempt 都被记录，请求详情展示完整 attempt chain |
+| Provider / 虚拟模型 / Route 控制面 | ✅ | 一个虚拟模型可绑定多条线路 |
+| Request ID / 请求审计 | ✅ | 每个业务请求都被记录：模型、渠道、Token、延迟、结果 |
 | SSE 透明代理 | ✅ | 流式响应不被缓冲 |
 | Admin UI | ✅ | React + TypeScript + Vite，构建产物嵌入 Go 二进制 |
 | 管理员会话认证 v2 | ✅ | 首次 Setup、账号密码登录、Access + Refresh、设备会话 |
 | 统一账户与开放注册 | ✅ | 公开注册只创建 `member`；管理角色仅由 super_admin 授予 |
 | RBAC | ✅ | `super_admin / gateway_admin / tenant_admin / auditor / operator` |
-| trusted-header / 校园 SSO 边界 | ✅* | 网关侧完成；学校真实 IdP 待验收 |
+| trusted-header / 校园 SSO 边界 | ✅ | 网关侧完成；学校真实 IdP 待验收 |
 | 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
 | Prometheus / 健康检查 | ✅ | `/healthz`、`/readyz`、`/metrics` |
 | 30,000 RPM | 🧊 冻结 | k6 工具已就绪；性能目标等代表性环境实测 |
@@ -132,10 +132,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ## 文档
 
-- **[配置与凭据](doc/configuration.md)** —— 环境变量、渠道模板、凭据约束、生产密钥。
+- **[配置与凭据](doc/configuration.md)** —— 环境变量、Provider 模板、凭据约束、生产密钥。
 - **[认证与账号](doc/authentication.md)** —— 首次 Setup、会话、注册、RBAC、trusted-header / 校园 SSO。
 - **[运维](doc/operations.md)** —— 本地开发、数据库迁移、管理台构建、测试与验收。
-- **[设计、限制与路线](doc/design.md)** —— 数据面、记录模型、已知限制与下一步。
+- **[设计、限制与路线图](doc/design.md)** —— 数据面、记录模型、已知限制与下一步。
 
 ---
 

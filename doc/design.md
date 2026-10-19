@@ -1,4 +1,4 @@
-[← 返回 README](../README.md) · 数据面设计与路线
+[← 返回 README](../README.md) · 数据面设计与路线图
 
 本页讲的是网关内部形状与边界：整体架构与唯一的直连数据面（加权路由 / 熔断 / 逐次 attempt 遥测）、请求记录与管理审计的分离、当前已知限制，以及 Roadmap 与项目定位。
 
@@ -46,9 +46,9 @@ Go Gateway 是校园侧控制面和访问控制边界。模型路由与数据面
 
 - **加权路由**：同一 `Route Priority` 内按 `Route Weight` 做 smooth weighted round robin，权重是真实分流比例（不再是排序用的 tiebreak）。
 - **per-provider 熔断**：连续 5 次失败**或**最近 20 次内失败率 >50% 即 open；冷却 30s，失败的探测翻倍至 5 分钟上限；half-open 只放行一个探测。open 的渠道被跳过并在 attempt chain 里记为 `skipped`。熔断状态是**每实例、内存中**的。
-- **逐次 attempt 遥测**：每次 Routing Attempt 落 `gateway_request_attempt`，管理台的请求详情展示完整 attempt chain（含被跳过的线路）。
+- **逐次 attempt 遥测**：每次 Routing Attempt 都写入 `gateway_request_attempt`，管理台的请求详情展示完整 attempt chain（含被熔断跳过的线路）。
 
-Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，模型连通测试由网关直接向渠道发起请求，并在结果中回报实际应答的渠道。
+Admin UI 的「基础设施状态」面板第 4 项显示为「数据面」，模型连通测试由网关直接向渠道发起请求，并在结果中回报实际应答的渠道。
 
 直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
 
@@ -92,13 +92,13 @@ gateway_request_log
 
 逐次 attempt 的明细单独落在 `gateway_request_attempt`（每次 Routing Attempt 一行：`attempt_no` / `provider` / `upstream_model` / `outcome` / `status_code` / `latency_ms` / `error_kind`），由 `request_id` 关联到请求记录。
 
-路由事实字段不会由 Gateway 猜测：每次 Routing Attempt 由网关自己落库，Provider / attempts 等字段以这份遥测为准。
+请求记录里的 Provider / attempts 等字段不会由网关猜测：每次 Routing Attempt 由网关自己写入数据库，这些字段以这份记录为准。
 
 ---
 
 ## 当前已知限制
 
-> 标注 **🧊 冻结** 的条目不在当前迭代范围内（见 README 顶部说明）。
+> 标注 **🧊 冻结** 的条目不在当前迭代范围内（见 README 的 Status 一节）。
 
 - 🧊 冻结：完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
 - 直连数据面的加权路由轮换与熔断状态是**每实例、内存中**的：多实例部署各自独立，重启只重置轮换与熔断；跨实例共享状态尚未实现。

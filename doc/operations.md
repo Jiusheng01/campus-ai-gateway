@@ -56,8 +56,7 @@ cd D:\AI\campus-ai-gateway
 
 ## 数据库迁移
 
-Schema 由独立命令管理，`dev.ps1` / `setup.ps1` 与 Docker Compose 栈（一次性 `migrate`
-服务门禁）都调用同一实现：
+Schema 由独立命令管理，`dev.ps1` / `setup.ps1` 与 Docker Compose 栈里那个**启动前先跑一次的 migrate 服务**都调用同一实现：
 
 ```powershell
 go run ./cmd/migrate -database-url "postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslmode=disable" -migrations .\migrations
