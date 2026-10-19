@@ -53,6 +53,15 @@ type Server struct {
 	routeCache routeTable
 	routeAt    time.Time
 	transport  *transportPool
+
+	// selector advances the smooth-weighted-round-robin rotation that picks
+	// which line of a priority band starts a request. In-memory scheduling
+	// state; losing it on restart only resets the rotation.
+	selector *routeSelector
+
+	// breaker is the per-provider circuit: a channel that keeps failing is
+	// skipped for a cooldown instead of being tried on every request.
+	breaker *circuitBreaker
 }
 
 type requestEnvelope struct {
@@ -152,8 +161,21 @@ func NewServer(cfg Config) (*Server, error) {
 		log.Printf("data plane: ThinkWatch Core at %s", cfg.ThinkWatchURL)
 	} else {
 		s.upstream = http.HandlerFunc(s.serveDirect)
-		s.transport = &transportPool{}
 		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
+	}
+	// The direct plane's state is built whenever it will be consulted. As the
+	// serving plane it needs the transports and the breaker too; as the shadow it
+	// consults only the rotation, because it dials nothing and has nothing to
+	// break on.
+	if !cfg.UsesThinkWatch() {
+		s.transport = &transportPool{}
+		s.selector = newRouteSelector()
+		s.breaker = newCircuitBreaker()
+	} else if cfg.ShadowDirect() {
+		s.selector = newRouteSelector()
+	}
+	if cfg.ShadowDirect() {
+		log.Printf("data plane: shadow — ThinkWatch serves, the direct plane records the chain it would have tried")
 	}
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
@@ -435,6 +457,8 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aw := &auditResponseWriter{ResponseWriter: w}
+	attempts := newAttemptRecorder()
+	r = r.WithContext(withAttemptRecorder(r.Context(), attempts))
 	var envelope requestEnvelope
 	var reservation *ratelimit.TPMReservation
 	var tenantReservation *ratelimit.TenantQuotaReservation
@@ -479,6 +503,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_ = s.pg.InsertRequestLog(ctx, log)
+		// The Routing Attempt chain, recorded by the data plane into the
+		// request-scoped recorder. Best-effort: a request that answered must not
+		// fail because its telemetry write did (ADR-0004 allows the loss).
+		_ = s.pg.InsertRequestAttempts(ctx, reqID, attempts.list())
 	}()
 
 	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
@@ -558,6 +586,13 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Shadow mode: ThinkWatch serves the request below, but the direct plane
+	// records the chain it would have tried, so the two decisions can be
+	// compared for the same request id before the cutover. It is recorded after
+	// the admission gates (see below), so a request the gateway itself refused
+	// never enters the comparison.
+
+
 	reserveAmount := estimateTPM(body, envelope)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
 	if err != nil {
@@ -597,6 +632,16 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+
+	// Past every admission gate: this request will actually be served, so it is
+	// the set the shadow comparison should cover. Recording it earlier would
+	// sample requests the gateway refused for quota or rate limits, which have
+	// no ThinkWatch channel to compare against and would read as disagreements.
+	if s.cfg.ShadowDirect() {
+		for _, a := range s.shadowChain(r.Context(), envelope.Model) {
+			attempts.record(a)
+		}
+	}
 
 	s.upstream.ServeHTTP(aw, r)
 }
@@ -763,21 +808,33 @@ func (t routeTelemetry) Failover() bool {
 	return t.Attempts > 1
 }
 
+// parseRouteTelemetry reads the data plane's attribution off the response.
+//
+// It accepts both the X-Gateway-* names the direct plane writes and the legacy
+// X-ThinkWatch-* names, because ThinkWatch is still a supported data plane and
+// reports through its own headers; without the fallback, switching back to it
+// would silently blank the request log's routing fields.
 func parseRouteTelemetry(h http.Header) routeTelemetry {
+	get := func(gateway, legacy string) string {
+		if v := strings.TrimSpace(h.Get(gateway)); v != "" {
+			return v
+		}
+		return strings.TrimSpace(h.Get(legacy))
+	}
 	v := routeTelemetry{
-		Provider:      strings.TrimSpace(h.Get("X-ThinkWatch-Provider")),
-		UpstreamModel: strings.TrimSpace(h.Get("X-ThinkWatch-Upstream-Model")),
+		Provider:      get(headerProvider, legacyHeaderProvider),
+		UpstreamModel: get(headerUpstreamModel, legacyHeaderUpstreamModel),
 	}
-	// Compatibility fallback: current ThinkWatch Core exposes the resolved
-	// provider name as X-ThinkWatch-Upstream. It is a provider, not an upstream
-	// model, so it must not be read into UpstreamModel.
+	// ThinkWatch reports the resolved provider name as X-ThinkWatch-Upstream. It
+	// is a provider, not an upstream model, so it must not be read into
+	// UpstreamModel.
 	if v.Provider == "" {
-		v.Provider = strings.TrimSpace(h.Get("X-ThinkWatch-Upstream"))
+		v.Provider = strings.TrimSpace(h.Get(legacyHeaderUpstream))
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-ThinkWatch-Route-Priority"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerRoutePriority, legacyHeaderRoutePriority)); err == nil && n > 0 {
 		v.RoutePriority = n
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("X-ThinkWatch-Attempts"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerAttempts, legacyHeaderAttempts)); err == nil && n > 0 {
 		v.Attempts = n
 	}
 	return v

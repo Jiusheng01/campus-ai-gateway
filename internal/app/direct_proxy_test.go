@@ -29,6 +29,8 @@ func newDirectTestServer(t *testing.T, table routeTable) *Server {
 		routeCache: table,
 		routeAt:    time.Now(),
 		transport:  &transportPool{},
+		selector:   newRouteSelector(),
+		breaker:    newCircuitBreaker(),
 	}
 }
 
@@ -77,15 +79,16 @@ func TestAssembleRouteTableSkipsUnroutableEntries(t *testing.T) {
 	}
 }
 
-func TestAssembleRouteTableOrdersByPriorityThenWeight(t *testing.T) {
+func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 	providers := []model.Provider{
 		{ID: "p1", Name: "primary", BaseURL: "https://a.test/v1", CredentialEnv: "K1", Status: 1},
 		{ID: "p2", Name: "backup-a", BaseURL: "https://b.test/v1", CredentialEnv: "K2", Status: 1},
 		{ID: "p3", Name: "backup-b", BaseURL: "https://c.test/v1", CredentialEnv: "K3", Status: 1},
 	}
 	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", Status: 1}}
-	// Deliberately declared out of order, and with the lighter line first, so
-	// neither priority nor weight can pass by accident.
+	// Deliberately declared out of order, and with the lighter line first. The
+	// weight must NOT reorder the band any more: it is the smooth weighted round
+	// robin's input (orderRoutes), not a sort key. Only priority moves lines.
 	routesByModel := map[string][]model.ModelRoute{
 		"m1": {
 			{ModelID: "m1", ProviderID: "p3", UpstreamModel: "x", Priority: 2, Weight: 50, Status: 1},
@@ -99,7 +102,9 @@ func TestAssembleRouteTableOrdersByPriorityThenWeight(t *testing.T) {
 	for i, r := range routes {
 		got[i] = r.Provider
 	}
-	want := []string{"primary", "backup-a", "backup-b"}
+	// Priority 1 first; within priority 2 the declaration order is kept
+	// (backup-b was declared before backup-a), because weight no longer sorts.
+	want := []string{"primary", "backup-b", "backup-a"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("line order = %v, want %v", got, want)
 	}
@@ -237,13 +242,13 @@ func TestServeDirectFailsOverToTheSecondChannel(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-ThinkWatch-Provider"); got != "backup" {
+	if got := rec.Header().Get(headerProvider); got != "backup" {
 		t.Fatalf("provider attribution = %q, want backup", got)
 	}
-	if got := rec.Header().Get("X-ThinkWatch-Attempts"); got != "2" {
+	if got := rec.Header().Get(headerAttempts); got != "2" {
 		t.Fatalf("attempts = %q, want 2", got)
 	}
-	if got := rec.Header().Get("X-ThinkWatch-Upstream-Model"); got != "qwen-plus" {
+	if got := rec.Header().Get(headerUpstreamModel); got != "qwen-plus" {
 		t.Fatalf("upstream model = %q, want qwen-plus", got)
 	}
 	if secondAuth != "Bearer sk-backup" {
@@ -447,7 +452,7 @@ func TestServeDirectRecordsAttemptsWhenEveryLineFails(t *testing.T) {
 	}
 	// Without this header the request log would show a total failure with no
 	// attempt count, which reads as "nothing was attempted".
-	if got := rec.Header().Get("X-ThinkWatch-Attempts"); got != "2" {
+	if got := rec.Header().Get(headerAttempts); got != "2" {
 		t.Fatalf("attempts header = %q, want 2", got)
 	}
 	// The upstream body is not copied to the caller: it can carry internal

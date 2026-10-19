@@ -6,11 +6,12 @@ import (
 )
 
 // TestParseRouteTelemetryCurrentThinkWatchContract covers the P2 regression:
-// current ThinkWatch Core reports the resolved provider name through
+// ThinkWatch Core reports the resolved provider name through
 // X-ThinkWatch-Upstream, which must be read as Provider (not as upstream model).
+// It stays a legacy name because ThinkWatch remains a supported data plane.
 func TestParseRouteTelemetryCurrentThinkWatchContract(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-ThinkWatch-Upstream", "qwen")
+	h.Set(legacyHeaderUpstream, "qwen")
 
 	got := parseRouteTelemetry(h)
 	if got.Provider != "qwen" {
@@ -27,14 +28,29 @@ func TestParseRouteTelemetryCurrentThinkWatchContract(t *testing.T) {
 	}
 }
 
+// The parser reads the legacy ThinkWatch header set too, so switching back to
+// ThinkWatch does not blank the request log's routing fields.
+func TestParseRouteTelemetryReadsTheLegacyThinkWatchHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set(legacyHeaderProvider, "deepseek")
+	h.Set(legacyHeaderUpstreamModel, "deepseek-chat")
+	h.Set(legacyHeaderRoutePriority, "2")
+	h.Set(legacyHeaderAttempts, "3")
+
+	got := parseRouteTelemetry(h)
+	if got.Provider != "deepseek" || got.UpstreamModel != "deepseek-chat" || got.RoutePriority != 2 || got.Attempts != 3 {
+		t.Fatalf("legacy headers not parsed: %+v", got)
+	}
+}
+
 // TestParseRouteTelemetryFullContract keeps the forward-compatible header set
 // working once ThinkWatch exposes the complete route telemetry.
 func TestParseRouteTelemetryFullContract(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-ThinkWatch-Provider", "deepseek")
-	h.Set("X-ThinkWatch-Upstream-Model", "deepseek-chat")
-	h.Set("X-ThinkWatch-Route-Priority", "2")
-	h.Set("X-ThinkWatch-Attempts", "2")
+	h.Set(headerProvider, "deepseek")
+	h.Set(headerUpstreamModel, "deepseek-chat")
+	h.Set(headerRoutePriority, "2")
+	h.Set(headerAttempts, "2")
 
 	got := parseRouteTelemetry(h)
 	if got.Provider != "deepseek" {
@@ -56,18 +72,18 @@ func TestParseRouteTelemetryFullContract(t *testing.T) {
 
 func TestParseRouteTelemetryPrefersExplicitProvider(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-ThinkWatch-Provider", "deepseek")
-	h.Set("X-ThinkWatch-Upstream", "qwen")
+	h.Set(headerProvider, "deepseek")
+	h.Set("X-Gateway-Upstream", "qwen")
 
 	if got := parseRouteTelemetry(h); got.Provider != "deepseek" {
-		t.Fatalf("Provider = %q, want the explicit X-ThinkWatch-Provider value", got.Provider)
+		t.Fatalf("Provider = %q, want the explicit X-Gateway-Provider value", got.Provider)
 	}
 }
 
 func TestParseRouteTelemetryIgnoresInvalidNumbers(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-ThinkWatch-Route-Priority", "not-a-number")
-	h.Set("X-ThinkWatch-Attempts", "0")
+	h.Set(headerRoutePriority, "not-a-number")
+	h.Set(headerAttempts, "0")
 
 	got := parseRouteTelemetry(h)
 	if got.RoutePriority != 0 || got.Attempts != 0 {

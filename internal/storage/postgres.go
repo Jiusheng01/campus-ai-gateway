@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,6 +61,124 @@ LIMIT 1`
 	_ = json.Unmarshal(m, &k.AllowedModels)
 	_ = json.Unmarshal(i, &k.AllowedIPs)
 	return k, nil
+}
+
+// InsertRequestAttempts records the Routing Attempts of one request.
+//
+// Best-effort by contract: attempt rows are Request Record data (ADR-0004), so a
+// write that fails is a small, accepted loss, not a reason to fail the request
+// that already answered. It is a single multi-row insert so a request's chain
+// lands in one statement.
+func (p *Postgres) InsertRequestAttempts(ctx context.Context, requestID string, attempts []model.RequestAttempt) error {
+	if len(attempts) == 0 {
+		return nil
+	}
+	const q = `
+INSERT INTO gateway_request_attempt(
+	request_id, attempt_no, provider, upstream_model, outcome, status_code, latency_ms, error_kind
+)
+SELECT $1, a.attempt_no, NULLIF(a.provider,''), NULLIF(a.upstream_model,''), a.outcome,
+       NULLIF(a.status_code,0), a.latency_ms, NULLIF(a.error_kind,'')
+FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::int[], $7::bigint[], $8::text[])
+     AS a(attempt_no, provider, upstream_model, outcome, status_code, latency_ms, error_kind)
+`
+	nos := make([]int32, len(attempts))
+	providers := make([]string, len(attempts))
+	upstreams := make([]string, len(attempts))
+	outcomes := make([]string, len(attempts))
+	statuses := make([]int32, len(attempts))
+	latencies := make([]int64, len(attempts))
+	kinds := make([]string, len(attempts))
+	for i, a := range attempts {
+		nos[i] = int32(a.AttemptNo)
+		providers[i] = a.Provider
+		upstreams[i] = a.UpstreamModel
+		outcomes[i] = a.Outcome
+		statuses[i] = int32(a.StatusCode)
+		latencies[i] = a.LatencyMS
+		kinds[i] = a.ErrorKind
+	}
+	_, err := p.Pool.Exec(ctx, q, requestID, nos, providers, upstreams, outcomes, statuses, latencies, kinds)
+	return err
+}
+
+// RequestAttempts returns one request's attempts in attempt order.
+func (p *Postgres) RequestAttempts(ctx context.Context, requestID string) ([]model.RequestAttempt, error) {
+	rows, err := p.Pool.Query(ctx, `
+SELECT attempt_no, COALESCE(provider,''), COALESCE(upstream_model,''), outcome,
+       COALESCE(status_code,0), latency_ms, COALESCE(error_kind,'')
+FROM gateway_request_attempt
+WHERE request_id=$1
+ORDER BY attempt_no
+`, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.RequestAttempt
+	for rows.Next() {
+		var a model.RequestAttempt
+		if err := rows.Scan(&a.AttemptNo, &a.Provider, &a.UpstreamModel, &a.Outcome, &a.StatusCode, &a.LatencyMS, &a.ErrorKind); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ShadowReport compares the direct plane's shadow decisions with what
+// ThinkWatch actually served, over the window from `since`.
+//
+// The comparison is the direct plane's LEADER (attempt_no = 1 of its shadow
+// chain) against the channel ThinkWatch reported. ThinkWatch's `provider` is the
+// channel that WON, so a request it failed over on would disagree with the
+// direct plane's first pick even when both planes chose the same first line;
+// those requests are excluded, leaving the ones where a disagreement is a real
+// difference of first choice.
+//
+// The two planes name channels independently — the direct plane knows a
+// gateway_provider.name, ThinkWatch reports its own resolved channel name — so a
+// disagreement is evidence to read, not a verdict.
+//
+// sampled counts requests (leader rows), not attempt rows, so it is the same
+// denominator `mismatched` is a share of.
+func (p *Postgres) ShadowReport(ctx context.Context, since time.Time, limit int) (sampled, mismatched int64, rows []model.ShadowComparison, err error) {
+	const leaders = `
+	FROM gateway_request_attempt a
+	WHERE a.outcome='shadow' AND a.attempt_no=1 AND a.created_at >= $1`
+	const comparable = `
+	FROM gateway_request_attempt a
+	JOIN gateway_request_log l ON l.request_id = a.request_id
+	WHERE a.outcome='shadow' AND a.attempt_no=1 AND a.created_at >= $1
+	  AND COALESCE(l.attempts,1) <= 1`
+
+	if err := p.Pool.QueryRow(ctx, `
+SELECT
+	(SELECT COUNT(*)`+leaders+`),
+	(SELECT COUNT(*)`+comparable+` AND COALESCE(a.provider,'') <> COALESCE(l.provider,''))
+`, since).Scan(&sampled, &mismatched); err != nil {
+		return 0, 0, nil, err
+	}
+
+	r, err := p.Pool.Query(ctx, `
+SELECT a.request_id, COALESCE(a.provider,''), COALESCE(a.upstream_model,''),
+       COALESCE(l.provider,''), a.created_at`+comparable+`
+  AND COALESCE(a.provider,'') <> COALESCE(l.provider,'')
+ORDER BY a.created_at DESC
+LIMIT $2
+`, since, limit)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer r.Close()
+	for r.Next() {
+		var c model.ShadowComparison
+		if err := r.Scan(&c.RequestID, &c.DirectProvider, &c.DirectUpstreamModel, &c.ThinkWatchProvider, &c.CreatedAt); err != nil {
+			return 0, 0, nil, err
+		}
+		rows = append(rows, c)
+	}
+	return sampled, mismatched, rows, r.Err()
 }
 
 func (p *Postgres) TouchAPIKey(ctx context.Context, id string) {

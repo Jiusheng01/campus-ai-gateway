@@ -101,6 +101,50 @@ type APIKeyCreateResult struct {
 	APIKey string `json:"api_key"`
 }
 
+// RequestAttempt is one Routing Attempt under a Request Record.
+//
+// It exists because the Request Record keeps only the winning channel and a
+// count, which cannot say what was tried and why the gateway moved on. Outcome
+// is "served", "failed", "skipped", or "shadow" (a decision the direct plane
+// recorded without sending, for comparison with ThinkWatch). ErrorKind is the
+// gateway's own classification (never upstream text). No upstream response
+// content is stored (ADR-0009).
+type RequestAttempt struct {
+	AttemptNo     int    `json:"attempt_no"`
+	Provider      string `json:"provider"`
+	UpstreamModel string `json:"upstream_model"`
+	Outcome       string `json:"outcome"`
+	StatusCode    int    `json:"status_code"`
+	LatencyMS     int64  `json:"latency_ms"`
+	ErrorKind     string `json:"error_kind"`
+}
+
+// The outcomes a Routing Attempt can have.
+const (
+	// AttemptServed: the channel answered and its response reached the client.
+	AttemptServed = "served"
+	// AttemptFailed: the channel was tried and did not serve (transport error or
+	// a failover-eligible status).
+	AttemptFailed = "failed"
+	// AttemptSkipped: the channel was not tried — the circuit breaker had it open.
+	AttemptSkipped = "skipped"
+	// AttemptShadow: the direct plane did not serve this request (ThinkWatch
+	// did); this is the channel the direct plane would have chosen, recorded so
+	// the two planes' decisions can be compared before the cutover.
+	AttemptShadow = "shadow"
+)
+
+// ShadowComparison is one request where the direct plane's shadow decision
+// named a different channel than ThinkWatch actually served through. It is what
+// the operator reads before deciding the cutover is safe.
+type ShadowComparison struct {
+	RequestID           string    `json:"request_id"`
+	DirectProvider      string    `json:"direct_provider"`
+	DirectUpstreamModel string    `json:"direct_upstream_model"`
+	ThinkWatchProvider  string    `json:"thinkwatch_provider"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
 type RequestLogAdmin struct {
 	RequestID      string    `json:"request_id"`
 	TenantID       string    `json:"tenant_id"`

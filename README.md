@@ -77,7 +77,7 @@ Data:
   Redis      -> RPM / TPM / concurrency / login throttle
 ```
 
-Go Gateway 是校园侧控制面和访问控制边界；ThinkWatch Core 负责底层模型路由与数据面能力。项目不复制 ThinkWatch Core 源码，而是通过配置同步和 API 契约集成。
+Go Gateway 是校园侧控制面和访问控制边界。模型路由与数据面能力由网关自身实现（直连数据面，见下），ThinkWatch Core 是可选的第二数据面并在退役中。项目不复制 ThinkWatch Core 源码，而是通过配置同步和 API 契约集成。
 
 ### 数据面：直连还是 ThinkWatch
 
@@ -85,14 +85,23 @@ Go Gateway 是校园侧控制面和访问控制边界；ThinkWatch Core 负责�
 
 | `DATA_PLANE` | `THINKWATCH_URL` | 实际行为 |
 | --- | --- | --- |
-| 未设置 / `auto` | 有值 | 业务请求全部代理给 ThinkWatch Core（默认，与既有部署一致） |
+| 未设置 / `auto` | 有值 | 业务请求全部代理给 ThinkWatch Core（保持既有部署不变） |
 | 未设置 / `auto` | 空 | **直连**：网关按 `gateway_model_route` 解析对外模型，自己注入渠道凭据、流式透传、按 priority 故障切换 |
-| `direct` | 任意 | 强制直连 |
+| `direct` | 任意 | 强制直连（生产目标：不依赖第二个进程） |
+| `shadow` | 有值 | **影子模式**：ThinkWatch 照常服务，直连只记录「它会选哪条线路」，供切换前逐条比对 |
 | `thinkwatch` | 空 | 启动失败（明确报错，不静默降级） |
+
+**直连数据面是生产实现目标**，三项能力都已具备：
+
+- **加权路由**：同一 `Route Priority` 内按 `Route Weight` 做 smooth weighted round robin，权重是真实分流比例（不再是排序用的 tiebreak）。
+- **per-provider 熔断**：连续 5 次失败**或**最近 20 次内失败率 >50% 即 open；冷却 30s，失败的探测翻倍至 5 分钟上限；half-open 只放行一个探测。open 的渠道被跳过并在 attempt chain 里记为 `skipped`。熔断状态是**每实例、内存中**的。
+- **逐次 attempt 遥测**：每次 Routing Attempt 落 `gateway_request_attempt`，管理台的请求详情展示完整 attempt chain（含被跳过的线路）。
+
+ThinkWatch 正在退役：它仍可用作回退路径，但不再获得这些能力的前提。
 
 直连模式下网关只需要 PostgreSQL 和 Redis，不必再跑第二个进程；Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，同步 ThinkWatch 的入口自动隐藏（`POST /admin/thinkwatch/sync` 会返回 `409 data_plane_direct`），模型连通测试改为由网关直接向渠道发起请求并在结果中回报实际应答的渠道。
 
-两种模式的差异是真实的，不是实现细节：直连数据面做**按 priority 排序的故障切换**，但**不做加权路由和熔断**——那需要跨请求存活的按渠道状态，仍然由 ThinkWatch Core 负责。需要这两项能力的部署请继续配置 `THINKWATCH_URL`。
+**切换建议走影子模式**：先用 `DATA_PLANE=shadow` 让两个平面并跑一段时间，用 `GET /admin/shadow-report`（或 `scripts/shadow-report.sql`）比对决策，一致后再切 `direct`。比对的是直连的**首选**（attempt chain 的第一条）与 ThinkWatch **最终胜出**的渠道，因此发生过 failover 的请求（`attempts > 1`）被排除——否则 ThinkWatch 换过线的请求会被误判成不一致。另外两个平面各自命名渠道（直连用 `gateway_provider.name`，ThinkWatch 用它自己的解析结果），所以报告里的「不一致」是需要阅读的证据而非判定——先确认两个名字指的是同一个上游。
 
 直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
 
@@ -676,7 +685,7 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 > 标注 **🧊 冻结** 的条目不在当前迭代范围内（见顶部说明）。
 
 - 🧊 冻结：完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
-- 直连数据面**不做加权路由和熔断**，只做按 priority / weight 排序的故障切换；需要这两项能力请继续使用 ThinkWatch。
+- 直连数据面的加权路由轮换与熔断状态是**每实例、内存中**的：多实例部署各自独立，重启只重置轮换与熔断；跨实例共享状态尚未实现。ThinkWatch 的物理移除（配置同步入口收口）待切换验收后进行。
 - ThinkWatch 最终 Provider / attempts / failover telemetry 仍取决于 Core 暴露的可信路由事实。
 - 🧊 冻结：学校真实 IdP 尚未完成现场集成验收。
 - 目前没有管理员自助“忘记密码”与完整管理员生命周期 UI。

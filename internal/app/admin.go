@@ -127,6 +127,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeys(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
 		s.handleAPIKeyByID(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/request-logs/") && strings.HasSuffix(r.URL.Path, "/attempts"):
+		s.handleRequestLogAttempts(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
 	case r.URL.Path == "/admin/request-logs/usage":
@@ -137,6 +139,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleRequestLogFacets(w, r)
 	case r.URL.Path == "/admin/request-logs/export":
 		s.handleRequestLogsExport(w, r)
+	case r.URL.Path == "/admin/shadow-report":
+		s.handleShadowReport(w, r)
 	case r.URL.Path == "/admin/quota-rebuild":
 		s.handleQuotaRebuild(w, r)
 	case r.URL.Path == "/admin/admin-audit":
@@ -224,6 +228,12 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.cfg.UsesThinkWatch() {
 		out["thinkwatch"] = thinkwatchOK
+	}
+	// The per-provider circuits are only meaningful for the direct plane, which
+	// is the only one that breaks them. Exposing them lets an operator see why a
+	// channel is not being used instead of guessing.
+	if !s.cfg.UsesThinkWatch() && s.breaker != nil {
+		out["circuits"] = s.breaker.circuits()
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -677,6 +687,83 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
+}
+
+// handleShadowReport compares the direct plane's shadow decisions with what
+// ThinkWatch actually served, over a window.
+//
+// It only means anything while the deployment runs DATA_PLANE=shadow: outside
+// that mode there are no shadow rows to compare, and answering an empty report
+// would read as "the planes agree" rather than "there is nothing to compare".
+func (s *Server) handleShadowReport(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	if !s.cfg.ShadowDirect() {
+		httpx.Error(w, http.StatusConflict, "data_plane_not_shadow",
+			"The shadow report is only available while DATA_PLANE=shadow", reqID)
+		return
+	}
+
+	window := 24 * time.Hour
+	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 || d > 30*24*time.Hour {
+			httpx.Error(w, http.StatusBadRequest, "invalid_window", "window must be a positive duration no longer than 720h", reqID)
+			return
+		}
+		window = d
+	}
+	limit := 100
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 1000 {
+			httpx.Error(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 1000", reqID)
+			return
+		}
+		limit = n
+	}
+
+	sampled, mismatched, mismatches, err := s.pg.ShadowReport(r.Context(), time.Now().UTC().Add(-window), limit)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the shadow report", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window":     window.String(),
+		"limit":      limit,
+		"sampled":    sampled,
+		"mismatched": mismatched,
+		"data":       mismatches,
+	})
+}
+
+// handleRequestLogAttempts returns one request's Routing Attempt chain.
+//
+// It is a separate call from the log list on purpose: a list of fifty requests
+// would otherwise carry every attempt of every row. The console asks for the
+// chain when an operator opens a detail drawer.
+func (s *Server) handleRequestLogAttempts(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/request-logs/"), "/attempts")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	items, err := s.pg.RequestAttempts(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load request attempts", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
 // handleRequestLogsSummary aggregates the rows the table is currently filtered

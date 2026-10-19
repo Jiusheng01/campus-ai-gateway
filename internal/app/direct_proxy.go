@@ -36,9 +36,10 @@ import (
 // environment variable, streams the response back, and fails over to the next
 // line the same way ThinkWatch would.
 //
-// What it deliberately does not do: weighted routing and circuit breaking.
-// Those need per-channel state that outlives a request, and pretending to have
-// them would be worse than saying so.
+// It does now carry the per-channel state that outlives a request: a smooth
+// weighted round robin picks which line of a priority band starts (orderRoutes)
+// and a per-provider circuit breaker skips a channel that keeps failing
+// (breaker.go). Both are per instance and in memory.
 
 // directRoute is one usable line: a channel plus the upstream model name that
 // channel expects.
@@ -205,22 +206,132 @@ func assembleRouteTable(providers []model.Provider, models []model.ModelConfig, 
 		if len(routes) == 0 {
 			continue
 		}
-		// Primary first, then the heavier line of a priority band, then the
-		// order they were declared in.
+		// Priority decides the band order; within a band the declaration order is
+		// kept.
 		//
-		// The weight tiebreak is stated here rather than inherited from the
-		// query's ORDER BY. Relying on the caller's order made the function's
-		// contract depend on a SQL clause three files away — and weight would
-		// have been silently dropped by any future caller that did not
-		// pre-sort. Weight still does not mean weighted routing here; it only
-		// orders the fallback chain.
+		// Weight is deliberately NOT a sort key here any more. It is the input to
+		// the smooth weighted round-robin that chooses which line of a band
+		// starts a request (orderRoutes). Sorting by weight would make the
+		// fallback chain a fixed strongest-first list and leave weight meaning
+		// "tiebreak" rather than "share of traffic".
 		sort.SliceStable(routes, func(i, j int) bool {
-			if routes[i].Priority != routes[j].Priority {
-				return routes[i].Priority < routes[j].Priority
-			}
-			return routes[i].Weight > routes[j].Weight
+			return routes[i].Priority < routes[j].Priority
 		})
 		out.models[m.Alias] = routes
+	}
+	return out
+}
+
+// normalWeight treats a missing or non-positive weight as 1.
+//
+// Zero is not a meaningful weight — a line with weight 0 would never be picked
+// and is indistinguishable from a misconfigured one — so it becomes the neutral
+// default rather than a black hole. This matches the route table's CHECK
+// (weight >= 0): zero is allowed to exist, it just does not mean "never".
+func normalWeight(w int) int {
+	if w <= 0 {
+		return 1
+	}
+	return w
+}
+
+// routeSelector holds the smooth-weighted-round-robin state that picks which
+// line of a priority band starts a request.
+//
+// Smooth WRR (the nginx algorithm) spreads a band's picks so the weights are met
+// over a window rather than in bursts: each member's running credit grows by its
+// weight per pick, the highest credit wins, and the winner's credit drops by the
+// total. For weights 3:1 the start sequence is A, A, B, A — three to one without
+// ever issuing two Bs back to back.
+//
+// The state is per instance and in memory: it is scheduling state, not durable
+// truth, and losing it on restart only resets the rotation. It is keyed by model
+// and priority band so two models do not share a rotation.
+type routeSelector struct {
+	mu      sync.Mutex
+	current map[string][]int
+}
+
+func newRouteSelector() *routeSelector {
+	return &routeSelector{current: make(map[string][]int)}
+}
+
+// start returns the index of the band member that should start this request,
+// advancing the rotation. The caller must pass a band whose members are in a
+// stable order (assembleRouteTable preserves the declaration order).
+func (s *routeSelector) start(key string, weights []int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.current[key]
+	if len(cur) != len(weights) {
+		cur = make([]int, len(weights))
+	}
+	total := 0
+	for i, w := range weights {
+		cur[i] += w
+		total += w
+	}
+	pick := 0
+	for i := 1; i < len(cur); i++ {
+		if cur[i] > cur[pick] {
+			pick = i
+		}
+	}
+	cur[pick] -= total
+	s.current[key] = cur
+	return pick
+}
+
+// orderByWeight returns a band in descending weight, keeping declaration order
+// for equal weights. It is the order used for the fallback lines of a band and
+// for every band after the first.
+func orderByWeight(band []directRoute) []directRoute {
+	ordered := append([]directRoute(nil), band...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return normalWeight(ordered[i].Weight) > normalWeight(ordered[j].Weight)
+	})
+	return ordered
+}
+
+// orderRoutes returns the attempt order for a model's lines: each priority band
+// in turn. The first band's starting line is chosen by smooth weighted round
+// robin; the rest of that band, and every later band, are ordered by descending
+// weight. Priority still dominates — a healthy lower-priority band is always
+// tried before a higher one — the weights only decide who leads within a band.
+func (s *Server) orderRoutes(model string, routes []directRoute) []directRoute {
+	if len(routes) == 0 {
+		return routes
+	}
+
+	// Split into contiguous priority bands (assembleRouteTable sorted by
+	// priority, so equal priorities are adjacent).
+	var bands [][]directRoute
+	for _, r := range routes {
+		if len(bands) == 0 || bands[len(bands)-1][0].Priority != r.Priority {
+			bands = append(bands, []directRoute{r})
+			continue
+		}
+		bands[len(bands)-1] = append(bands[len(bands)-1], r)
+	}
+
+	out := make([]directRoute, 0, len(routes))
+	for i, band := range bands {
+		if i == 0 && s.selector != nil && len(band) > 1 {
+			weights := make([]int, len(band))
+			for j, r := range band {
+				weights[j] = normalWeight(r.Weight)
+			}
+			key := model + "\x00" + strconv.Itoa(band[0].Priority)
+			pick := s.selector.start(key, weights)
+			out = append(out, band[pick])
+			rest := make([]directRoute, 0, len(band)-1)
+			rest = append(rest, band[:pick]...)
+			rest = append(rest, band[pick+1:]...)
+			out = append(out, orderByWeight(rest)...)
+			continue
+		}
+		out = append(out, orderByWeight(band)...)
 	}
 	return out
 }
@@ -254,31 +365,48 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load routing table", reqID)
 		return
 	}
-	routes := table.models[envelope.Model]
-	if len(routes) == 0 {
+	configured := table.models[envelope.Model]
+	if len(configured) == 0 {
 		httpx.Error(w, http.StatusNotFound, "model_not_configured",
 			"No enabled channel is configured for model "+envelope.Model, reqID)
 		return
 	}
+	routes := s.orderRoutes(envelope.Model, configured)
 
 	var (
 		lastStatus  int
 		lastBody    []byte
 		lastErr     error
 		lastChannel string // the channel that produced whichever outcome is reported
-		attempts    int
+		chainNo     int    // position in the attempt chain, skipped lines included
 	)
+	recorder := attemptRecorderFrom(r.Context())
+	tried := 0 // channels actually dialled; a skipped line is NOT an attempt
 	for _, route := range routes {
-		attempts++
+		chainNo++
+		// A channel whose circuit is open is skipped, not tried: that is the
+		// whole point of the breaker. It still leaves a line in the chain so the
+		// console can tell "not tried" from "tried and failed" — but it is not a
+		// Routing Attempt, so it must not inflate the attempt count or the
+		// failover flag.
+		if s.breaker != nil && !s.breaker.allow(route.Provider) {
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptSkipped, 0, 0, ""))
+			continue
+		}
+		tried++
+		started := time.Now()
 		resp, err := s.attemptDirect(r, body, envelope, route)
 		if err != nil {
+			s.recordBreaker(route.Provider, false)
 			lastErr = err
 			lastStatus = 0
 			lastBody = nil
 			lastChannel = route.Provider
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptFailed, 0, time.Since(started).Milliseconds(), attemptErrorKind(err)))
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
+			s.recordBreaker(route.Provider, false)
 			// Drain a little of the body so the connection can be reused, and
 			// keep it for the server-side log. It is never copied to the client:
 			// an upstream body is not a trusted place to quote operator-facing
@@ -288,16 +416,31 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			lastStatus = resp.StatusCode
 			lastErr = nil
 			lastChannel = route.Provider
+			recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptFailed, resp.StatusCode, time.Since(started).Milliseconds(), ""))
 			continue
 		}
-		writeDirectResponse(w, resp, route, attempts)
+		// The channel answered: a 2xx, or a terminal 4xx that is the request's
+		// fault rather than the channel's, so it still counts as a healthy
+		// answer for the breaker.
+		s.recordBreaker(route.Provider, true)
+		recordAttempt(recorder, attemptFor(chainNo, route, model.AttemptServed, resp.StatusCode, time.Since(started).Milliseconds(), ""))
+		writeDirectResponse(w, resp, route, tried)
 		return
 	}
 
-	// Every line failed. Record how many were tried before answering: the
-	// request log would otherwise show a total failure with no attempt count,
+	if tried == 0 {
+		// Every line was circuit-broken, so nothing was actually attempted. Say
+		// so rather than reporting an empty "all channels failed" with no status.
+		log.Printf("direct: request %s model %q had every channel circuit-broken", reqID, oneLine(envelope.Model))
+		httpx.Error(w, http.StatusServiceUnavailable, "channels_circuit_open",
+			"no channel is currently available; every line is circuit-broken", reqID)
+		return
+	}
+
+	// Every line failed. Record how many were actually tried before answering:
+	// the request log would otherwise show a total failure with no attempt count,
 	// which reads as "nothing was attempted" rather than "everything was".
-	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
+	w.Header().Set(headerAttempts, strconv.Itoa(tried))
 
 	// The client gets a stable code and the attempt count; the server log gets
 	// the gateway's own facts about the failure. Neither carries upstream
@@ -323,9 +466,9 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		// reaches the log; the request id ties the line to its log row. The
 		// body is reported as a size, never quoted.
 		log.Printf("direct: request %s model %q failed on every channel after %d attempt(s); last status %d from %s, response body %d bytes",
-			reqID, oneLine(envelope.Model), attempts, lastStatus, oneLine(lastChannel), len(lastBody))
+			reqID, oneLine(envelope.Model), tried, lastStatus, oneLine(lastChannel), len(lastBody))
 		httpx.Error(w, lastStatus, "upstream_error",
-			fmt.Sprintf("all %d channel(s) failed; last status %d", attempts, lastStatus), reqID)
+			fmt.Sprintf("all %d channel(s) failed; last status %d", tried, lastStatus), reqID)
 	case lastErr != nil:
 		log.Printf("direct: request %s model %q could not reach channel %s: %s",
 			reqID, oneLine(envelope.Model), oneLine(lastChannel), directFailureReason(lastErr))
@@ -340,6 +483,91 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", "no channel could serve the request", reqID)
 	}
 }
+
+// attemptFor builds one entry of the attempt chain. no is the position in the
+// chain (every line considered, skipped ones included, so the console can show
+// the sequence); status, latency and errorKind are the attempt's own, and are
+// zero/empty when they do not apply.
+func attemptFor(no int, route directRoute, outcome string, status int, latencyMS int64, errorKind string) model.RequestAttempt {
+	return model.RequestAttempt{
+		AttemptNo:     no,
+		Provider:      route.Provider,
+		UpstreamModel: route.UpstreamModel,
+		Outcome:       outcome,
+		StatusCode:    status,
+		LatencyMS:     latencyMS,
+		ErrorKind:     errorKind,
+	}
+}
+
+// recordAttempt appends one Routing Attempt to the request's recorder, if the
+// data plane was reached through the logging wrapper. A nil recorder is the
+// normal case for a unit test or a probe and means "nothing to record", not an
+// error.
+func recordAttempt(a *attemptRecorder, attempt model.RequestAttempt) {
+	if a == nil {
+		return
+	}
+	a.record(attempt)
+}
+
+// recordBreaker applies one attempt's verdict to its provider's circuit, if a
+// breaker is configured. A nil breaker is the case for a probe or a Server
+// built without the direct plane.
+func (s *Server) recordBreaker(provider string, ok bool) {
+	if s.breaker != nil {
+		s.breaker.record(provider, ok)
+	}
+}
+
+// attemptErrorKind classifies an attempt failure for telemetry. It returns the
+// gateway's own label, never the error text: a transport error can quote the
+// dialled URL, userinfo included (see directFailureReason).
+func attemptErrorKind(err error) string {
+	var missing missingCredentialError
+	if errors.As(err, &missing) {
+		return errorKindMissingCredential
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return errorKindDNS
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return errorKindTimeout
+	}
+	return errorKindTransport
+}
+
+// The gateway's own failure labels for an attempt. They are a closed set, so
+// the column and the console agree on what can appear in error_kind.
+const (
+	errorKindMissingCredential = "missing_credential"
+	errorKindDNS               = "dns"
+	errorKindTimeout           = "timeout"
+	errorKindTransport         = "transport"
+)
+
+// The telemetry headers the data plane stamps and the logging wrapper reads.
+// They are a contract between the two, so they are spelled once.
+const (
+	headerProvider      = "X-Gateway-Provider"
+	headerUpstreamModel = "X-Gateway-Upstream-Model"
+	headerRoutePriority = "X-Gateway-Route-Priority"
+	headerAttempts      = "X-Gateway-Attempts"
+)
+
+// The legacy names ThinkWatch Core still writes while it remains a supported
+// data plane. The parser accepts both, so the request log stays populated
+// whichever plane answered; the writer only ever emits the X-Gateway-* names.
+const (
+	legacyHeaderProvider      = "X-ThinkWatch-Provider"
+	legacyHeaderUpstreamModel = "X-ThinkWatch-Upstream-Model"
+	legacyHeaderRoutePriority = "X-ThinkWatch-Route-Priority"
+	legacyHeaderAttempts      = "X-ThinkWatch-Attempts"
+	// legacyHeaderUpstream carries a provider name, not an upstream model.
+	legacyHeaderUpstream = "X-ThinkWatch-Upstream"
+)
 
 // clientSafeFailure returns the part of an attempt error that is safe to show
 // the caller, or "" when nothing is.
@@ -482,12 +710,13 @@ var forwardableResponseHeaders = map[string]bool{
 }
 
 // writeDirectResponse copies the upstream response to the client and stamps the
-// telemetry headers the request logger reads.
+// X-Gateway-* telemetry headers the request logger reads.
 //
-// The header names still say ThinkWatch. They are an internal contract between
-// the data plane and the logging wrapper, and renaming them would churn every
-// test that pins attribution; what matters is that they carry the truth in both
-// modes.
+// The headers are an internal contract between the data plane and the logging
+// wrapper: they carry the winning channel, its upstream model, the band's
+// priority and the attempt count, which is what the request log records. The
+// names are the gateway's own now that ThinkWatch is not the thing producing
+// them.
 func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route directRoute, attempts int) {
 	defer resp.Body.Close()
 
@@ -512,10 +741,10 @@ func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route direc
 		}
 	}
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-ThinkWatch-Provider", route.Provider)
-	w.Header().Set("X-ThinkWatch-Upstream-Model", route.UpstreamModel)
-	w.Header().Set("X-ThinkWatch-Route-Priority", strconv.Itoa(route.Priority))
-	w.Header().Set("X-ThinkWatch-Attempts", strconv.Itoa(attempts))
+	w.Header().Set(headerProvider, route.Provider)
+	w.Header().Set(headerUpstreamModel, route.UpstreamModel)
+	w.Header().Set(headerRoutePriority, strconv.Itoa(route.Priority))
+	w.Header().Set(headerAttempts, strconv.Itoa(attempts))
 
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
@@ -617,27 +846,56 @@ func rewriteJSONModel(body []byte, upstream string) ([]byte, bool) {
 	return out, true
 }
 
-// shouldFailover reports whether another line has a chance of doing better.
-//
-// A 400 means the request is wrong and every channel will say so, so failing
-// over would only multiply the latency. A rejected credential, a missing model,
-// a rate limit or a server error are all channel-specific, which is exactly
-// what a second line is for.
-func shouldFailover(status int) bool {
+// attemptClass is how one upstream answer is read. It is the single definition
+// of "retryable vs the request's fault", shared by the failover decision and the
+// circuit breaker's failure count so the two cannot drift apart.
+type attemptClass int
+
+const (
+	// attemptServed: the channel answered usefully.
+	attemptServed attemptClass = iota
+	// attemptFailover: the answer is channel-specific (a bad credential, a
+	// missing model, a rate limit, a server error). Another line may do better,
+	// and the channel is to blame.
+	attemptFailover
+	// attemptTerminal: the request itself is wrong, so every channel will say the
+	// same. Do not fail over, and do not blame the channel.
+	attemptTerminal
+)
+
+func classifyAttempt(status int) attemptClass {
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
 		http.StatusRequestTimeout, http.StatusTooManyRequests:
-		return true
+		return attemptFailover
 	}
-	return status >= 500
+	if status >= 500 {
+		return attemptFailover
+	}
+	if status >= 400 {
+		return attemptTerminal
+	}
+	return attemptServed
+}
+
+// shouldFailover reports whether another line has a chance of doing better. A
+// 400 means the request is wrong and every channel will say so, so failing over
+// would only multiply the latency.
+func shouldFailover(status int) bool {
+	return classifyAttempt(status) == attemptFailover
 }
 
 // serveModelTestDirect runs the admin connectivity test without ThinkWatch.
 //
-// It walks the same route list and applies the same failover policy as
-// serveDirect, so a test that passes here is evidence about the path a real
-// request would take. The one difference is intent: a probe wants to know which
-// channel answered, so the winner is reported back rather than discarded.
+// It walks the same route list and applies the same failover classification as
+// serveDirect (classifyAttempt decides what is worth failing over), so a test
+// that passes here is evidence about the path a real request could take. Two
+// deliberate differences: it does not apply weighted selection — a probe is a
+// deterministic walk, not a sampled request — and it does not consult the
+// circuit breaker, because a probe is the operator asking a channel directly,
+// including one the breaker currently holds open. The intent also differs: a
+// probe wants to know which channel answered, so the winner is reported back
+// rather than discarded.
 func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in thinkWatchTestRequest, payload []byte, reqID string) {
 	table, err := s.routeTableCached(r.Context())
 	if err != nil {

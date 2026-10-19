@@ -41,10 +41,10 @@ func TestParseErrorCode(t *testing.T) {
 
 func TestParseRouteTelemetry(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-ThinkWatch-Provider", "deepseek")
-	h.Set("X-ThinkWatch-Upstream-Model", "deepseek-chat")
-	h.Set("X-ThinkWatch-Route-Priority", "2")
-	h.Set("X-ThinkWatch-Attempts", "2")
+	h.Set(headerProvider, "deepseek")
+	h.Set(headerUpstreamModel, "deepseek-chat")
+	h.Set(headerRoutePriority, "2")
+	h.Set(headerAttempts, "2")
 
 	got := parseRouteTelemetry(h)
 	if got.Provider != "deepseek" || got.UpstreamModel != "deepseek-chat" || got.RoutePriority != 2 || got.Attempts != 2 {

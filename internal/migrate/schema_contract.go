@@ -141,6 +141,21 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			},
 		},
 		{
+			Name: "gateway_request_attempt",
+			Columns: []contractColumn{
+				{"id", "bigint", true},
+				{"request_id", "character varying", true},
+				{"attempt_no", "integer", true},
+				{"provider", "character varying", false},
+				{"upstream_model", "character varying", false},
+				{"outcome", "character varying", true},
+				{"status_code", "integer", false},
+				{"latency_ms", "bigint", true},
+				{"error_kind", "character varying", false},
+				{"created_at", "timestamp with time zone", true},
+			},
+		},
+		{
 			Name: "gateway_provider",
 			Columns: []contractColumn{
 				{"id", "uuid", true},
@@ -257,6 +272,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_api_key", "key_digest", "u"},
 		{"gateway_request_log", "id", "p"},
 		{"gateway_request_log", "request_id", "u"},
+		{"gateway_request_attempt", "id", "p"},
 		{"gateway_provider", "id", "p"},
 		{"gateway_provider", "name", "u"},
 		{"gateway_model", "id", "p"},
@@ -279,6 +295,8 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 	indexes = []contractIndex{
 		{"gateway_api_key", "idx_gateway_api_key_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_api_key_tenant ON gateway_api_key(tenant_id)`},
 		{"gateway_request_log", "idx_request_log_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_request_log_created ON gateway_request_log(created_at DESC)`},
+		{"gateway_request_attempt", "idx_request_attempt_request", false, []string{"request_id"}, `CREATE INDEX idx_request_attempt_request ON gateway_request_attempt(request_id)`},
+		{"gateway_request_attempt", "idx_request_attempt_outcome_created", false, []string{"outcome", "created_at DESC"}, `CREATE INDEX idx_request_attempt_outcome_created ON gateway_request_attempt(outcome, created_at DESC)`},
 		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_provider", "idx_gateway_provider_status", false, []string{"status"}, `CREATE INDEX idx_gateway_provider_status ON gateway_provider(status)`},
 		{"gateway_model", "idx_gateway_model_status", false, []string{"status"}, `CREATE INDEX idx_gateway_model_status ON gateway_model(status)`},
@@ -318,6 +336,9 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_log.request_id": 64, "gateway_request_log.client_ip": 64, "gateway_request_log.requested_model": 128,
 		"gateway_request_log.actual_model": 128, "gateway_request_log.provider": 128, "gateway_request_log.error_code": 64,
 		"gateway_request_log.upstream_model": 128,
+		"gateway_request_attempt.request_id": 64, "gateway_request_attempt.provider": 128,
+		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
+		"gateway_request_attempt.error_kind": 32,
 		"gateway_provider.name":              128, "gateway_provider.protocol": 32, "gateway_provider.credential_env": 128,
 		"gateway_model.alias": 128, "gateway_model.upstream_model": 128,
 		"gateway_model_route.upstream_model": 128,
@@ -352,6 +373,9 @@ func finalColumnDefaults() map[string]string {
 		"gateway_request_log.stream": "false", "gateway_request_log.input_tokens": "0",
 		"gateway_request_log.output_tokens": "0", "gateway_request_log.total_tokens": "0",
 		"gateway_request_log.latency_ms": "0", "gateway_request_log.created_at": "now()",
+
+		"gateway_request_attempt.id":         "nextval('gateway_request_attempt_id_seq'::regclass)",
+		"gateway_request_attempt.latency_ms": "0", "gateway_request_attempt.created_at": "now()",
 
 		"gateway_provider.id": "gen_random_uuid()", "gateway_provider.protocol": "'openai-chat'::character varying",
 		"gateway_provider.status": "1", "gateway_provider.created_at": "now()", "gateway_provider.updated_at": "now()",
