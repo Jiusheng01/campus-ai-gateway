@@ -52,7 +52,7 @@ Admin UI 的「基础设施状态」第四盏灯显示为「数据面」，模�
 
 直连模式下的路由表缓存 5 秒：在 Admin UI 保存渠道 / 模型 / 线路后，最长 5 秒内生效，不需要任何同步动作。
 
-数据面遥测使用 `X-Gateway-*` 请求头（`X-Gateway-Provider` / `X-Gateway-Upstream-Model` / `X-Gateway-Route-Priority` / `X-Gateway-Attempts`），由数据面打标、由请求日志读取。
+数据面在自己的**响应**上多写一组 `X-Gateway-*` 响应头：`X-Gateway-Provider`、`X-Gateway-Upstream-Model`、`X-Gateway-Route-Priority`、`X-Gateway-Attempts`，分别记下这次请求实际用到的渠道、上游模型名、线路优先级和尝试次数。网关的请求日志再把它们读回来写入 `gateway_request_log`。这是数据面与日志器之间的**内部约定**，不是对外 API，业务调用方不需要关心。
 
 ---
 
@@ -143,7 +143,7 @@ gateway_request_log
 - [x] 加权路由（同一 priority 内 smooth weighted round robin，权重即真实分流比例）
 - [x] per-provider 熔断（连续失败或错误率触发，跳过 open 渠道）
 - [x] 逐次 attempt 遥测 + attempt chain UI（`gateway_request_attempt`）
-- [x] 遥测头改名 `X-Gateway-*`（数据面只打这一组名字，同时兼容读取旧头）
+- [x] 响应头改名：`X-ThinkWatch-*` → `X-Gateway-*`（退役 ThinkWatch 后不再读取旧名）
 - [x] ThinkWatch 退役：数据面只剩直连，不再需要第二个进程与状态同步
 - [x] CI 为测试任务提供 PostgreSQL / Redis service，CI 绿与本地绿覆盖一致
 
