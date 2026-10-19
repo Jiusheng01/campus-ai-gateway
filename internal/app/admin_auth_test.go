@@ -63,7 +63,7 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 		want   bool
 	}{
 		{"auditor", http.MethodGet, "/admin/request-logs", true},
-		{"auditor", http.MethodPost, "/admin/thinkwatch/sync", false},
+		{"auditor", http.MethodPost, "/admin/models", false},
 		// The summary and the trend are reads of telemetry the same roles
 		// already see, so they follow the pages they feed rather than opening
 		// a new grant.
@@ -74,7 +74,7 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 		// Reading a chart is not revoking a credential.
 		{"auditor", http.MethodDelete, "/admin/api-keys/x", false},
 		{"operator", http.MethodDelete, "/admin/api-keys/x", false},
-		{"gateway_admin", http.MethodPost, "/admin/thinkwatch/sync", true},
+		{"gateway_admin", http.MethodPost, "/admin/providers", true},
 		{"gateway_admin", http.MethodPut, "/admin/tenants/x", false},
 		// P1-02: the global form of tenant_admin no longer reaches tenant or
 		// key management. The role still exists as a stored value, but it
@@ -196,8 +196,8 @@ func TestTrustedHeaderExplicitRolesKeepTheirGrants(t *testing.T) {
 	}{
 		{RoleAuditor, http.MethodGet, "/admin/request-logs", http.StatusOK},
 		{RoleAuditor, http.MethodGet, "/admin/security-events", http.StatusOK},
-		{RoleAuditor, http.MethodPost, "/admin/thinkwatch/sync", http.StatusForbidden},
-		{RoleGatewayAdmin, http.MethodPost, "/admin/thinkwatch/sync", http.StatusOK},
+		{RoleAuditor, http.MethodPost, "/admin/providers", http.StatusForbidden},
+		{RoleGatewayAdmin, http.MethodPost, "/admin/providers", http.StatusOK},
 		{RoleGatewayAdmin, http.MethodGet, "/admin/models", http.StatusOK},
 		{RoleGatewayAdmin, http.MethodPut, "/admin/tenants/x", http.StatusForbidden},
 		{RoleOperator, http.MethodGet, "/admin/status", http.StatusOK},
@@ -207,7 +207,7 @@ func TestTrustedHeaderExplicitRolesKeepTheirGrants(t *testing.T) {
 		{RoleSuperAdmin, http.MethodGet, "/admin/users", http.StatusOK},
 		// A combined header is normalised as one list, so both roles apply.
 		{RoleGatewayAdmin + "," + RoleAuditor, http.MethodGet, "/admin/request-logs", http.StatusOK},
-		{RoleGatewayAdmin + "," + RoleAuditor, http.MethodPost, "/admin/thinkwatch/sync", http.StatusOK},
+		{RoleGatewayAdmin + "," + RoleAuditor, http.MethodPost, "/admin/providers", http.StatusOK},
 	} {
 		if got := trustedHeaderCall(t, s, tc.roles, tc.method, tc.path); got.Code != tc.want {
 			t.Fatalf("%s %s as %q = %d, want %d", tc.method, tc.path, tc.roles, got.Code, tc.want)

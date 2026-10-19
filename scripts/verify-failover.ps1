@@ -76,14 +76,13 @@ $broken = @{
 
 $restored = $false
 try {
-    Write-Host "[1/4] Breaking primary provider '$PrimaryProvider' temporarily..."
+    Write-Host "[1/3] Breaking primary provider '$PrimaryProvider' temporarily..."
     Invoke-AdminJson -Path "/admin/providers/$($primary.id)" -Method "PUT" -Body $broken | Out-Null
+    # The direct data plane rebuilds its route table from PostgreSQL and caches
+    # it for 5 seconds, so wait past that window before testing failover.
+    Start-Sleep -Seconds 6
 
-    Write-Host "[2/4] Syncing routes to ThinkWatch..."
-    Invoke-AdminJson -Path "/admin/thinkwatch/sync" -Method "POST" | Out-Null
-    Start-Sleep -Seconds 2
-
-    Write-Host "[3/4] Sending request through virtual model '$Model'..."
+    Write-Host "[2/3] Sending request through virtual model '$Model'..."
     $payload = @{
         model = $Model
         messages = @(@{ role = "user"; content = "Reply with exactly FAILOVER_OK" })
@@ -107,10 +106,9 @@ try {
     Write-Host "       Response: $content"
 }
 finally {
-    Write-Host "[4/4] Restoring primary provider and ThinkWatch config..."
+    Write-Host "[3/3] Restoring primary provider..."
     try {
         Invoke-AdminJson -Path "/admin/providers/$($primary.id)" -Method "PUT" -Body $original | Out-Null
-        Invoke-AdminJson -Path "/admin/thinkwatch/sync" -Method "POST" | Out-Null
         $restored = $true
         Write-Host "[OK] Primary provider restored."
     }

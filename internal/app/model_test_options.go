@@ -9,9 +9,9 @@ import (
 // modelTestOptionView is the narrow projection of a model that the connectivity
 // test actually needs.
 //
-// The test picks a model and hands its alias to ThinkWatch, so this carries the
-// identifier, the alias and whether the model is enabled — the three fields the
-// drawer reads — and nothing else.
+// The test picks a model and hands its alias to the data plane, so this carries
+// the identifier, the alias and whether the model is enabled — the three fields
+// the drawer reads — and nothing else.
 //
 // It exists because "run a connectivity test" and "administer model routes" are
 // different capabilities. An operator may do the first and not the second, and

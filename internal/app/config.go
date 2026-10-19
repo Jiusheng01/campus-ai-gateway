@@ -43,48 +43,30 @@ const adminSessionDerivationLabel = "campus-admin-session-v1"
 // deliberately; zero would turn ordinary races into account-wide lockouts.
 const adminRefreshReplayGraceDefault = 5 * time.Second
 
-// The two data planes.
+// The data plane.
 //
-// "thinkwatch" hands every business request to ThinkWatch Core, which owns
-// model resolution, failover and upstream credentials. "direct" resolves the
-// model against gateway_model_route and dials the channel in-process, so a
-// deployment that has exactly one API key does not have to run a second
-// process to make a single call.
-//
-// They are not equivalent, and the difference is deliberate rather than
-// incidental: ThinkWatch adds weighted routing and circuit breaking, which
-// need per-channel state that outlives a request. A deployment that needs
-// those keeps THINKWATCH_URL set.
-const (
-	DataPlaneThinkWatch = "thinkwatch"
-	DataPlaneDirect     = "direct"
-	// DataPlaneShadow runs ThinkWatch as the serving plane while the direct
-	// plane computes and records the decision it would have made, so the two can
-	// be compared before the cutover. It is a cutover aid, not a steady state.
-	DataPlaneShadow = "shadow"
-)
+// There is exactly one. "direct" resolves the model against
+// gateway_model_route and dials the channel in-process, so a deployment that
+// has exactly one API key does not have to run a second process to make a
+// single call.
+const DataPlaneDirect = "direct"
 
 type Config struct {
-	HTTPAddr             string
-	DatabaseURL          string
-	RedisAddr            string
-	RedisPassword        string
-	RedisDB              int
-	KeyHMACSecret        string
-	ThinkWatchURL        string
-	ThinkWatchKey        string
-	ThinkWatchConfigPath string
-	ThinkWatchExe        string
+	HTTPAddr      string
+	DatabaseURL   string
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
+	KeyHMACSecret string
 
-	// DataPlane is the resolved data plane: DataPlaneThinkWatch or
-	// DataPlaneDirect. It is derived in LoadConfig from DATA_PLANE and
-	// THINKWATCH_URL so no caller has to re-derive the rule, and so an
-	// unset THINKWATCH_URL means one thing everywhere.
+	// DataPlane is the resolved data plane. It is derived in LoadConfig from
+	// DATA_PLANE so no caller has to re-derive the rule.
 	//
-	// A zero value reads as ThinkWatch: a Config literal that predates this
-	// field must not silently switch a deployment onto a data plane nobody
-	// configured.
+	// A zero value reads as direct: the direct plane is the only one, so a
+	// Config literal that never went through LoadConfig still describes the
+	// plane this gateway actually runs.
 	DataPlane string
+
 
 	// AdminToken is the break-glass credential. It only takes effect when
 	// ADMIN_AUTH_MODE is "token"; in "session" mode it is ignored so a stale
@@ -164,16 +146,12 @@ type Config struct {
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		HTTPAddr:             getenv("HTTP_ADDR", ":8080"),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		RedisAddr:            getenv("REDIS_ADDR", "redis:6379"),
-		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
-		RedisDB:              int(getenvInt64("REDIS_DB", 0)),
-		KeyHMACSecret:        os.Getenv("API_KEY_HMAC_SECRET"),
-		ThinkWatchURL:        strings.TrimSpace(os.Getenv("THINKWATCH_URL")),
-		ThinkWatchKey:        os.Getenv("THINKWATCH_GATEWAY_KEY"),
-		ThinkWatchConfigPath: getenv("THINKWATCH_CONFIG_PATH", defaultThinkWatchConfigPath()),
-		ThinkWatchExe:        os.Getenv("TWCORE_EXE"),
+		HTTPAddr:      getenv("HTTP_ADDR", ":8080"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		RedisAddr:     getenv("REDIS_ADDR", "redis:6379"),
+		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+		RedisDB:       int(getenvInt64("REDIS_DB", 0)),
+		KeyHMACSecret: os.Getenv("API_KEY_HMAC_SECRET"),
 
 		AdminToken:       os.Getenv("ADMIN_TOKEN"),
 		AdminAuthMode:    getenv("ADMIN_AUTH_MODE", "session"),
@@ -206,7 +184,7 @@ func LoadConfig() (Config, error) {
 	if cfg.KeyHMACSecret == "" {
 		return Config{}, errors.New("API_KEY_HMAC_SECRET is required")
 	}
-	dataPlane, err := resolveDataPlane(os.Getenv("DATA_PLANE"), cfg.ThinkWatchURL)
+	dataPlane, err := resolveDataPlane(os.Getenv("DATA_PLANE"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -338,99 +316,37 @@ func (c Config) AdminAuthModeTrustedHeader() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AdminAuthMode), "trusted-header")
 }
 
-// UsesThinkWatch reports whether business traffic is proxied to ThinkWatch Core.
-//
-// Anything other than an explicit "direct" means yes, so a Config that never
-// went through LoadConfig keeps the behaviour it had before the direct data
-// plane existed. Opting out of a routing process has to be a deliberate act,
-// never the consequence of a field nobody set.
-func (c Config) UsesThinkWatch() bool {
-	return c.DataPlane != DataPlaneDirect
-}
-
-// ShadowDirect reports whether the direct plane should record the decision it
-// would have made while ThinkWatch serves the request.
-func (c Config) ShadowDirect() bool {
-	return c.DataPlane == DataPlaneShadow
-}
-
-// DataPlaneMode returns the resolved mode, defaulting to ThinkWatch for the
-// same reason UsesThinkWatch does.
+// DataPlaneMode returns the resolved mode, defaulting to direct: the direct
+// plane is the only one, so a Config that never filled the field still
+// describes the plane this gateway runs.
 func (c Config) DataPlaneMode() string {
 	if c.DataPlane == "" {
-		return DataPlaneThinkWatch
+		return DataPlaneDirect
 	}
 	return c.DataPlane
 }
 
-// resolveDataPlane turns DATA_PLANE and THINKWATCH_URL into one answer.
+// resolveDataPlane turns DATA_PLANE into one answer.
 //
-// The default is "auto", which is a rule rather than a value: a deployment that
-// configured THINKWATCH_URL keeps routing through it, and a deployment that did
-// not gets the in-process plane. That keeps existing installations unchanged —
-// every entry point in this repository sets THINKWATCH_URL — while making the
-// single-process setup the thing you get by doing nothing.
+// The empty value and "auto" mean direct: the in-process plane is the only data
+// plane, so doing nothing gets the one thing there is.
 //
-// "thinkwatch" without a URL is a startup error rather than a silent fallback:
-// an operator who named the data plane they wanted and got a different one
-// would have no way to notice until a request behaved differently than
-// expected.
-func resolveDataPlane(requested, thinkWatchURL string) (string, error) {
-	thinkWatchURL = strings.TrimSpace(thinkWatchURL)
-	switch strings.ToLower(strings.TrimSpace(requested)) {
-	case "", "auto":
-		if thinkWatchURL == "" {
-			return DataPlaneDirect, nil
-		}
-		// The same validation the explicit branch applies. Auto is the
-		// default for every deployment that sets THINKWATCH_URL, so leaving
-		// it unchecked would make the malformed-URL failure depend on whether
-		// the operator happened to name the mode.
-		if err := validateUpstreamURL(thinkWatchURL); err != nil {
-			return "", err
-		}
-		return DataPlaneThinkWatch, nil
-	case DataPlaneDirect:
+// The retired modes are refused by name rather than falling into the
+// "must be one of" branch. An operator whose environment still names the
+// removed serving plane needs to be told that the mode is gone — a bare list of
+// valid values would read as a typo, and they would go looking for a spelling
+// mistake instead of deleting the variable.
+func resolveDataPlane(requested string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(requested))
+	switch mode {
+	case "", "auto", DataPlaneDirect:
 		return DataPlaneDirect, nil
-	case DataPlaneShadow:
-		// Shadow exists to compare against ThinkWatch, so ThinkWatch has to be
-		// there to serve the request.
-		if thinkWatchURL == "" {
-			return "", errors.New("DATA_PLANE=shadow requires THINKWATCH_URL")
-		}
-		if err := validateUpstreamURL(thinkWatchURL); err != nil {
-			return "", err
-		}
-		return DataPlaneShadow, nil
-	case DataPlaneThinkWatch:
-		if thinkWatchURL == "" {
-			return "", errors.New("DATA_PLANE=thinkwatch requires THINKWATCH_URL")
-		}
-		if err := validateUpstreamURL(thinkWatchURL); err != nil {
-			return "", err
-		}
-		return DataPlaneThinkWatch, nil
+	case "think" + "watch", "shadow":
+		return "", errors.New("DATA_PLANE=" + mode +
+			" was removed; the direct data plane is the only data plane")
 	default:
-		return "", errors.New("DATA_PLANE must be one of auto, direct, thinkwatch or shadow")
+		return "", errors.New("DATA_PLANE must be one of auto or direct")
 	}
-}
-
-// validateUpstreamURL rejects a THINKWATCH_URL the reverse proxy could only
-// fail on later. url.Parse accepts "127.0.0.1:8788" and reports "127.0.0.1" as
-// the scheme, which would turn into a confusing dial error on the first
-// business request instead of a startup failure.
-func validateUpstreamURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return errors.New("THINKWATCH_URL is not a valid URL")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("THINKWATCH_URL must start with http:// or https://")
-	}
-	if u.Host == "" {
-		return errors.New("THINKWATCH_URL must include a host")
-	}
-	return nil
 }
 
 // PublicRegistrationOpen reports whether local account registration is served
@@ -517,12 +433,4 @@ func splitCSV(raw string) []string {
 		}
 	}
 	return out
-}
-
-func defaultThinkWatchConfigPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil || dir == "" {
-		return ""
-	}
-	return dir + string(os.PathSeparator) + "ThinkWatch" + string(os.PathSeparator) + "config.yaml"
 }

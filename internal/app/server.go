@@ -20,7 +20,6 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
-	"github.com/Jiusheng01/campus-ai-gateway/internal/proxy"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/ratelimit"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
@@ -35,15 +34,14 @@ type Server struct {
 	redis *storage.Redis
 	limit *ratelimit.Limiter
 
-	// upstream is the data plane: either the ThinkWatch reverse proxy or the
-	// in-process handler in direct_proxy.go. Everything in front of it —
-	// authentication, quotas, rate limits, request logging — is identical in
-	// both modes, so this is the only place the two differ.
+	// upstream is the data plane: the in-process handler in direct_proxy.go.
+	// Everything in front of it — authentication, quotas, rate limits, request
+	// logging — is identical for every request.
 	upstream  http.Handler
 	mux       *http.ServeMux
 	adminAuth *adminAuthService
 
-	// Direct data plane state. Unused when cfg.UsesThinkWatch().
+	// Direct data plane state.
 	//
 	// routeCache is rebuilt at most once per routeCacheTTL, so a saved change
 	// reaches business traffic within seconds without putting three queries on
@@ -146,37 +144,14 @@ func NewServer(cfg Config) (*Server, error) {
 		limit: ratelimit.New(rd.Client),
 		mux:   http.NewServeMux(),
 	}
-	if cfg.UsesThinkWatch() {
-		// Only built in this mode: an empty THINKWATCH_URL parses without
-		// error into a proxy with no host, so constructing it unconditionally
-		// would leave a handler that fails on first use instead of never
-		// existing at all.
-		rp, err := proxy.NewThinkWatchProxy(cfg.ThinkWatchURL, cfg.ThinkWatchKey)
-		if err != nil {
-			pg.Close()
-			_ = rd.Close()
-			return nil, err
-		}
-		s.upstream = rp
-		log.Printf("data plane: ThinkWatch Core at %s", cfg.ThinkWatchURL)
-	} else {
-		s.upstream = http.HandlerFunc(s.serveDirect)
-		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
-	}
-	// The direct plane's state is built whenever it will be consulted. As the
-	// serving plane it needs the transports and the breaker too; as the shadow it
-	// consults only the rotation, because it dials nothing and has nothing to
-	// break on.
-	if !cfg.UsesThinkWatch() {
-		s.transport = &transportPool{}
-		s.selector = newRouteSelector()
-		s.breaker = newCircuitBreaker()
-	} else if cfg.ShadowDirect() {
-		s.selector = newRouteSelector()
-	}
-	if cfg.ShadowDirect() {
-		log.Printf("data plane: shadow — ThinkWatch serves, the direct plane records the chain it would have tried")
-	}
+	s.upstream = http.HandlerFunc(s.serveDirect)
+	log.Printf("data plane: direct — channels are dialled in-process")
+	// The direct plane is the only plane, so its state is always built: the
+	// transports it dials with, the rotation that picks a line, and the breaker
+	// that skips a failing channel.
+	s.transport = &transportPool{}
+	s.selector = newRouteSelector()
+	s.breaker = newCircuitBreaker()
 	if cfg.SessionAuthEnabled() {
 		loginLimiter := ratelimit.NewAdminLoginLimiter(rd.Client).
 			WithPolicy(cfg.AdminLoginMaxAttempts, cfg.AdminLoginWindow)
@@ -345,7 +320,6 @@ func (s *Server) routes() {
 	s.mux.Handle("/admin/sessions/", s.adminMiddleware(http.HandlerFunc(s.handleAdminSessionByID)))
 	s.mux.Handle("/admin/users", s.adminMiddleware(http.HandlerFunc(s.handleAdminUsers)))
 	s.mux.Handle("/admin/users/", s.adminMiddleware(http.HandlerFunc(s.handleAdminUserByID)))
-	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/model-test-options", s.adminMiddleware(http.HandlerFunc(s.handleModelTestOptions)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
@@ -533,10 +507,9 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || strings.HasPrefix(r.URL.Path, "/v1/models/")) {
 		if r.URL.Path != "/v1/models" {
-			// There is no per-model metadata endpoint here, and pretending
-			// otherwise would mean forwarding a request whose meaning depends
-			// on which data plane is active. Answering 404 is the same answer
-			// in both modes.
+			// There is no per-model metadata endpoint here, and answering 404
+			// for one is honest rather than forwarding a request this gateway
+			// has no meaning for.
 			httpx.Error(aw, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
 			return
 		}
@@ -548,14 +521,9 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			writeAllowedModels(aw, id.AllowedModels)
 			return
 		}
-		if !s.cfg.UsesThinkWatch() {
-			// Nothing to proxy to. The honest answer is the set of models
-			// that can be routed right now, which is exactly the routing
-			// table the data plane will consult.
-			s.serveDirectModels(aw, r)
-			return
-		}
-		s.upstream.ServeHTTP(aw, r)
+		// The set of models that can be routed right now, which is exactly the
+		// routing table the data plane will consult.
+		s.serveDirectModels(aw, r)
 		return
 	}
 
@@ -585,13 +553,6 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(aw, http.StatusForbidden, "model_not_allowed", "Model is not allowed for this API key", reqID)
 		return
 	}
-
-	// Shadow mode: ThinkWatch serves the request below, but the direct plane
-	// records the chain it would have tried, so the two decisions can be
-	// compared for the same request id before the cutover. It is recorded after
-	// the admission gates (see below), so a request the gateway itself refused
-	// never enters the comparison.
-
 
 	reserveAmount := estimateTPM(body, envelope)
 	tenantReservation, allowed, err = s.limit.ReserveTenantTokens(r.Context(), id.TenantID, reserveAmount, id.DailyTokenLimit, id.MonthlyTokenLimit)
@@ -633,16 +594,6 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	// Past every admission gate: this request will actually be served, so it is
-	// the set the shadow comparison should cover. Recording it earlier would
-	// sample requests the gateway refused for quota or rate limits, which have
-	// no ThinkWatch channel to compare against and would read as disagreements.
-	if s.cfg.ShadowDirect() {
-		for _, a := range s.shadowChain(r.Context(), envelope.Model) {
-			attempts.record(a)
-		}
-	}
-
 	s.upstream.ServeHTTP(aw, r)
 }
 
@@ -658,9 +609,8 @@ func stateUnavailable(aw http.ResponseWriter, reqID string) {
 
 // maxRequestBody bounds how much of a business request the gateway will buffer.
 //
-// Both data planes read the body — the direct one to rewrite the model field,
-// the ThinkWatch one because the request logger needs the usage block — so the
-// cap belongs to the route rather than to whichever plane is active.
+// The data plane reads the body — to rewrite the model field and to give the
+// request logger the usage block — so the cap belongs to the route.
 func maxRequestBody(path string) int64 {
 	if path == "/v1/audio/transcriptions" {
 		return 64 << 20
@@ -802,7 +752,7 @@ type routeTelemetry struct {
 	Attempts      int
 }
 
-// Failover reports whether ThinkWatch actually fell back to another route.
+// Failover reports whether the data plane actually fell back to another route.
 // It is only derived from real attempt telemetry, never from planned routes.
 func (t routeTelemetry) Failover() bool {
 	return t.Attempts > 1
@@ -810,31 +760,21 @@ func (t routeTelemetry) Failover() bool {
 
 // parseRouteTelemetry reads the data plane's attribution off the response.
 //
-// It accepts both the X-Gateway-* names the direct plane writes and the legacy
-// X-ThinkWatch-* names, because ThinkWatch is still a supported data plane and
-// reports through its own headers; without the fallback, switching back to it
-// would silently blank the request log's routing fields.
+// It reads the X-Gateway-* names the direct plane stamps. They are the only
+// names now: the retired second plane reported through its own headers, and it
+// is gone, so there is nothing to fall back to.
 func parseRouteTelemetry(h http.Header) routeTelemetry {
-	get := func(gateway, legacy string) string {
-		if v := strings.TrimSpace(h.Get(gateway)); v != "" {
-			return v
-		}
-		return strings.TrimSpace(h.Get(legacy))
+	get := func(name string) string {
+		return strings.TrimSpace(h.Get(name))
 	}
 	v := routeTelemetry{
-		Provider:      get(headerProvider, legacyHeaderProvider),
-		UpstreamModel: get(headerUpstreamModel, legacyHeaderUpstreamModel),
+		Provider:      get(headerProvider),
+		UpstreamModel: get(headerUpstreamModel),
 	}
-	// ThinkWatch reports the resolved provider name as X-ThinkWatch-Upstream. It
-	// is a provider, not an upstream model, so it must not be read into
-	// UpstreamModel.
-	if v.Provider == "" {
-		v.Provider = strings.TrimSpace(h.Get(legacyHeaderUpstream))
-	}
-	if n, err := strconv.Atoi(get(headerRoutePriority, legacyHeaderRoutePriority)); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerRoutePriority)); err == nil && n > 0 {
 		v.RoutePriority = n
 	}
-	if n, err := strconv.Atoi(get(headerAttempts, legacyHeaderAttempts)); err == nil && n > 0 {
+	if n, err := strconv.Atoi(get(headerAttempts)); err == nil && n > 0 {
 		v.Attempts = n
 	}
 	return v

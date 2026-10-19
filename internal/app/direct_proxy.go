@@ -22,21 +22,17 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// The direct data plane.
+// The data plane.
 //
-// The gateway has always been a control plane: it authenticates, meters and
-// logs, then hands the request to ThinkWatch Core, which owns model resolution,
-// failover and upstream credentials. That is the right shape when a deployment
-// has several channels behind one model, but it also means a campus that has
-// exactly one API key still has to run a second process to make a single call.
+// The gateway is a control plane: it authenticates, meters and logs, then
+// resolves the model and dials the channel that serves it.
 //
-// This file is the other data plane: the same contract, implemented in-process
-// for deployments that do not configure THINKWATCH_URL. It resolves the model
+// This file is that data plane, implemented in-process. It resolves the model
 // against gateway_model_route, injects the channel's credential from its
 // environment variable, streams the response back, and fails over to the next
-// line the same way ThinkWatch would.
+// line.
 //
-// It does now carry the per-channel state that outlives a request: a smooth
+// It carries the per-channel state that outlives a request: a smooth
 // weighted round robin picks which line of a priority band starts (orderRoutes)
 // and a per-provider circuit breaker skips a channel that keeps failing
 // (breaker.go). Both are per instance and in memory.
@@ -336,7 +332,7 @@ func (s *Server) orderRoutes(model string, routes []directRoute) []directRoute {
 	return out
 }
 
-// serveDirect answers a business request without ThinkWatch.
+// serveDirect answers a business request.
 func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 
@@ -557,18 +553,6 @@ const (
 	headerAttempts      = "X-Gateway-Attempts"
 )
 
-// The legacy names ThinkWatch Core still writes while it remains a supported
-// data plane. The parser accepts both, so the request log stays populated
-// whichever plane answered; the writer only ever emits the X-Gateway-* names.
-const (
-	legacyHeaderProvider      = "X-ThinkWatch-Provider"
-	legacyHeaderUpstreamModel = "X-ThinkWatch-Upstream-Model"
-	legacyHeaderRoutePriority = "X-ThinkWatch-Route-Priority"
-	legacyHeaderAttempts      = "X-ThinkWatch-Attempts"
-	// legacyHeaderUpstream carries a provider name, not an upstream model.
-	legacyHeaderUpstream = "X-ThinkWatch-Upstream"
-)
-
 // clientSafeFailure returns the part of an attempt error that is safe to show
 // the caller, or "" when nothing is.
 //
@@ -715,8 +699,7 @@ var forwardableResponseHeaders = map[string]bool{
 // The headers are an internal contract between the data plane and the logging
 // wrapper: they carry the winning channel, its upstream model, the band's
 // priority and the attempt count, which is what the request log records. The
-// names are the gateway's own now that ThinkWatch is not the thing producing
-// them.
+// names are the gateway's own.
 func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route directRoute, attempts int) {
 	defer resp.Body.Close()
 
@@ -767,9 +750,8 @@ func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route direc
 
 // serveDirectModels answers GET /v1/models from the routing table.
 //
-// In ThinkWatch mode this call is proxied. In direct mode there is nothing to
-// proxy to, and the honest answer is the set of models that can actually be
-// routed right now.
+// There is nothing to proxy to, and the honest answer is the set of models that
+// can actually be routed right now.
 func (s *Server) serveDirectModels(w http.ResponseWriter, r *http.Request) {
 	table, err := s.routeTableCached(r.Context())
 	if err != nil {
@@ -885,7 +867,7 @@ func shouldFailover(status int) bool {
 	return classifyAttempt(status) == attemptFailover
 }
 
-// serveModelTestDirect runs the admin connectivity test without ThinkWatch.
+// serveModelTestDirect runs the admin connectivity test.
 //
 // It walks the same route list and applies the same failover classification as
 // serveDirect (classifyAttempt decides what is worth failing over), so a test
@@ -896,7 +878,7 @@ func shouldFailover(status int) bool {
 // including one the breaker currently holds open. The intent also differs: a
 // probe wants to know which channel answered, so the winner is reported back
 // rather than discarded.
-func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in thinkWatchTestRequest, payload []byte, reqID string) {
+func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in modelTestRequest, payload []byte, reqID string) {
 	table, err := s.routeTableCached(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load routing table", reqID)

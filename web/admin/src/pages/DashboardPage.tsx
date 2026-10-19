@@ -6,7 +6,6 @@ import {
   CircleGauge,
   Database,
   FlaskConical,
-  Network,
   RefreshCw,
   Route,
   ServerCog,
@@ -18,7 +17,6 @@ import {Button} from '../components/ui/Button'
 import {Table} from '../components/ui/Table'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
-import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {useResource} from '../lib/useResource'
@@ -34,17 +32,12 @@ import {ago, fmt, ms, num, ratio} from '../lib/format'
  */
 export function DashboardPage({roles}: {roles: string[]}) {
   const toast = useToast()
-  const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
-  const [syncing, setSyncing] = useState(false)
 
   // Quick actions are gated by the same allow-list the gateway uses, so the
-  // dashboard never offers a button whose only possible result is a 403. A
-  // gateway_admin may read the status the page reports and the operator may
-  // read it too; neither may change the routing that produced it.
-  const canSync = roles.includes('super_admin') || roles.includes('gateway_admin')
-  const canTestModel = canSync || roles.includes('operator')
+  // dashboard never offers a button whose only possible result is a 403.
+  const canTestModel = roles.includes('super_admin') || roles.includes('gateway_admin') || roles.includes('operator')
   // The recent-requests strip reads the log endpoint, which is a narrower
   // permission than the dashboard itself. A gateway_admin may see this page but
   // not that endpoint, so the request is skipped rather than allowed to 403 and
@@ -55,25 +48,6 @@ export function DashboardPage({roles}: {roles: string[]}) {
       ? api<{data: RequestLog[]}>('/admin/request-logs?limit=6')
       : Promise.resolve({data: [] as RequestLog[]}),
   )
-
-  const sync = async () => {
-    const ok = await confirm({
-      title: '同步 ThinkWatch 配置？',
-      description: '将当前渠道、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
-      confirmText: '确认同步',
-    })
-    if (!ok) return
-    setSyncing(true)
-    try {
-      const out = await api<{providers: number; aliases: number}>('/admin/thinkwatch/sync', {method: 'POST'})
-      toast.success(`ThinkWatch 同步成功：${out.providers} 个渠道 / ${out.aliases} 个对外模型`)
-      reload()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'ThinkWatch 同步失败')
-    } finally {
-      setSyncing(false)
-    }
-  }
 
   // The model list is only needed to populate the test drawer, so it is fetched
   // on demand rather than adding another request to every dashboard load.
@@ -94,38 +68,23 @@ export function DashboardPage({roles}: {roles: string[]}) {
   const stats = data?.stats
   const errorRate = stats && stats.today_requests > 0 ? ratio(stats.today_errors, stats.today_requests) : '0%'
 
-  // Which data plane is running changes what the fourth status light means.
-  // In direct mode there is no ThinkWatch process to be healthy or unhealthy —
-  // the gateway dials the channels itself — so reporting `thinkwatch: false`
-  // there would paint a red "异常" for something the deployment never started.
-  const direct = data?.data_plane === 'direct'
+  // There is one data plane, and the gateway dials the channels itself, so the
+  // fourth status light reports on that rather than on a process the deployment
+  // never started.
   const health = [
     {name: 'Gateway', ok: data?.gateway, icon: ServerCog, note: '控制面与数据面'},
     {name: 'PostgreSQL', ok: data?.postgres, icon: Database, note: '配置与日志存储'},
     {name: 'Redis', ok: data?.redis, icon: Boxes, note: '限流与配额计数'},
-    direct
-      ? {name: '数据面', ok: data?.gateway, icon: Route, note: '直连渠道，无额外进程'}
-      : {name: 'ThinkWatch', ok: data?.thinkwatch, icon: Network, note: '模型路由与故障切换'},
+    {name: '数据面', ok: data?.gateway, icon: Route, note: '直连渠道，无额外进程'},
   ]
-
-  // The sync action writes ThinkWatch's config file. In direct mode there is
-  // no such file, so the button is removed rather than left to fail.
-  const showSync = canSync && data !== undefined && !direct
 
   return (
     <div className="stack">
-      {(showSync || canTestModel) && (
+      {canTestModel && (
         <div className="quickActions">
-          {showSync && (
-            <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
-              同步 ThinkWatch
-            </Button>
-          )}
-          {canTestModel && (
-            <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
-              模型连通测试
-            </Button>
-          )}
+          <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
+            模型连通测试
+          </Button>
         </div>
       )}
 
@@ -156,7 +115,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
 
           <Panel
             title="基础设施状态"
-            sub={direct ? 'Gateway、存储与数据面的实时可达性。' : 'Gateway、存储与路由组件的实时可达性。'}
+            sub="Gateway、存储与数据面的实时可达性。"
             actions={
               <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={reload}>
                 刷新
@@ -227,7 +186,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
         </>
       )}
 
-      {testing && <ModelTestDrawer models={testing} direct={direct} onClose={() => setTesting(null)} />}
+      {testing && <ModelTestDrawer models={testing} onClose={() => setTesting(null)} />}
     </div>
   )
 }

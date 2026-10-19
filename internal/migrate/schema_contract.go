@@ -296,7 +296,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_api_key", "idx_gateway_api_key_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_api_key_tenant ON gateway_api_key(tenant_id)`},
 		{"gateway_request_log", "idx_request_log_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_request_log_created ON gateway_request_log(created_at DESC)`},
 		{"gateway_request_attempt", "idx_request_attempt_request", false, []string{"request_id"}, `CREATE INDEX idx_request_attempt_request ON gateway_request_attempt(request_id)`},
-		{"gateway_request_attempt", "idx_request_attempt_outcome_created", false, []string{"outcome", "created_at DESC"}, `CREATE INDEX idx_request_attempt_outcome_created ON gateway_request_attempt(outcome, created_at DESC)`},
 		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_provider", "idx_gateway_provider_status", false, []string{"status"}, `CREATE INDEX idx_gateway_provider_status ON gateway_provider(status)`},
 		{"gateway_model", "idx_gateway_model_status", false, []string{"status"}, `CREATE INDEX idx_gateway_model_status ON gateway_model(status)`},
