@@ -205,22 +205,132 @@ func assembleRouteTable(providers []model.Provider, models []model.ModelConfig, 
 		if len(routes) == 0 {
 			continue
 		}
-		// Primary first, then the heavier line of a priority band, then the
-		// order they were declared in.
+		// Priority decides the band order; within a band the declaration order is
+		// kept.
 		//
-		// The weight tiebreak is stated here rather than inherited from the
-		// query's ORDER BY. Relying on the caller's order made the function's
-		// contract depend on a SQL clause three files away — and weight would
-		// have been silently dropped by any future caller that did not
-		// pre-sort. Weight still does not mean weighted routing here; it only
-		// orders the fallback chain.
+		// Weight is deliberately NOT a sort key here any more. It is the input to
+		// the smooth weighted round-robin that chooses which line of a band
+		// starts a request (orderRoutes). Sorting by weight would make the
+		// fallback chain a fixed strongest-first list and leave weight meaning
+		// "tiebreak" rather than "share of traffic".
 		sort.SliceStable(routes, func(i, j int) bool {
-			if routes[i].Priority != routes[j].Priority {
-				return routes[i].Priority < routes[j].Priority
-			}
-			return routes[i].Weight > routes[j].Weight
+			return routes[i].Priority < routes[j].Priority
 		})
 		out.models[m.Alias] = routes
+	}
+	return out
+}
+
+// normalWeight treats a missing or non-positive weight as 1.
+//
+// Zero is not a meaningful weight — a line with weight 0 would never be picked
+// and is indistinguishable from a misconfigured one — so it becomes the neutral
+// default rather than a black hole. This matches the route table's CHECK
+// (weight >= 0): zero is allowed to exist, it just does not mean "never".
+func normalWeight(w int) int {
+	if w <= 0 {
+		return 1
+	}
+	return w
+}
+
+// routeSelector holds the smooth-weighted-round-robin state that picks which
+// line of a priority band starts a request.
+//
+// Smooth WRR (the nginx algorithm) spreads a band's picks so the weights are met
+// over a window rather than in bursts: each member's running credit grows by its
+// weight per pick, the highest credit wins, and the winner's credit drops by the
+// total. For weights 3:1 the start sequence is A, A, B, A — three to one without
+// ever issuing two Bs back to back.
+//
+// The state is per instance and in memory: it is scheduling state, not durable
+// truth, and losing it on restart only resets the rotation. It is keyed by model
+// and priority band so two models do not share a rotation.
+type routeSelector struct {
+	mu      sync.Mutex
+	current map[string][]int
+}
+
+func newRouteSelector() *routeSelector {
+	return &routeSelector{current: make(map[string][]int)}
+}
+
+// start returns the index of the band member that should start this request,
+// advancing the rotation. The caller must pass a band whose members are in a
+// stable order (assembleRouteTable preserves the declaration order).
+func (s *routeSelector) start(key string, weights []int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.current[key]
+	if len(cur) != len(weights) {
+		cur = make([]int, len(weights))
+	}
+	total := 0
+	for i, w := range weights {
+		cur[i] += w
+		total += w
+	}
+	pick := 0
+	for i := 1; i < len(cur); i++ {
+		if cur[i] > cur[pick] {
+			pick = i
+		}
+	}
+	cur[pick] -= total
+	s.current[key] = cur
+	return pick
+}
+
+// orderByWeight returns a band in descending weight, keeping declaration order
+// for equal weights. It is the order used for the fallback lines of a band and
+// for every band after the first.
+func orderByWeight(band []directRoute) []directRoute {
+	ordered := append([]directRoute(nil), band...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return normalWeight(ordered[i].Weight) > normalWeight(ordered[j].Weight)
+	})
+	return ordered
+}
+
+// orderRoutes returns the attempt order for a model's lines: each priority band
+// in turn. The first band's starting line is chosen by smooth weighted round
+// robin; the rest of that band, and every later band, are ordered by descending
+// weight. Priority still dominates — a healthy lower-priority band is always
+// tried before a higher one — the weights only decide who leads within a band.
+func (s *Server) orderRoutes(model string, routes []directRoute) []directRoute {
+	if len(routes) == 0 {
+		return routes
+	}
+
+	// Split into contiguous priority bands (assembleRouteTable sorted by
+	// priority, so equal priorities are adjacent).
+	var bands [][]directRoute
+	for _, r := range routes {
+		if len(bands) == 0 || bands[len(bands)-1][0].Priority != r.Priority {
+			bands = append(bands, []directRoute{r})
+			continue
+		}
+		bands[len(bands)-1] = append(bands[len(bands)-1], r)
+	}
+
+	out := make([]directRoute, 0, len(routes))
+	for i, band := range bands {
+		if i == 0 && s.selector != nil && len(band) > 1 {
+			weights := make([]int, len(band))
+			for j, r := range band {
+				weights[j] = normalWeight(r.Weight)
+			}
+			key := model + "\x00" + strconv.Itoa(band[0].Priority)
+			pick := s.selector.start(key, weights)
+			out = append(out, band[pick])
+			rest := make([]directRoute, 0, len(band)-1)
+			rest = append(rest, band[:pick]...)
+			rest = append(rest, band[pick+1:]...)
+			out = append(out, orderByWeight(rest)...)
+			continue
+		}
+		out = append(out, orderByWeight(band)...)
 	}
 	return out
 }
@@ -254,12 +364,13 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load routing table", reqID)
 		return
 	}
-	routes := table.models[envelope.Model]
-	if len(routes) == 0 {
+	configured := table.models[envelope.Model]
+	if len(configured) == 0 {
 		httpx.Error(w, http.StatusNotFound, "model_not_configured",
 			"No enabled channel is configured for model "+envelope.Model, reqID)
 		return
 	}
+	routes := s.orderRoutes(envelope.Model, configured)
 
 	var (
 		lastStatus  int

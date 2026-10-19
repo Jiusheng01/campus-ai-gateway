@@ -53,6 +53,11 @@ type Server struct {
 	routeCache routeTable
 	routeAt    time.Time
 	transport  *transportPool
+
+	// selector advances the smooth-weighted-round-robin rotation that picks
+	// which line of a priority band starts a request. In-memory scheduling
+	// state; losing it on restart only resets the rotation.
+	selector *routeSelector
 }
 
 type requestEnvelope struct {
@@ -153,6 +158,7 @@ func NewServer(cfg Config) (*Server, error) {
 	} else {
 		s.upstream = http.HandlerFunc(s.serveDirect)
 		s.transport = &transportPool{}
+		s.selector = newRouteSelector()
 		log.Printf("data plane: direct — THINKWATCH_URL is not set, channels are dialled in-process")
 	}
 	if cfg.SessionAuthEnabled() {

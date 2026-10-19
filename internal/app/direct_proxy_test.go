@@ -29,6 +29,7 @@ func newDirectTestServer(t *testing.T, table routeTable) *Server {
 		routeCache: table,
 		routeAt:    time.Now(),
 		transport:  &transportPool{},
+		selector:   newRouteSelector(),
 	}
 }
 
@@ -77,15 +78,16 @@ func TestAssembleRouteTableSkipsUnroutableEntries(t *testing.T) {
 	}
 }
 
-func TestAssembleRouteTableOrdersByPriorityThenWeight(t *testing.T) {
+func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 	providers := []model.Provider{
 		{ID: "p1", Name: "primary", BaseURL: "https://a.test/v1", CredentialEnv: "K1", Status: 1},
 		{ID: "p2", Name: "backup-a", BaseURL: "https://b.test/v1", CredentialEnv: "K2", Status: 1},
 		{ID: "p3", Name: "backup-b", BaseURL: "https://c.test/v1", CredentialEnv: "K3", Status: 1},
 	}
 	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", Status: 1}}
-	// Deliberately declared out of order, and with the lighter line first, so
-	// neither priority nor weight can pass by accident.
+	// Deliberately declared out of order, and with the lighter line first. The
+	// weight must NOT reorder the band any more: it is the smooth weighted round
+	// robin's input (orderRoutes), not a sort key. Only priority moves lines.
 	routesByModel := map[string][]model.ModelRoute{
 		"m1": {
 			{ModelID: "m1", ProviderID: "p3", UpstreamModel: "x", Priority: 2, Weight: 50, Status: 1},
@@ -99,7 +101,9 @@ func TestAssembleRouteTableOrdersByPriorityThenWeight(t *testing.T) {
 	for i, r := range routes {
 		got[i] = r.Provider
 	}
-	want := []string{"primary", "backup-a", "backup-b"}
+	// Priority 1 first; within priority 2 the declaration order is kept
+	// (backup-b was declared before backup-a), because weight no longer sorts.
+	want := []string{"primary", "backup-b", "backup-a"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("line order = %v, want %v", got, want)
 	}
