@@ -101,6 +101,34 @@ type APIKeyCreateResult struct {
 	APIKey string `json:"api_key"`
 }
 
+// RequestAttempt is one Routing Attempt under a Request Record.
+//
+// It exists because the Request Record keeps only the winning channel and a
+// count, which cannot say what was tried and why the gateway moved on. Outcome
+// is "served", "failed" or "skipped"; ErrorKind is the gateway's own
+// classification (never upstream text). No upstream response content is stored
+// (ADR-0009).
+type RequestAttempt struct {
+	AttemptNo     int    `json:"attempt_no"`
+	Provider      string `json:"provider"`
+	UpstreamModel string `json:"upstream_model"`
+	Outcome       string `json:"outcome"`
+	StatusCode    int    `json:"status_code"`
+	LatencyMS     int64  `json:"latency_ms"`
+	ErrorKind     string `json:"error_kind"`
+}
+
+// The outcomes a Routing Attempt can have.
+const (
+	// AttemptServed: the channel answered and its response reached the client.
+	AttemptServed = "served"
+	// AttemptFailed: the channel was tried and did not serve (transport error or
+	// a failover-eligible status).
+	AttemptFailed = "failed"
+	// AttemptSkipped: the channel was not tried — the circuit breaker had it open.
+	AttemptSkipped = "skipped"
+)
+
 type RequestLogAdmin struct {
 	RequestID      string    `json:"request_id"`
 	TenantID       string    `json:"tenant_id"`

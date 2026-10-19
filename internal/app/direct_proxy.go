@@ -268,14 +268,20 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		lastChannel string // the channel that produced whichever outcome is reported
 		attempts    int
 	)
+	recorder := attemptRecorderFrom(r.Context())
 	for _, route := range routes {
 		attempts++
+		started := time.Now()
 		resp, err := s.attemptDirect(r, body, envelope, route)
 		if err != nil {
 			lastErr = err
 			lastStatus = 0
 			lastBody = nil
 			lastChannel = route.Provider
+			recordAttempt(recorder, model.RequestAttempt{
+				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
+				Outcome: model.AttemptFailed, LatencyMS: time.Since(started).Milliseconds(), ErrorKind: attemptErrorKind(err),
+			})
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
@@ -288,8 +294,16 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 			lastStatus = resp.StatusCode
 			lastErr = nil
 			lastChannel = route.Provider
+			recordAttempt(recorder, model.RequestAttempt{
+				AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
+				Outcome: model.AttemptFailed, StatusCode: resp.StatusCode, LatencyMS: time.Since(started).Milliseconds(),
+			})
 			continue
 		}
+		recordAttempt(recorder, model.RequestAttempt{
+			AttemptNo: attempts, Provider: route.Provider, UpstreamModel: route.UpstreamModel,
+			Outcome: model.AttemptServed, StatusCode: resp.StatusCode, LatencyMS: time.Since(started).Milliseconds(),
+		})
 		writeDirectResponse(w, resp, route, attempts)
 		return
 	}
@@ -339,6 +353,36 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	default:
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", "no channel could serve the request", reqID)
 	}
+}
+
+// recordAttempt appends one Routing Attempt to the request's recorder, if the
+// data plane was reached through the logging wrapper. A nil recorder is the
+// normal case for a unit test or a probe and means "nothing to record", not an
+// error.
+func recordAttempt(a *attemptRecorder, attempt model.RequestAttempt) {
+	if a == nil {
+		return
+	}
+	a.record(attempt)
+}
+
+// attemptErrorKind classifies an attempt failure for telemetry. It returns the
+// gateway's own label, never the error text: a transport error can quote the
+// dialled URL, userinfo included (see directFailureReason).
+func attemptErrorKind(err error) string {
+	var missing missingCredentialError
+	if errors.As(err, &missing) {
+		return "missing_credential"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	return "transport"
 }
 
 // clientSafeFailure returns the part of an attempt error that is safe to show

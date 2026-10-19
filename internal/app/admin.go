@@ -127,6 +127,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIKeys(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
 		s.handleAPIKeyByID(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/request-logs/") && strings.HasSuffix(r.URL.Path, "/attempts"):
+		s.handleRequestLogAttempts(w, r)
 	case r.URL.Path == "/admin/request-logs":
 		s.handleRequestLogs(w, r)
 	case r.URL.Path == "/admin/request-logs/usage":
@@ -677,6 +679,31 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
+}
+
+// handleRequestLogAttempts returns one request's Routing Attempt chain.
+//
+// It is a separate call from the log list on purpose: a list of fifty requests
+// would otherwise carry every attempt of every row. The console asks for the
+// chain when an operator opens a detail drawer.
+func (s *Server) handleRequestLogAttempts(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/request-logs/"), "/attempts")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	items, err := s.pg.RequestAttempts(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load request attempts", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
 // handleRequestLogsSummary aggregates the rows the table is currently filtered

@@ -435,6 +435,8 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aw := &auditResponseWriter{ResponseWriter: w}
+	attempts := newAttemptRecorder()
+	r = r.WithContext(withAttemptRecorder(r.Context(), attempts))
 	var envelope requestEnvelope
 	var reservation *ratelimit.TPMReservation
 	var tenantReservation *ratelimit.TenantQuotaReservation
@@ -479,6 +481,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_ = s.pg.InsertRequestLog(ctx, log)
+		// The Routing Attempt chain, recorded by the data plane into the
+		// request-scoped recorder. Best-effort: a request that answered must not
+		// fail because its telemetry write did (ADR-0004 allows the loss).
+		_ = s.pg.InsertRequestAttempts(ctx, reqID, attempts.list())
 	}()
 
 	allowed, err := s.limit.AllowTenantRequest(r.Context(), id.TenantID, id.MonthlyRequestLimit)
