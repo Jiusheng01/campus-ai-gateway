@@ -30,7 +30,7 @@ func TestRebuildQuotaCountersWritesTheLogDerivedValuesToRedis(t *testing.T) {
 	// Two tenants, one with two settled days and one with a single day. The
 	// input is the aggregated request log (the durable truth); the rebuild must
 	// not invent anything beyond it.
-	daily := []model.QuotaUsageRow{
+	daily := []model.QuotaSettledRow{
 		{TenantID: tenantA, Day: "20261001", Requests: 3, Tokens: 150},
 		{TenantID: tenantA, Day: "20261002", Requests: 2, Tokens: 250},
 		{TenantID: tenantB, Day: "20261002", Requests: 5, Tokens: 700},
@@ -110,7 +110,7 @@ func TestRebuildQuotaCountersResetsTheCache(t *testing.T) {
 	}
 
 	limiter := New(client)
-	if _, err := limiter.RebuildQuotaCounters(ctx, []model.QuotaUsageRow{
+	if _, err := limiter.RebuildQuotaCounters(ctx, []model.QuotaSettledRow{
 		{TenantID: tenant, Day: "20261005", Requests: 1, Tokens: 42},
 	}); err != nil {
 		t.Fatalf("rebuild: %v", err)
@@ -150,8 +150,8 @@ func TestRebuildQuotaCountersRunsWhenTheCounterIsMissing(t *testing.T) {
 	t.Cleanup(func() { _ = client.Del(ctx, dailyKey, monthlyKey).Err() })
 
 	limiter := New(client)
-	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaUsageRow, error) {
-		return []model.QuotaUsageRow{{TenantID: tenant, Day: day, Requests: 7, Tokens: 500}}, nil
+	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaSettledRow, error) {
+		return []model.QuotaSettledRow{{TenantID: tenant, Day: day, Requests: 7, Tokens: 500}}, nil
 	})
 
 	// The key is absent, so the gate must consult the source before reading.
@@ -192,9 +192,9 @@ func TestRebuildQuotaCountersLeavesPresentCountersAlone(t *testing.T) {
 
 	limiter := New(client)
 	consulted := false
-	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaUsageRow, error) {
+	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaSettledRow, error) {
 		consulted = true
-		return []model.QuotaUsageRow{{TenantID: tenant, Day: day, Tokens: 999999}}, nil
+		return []model.QuotaSettledRow{{TenantID: tenant, Day: day, Tokens: 999999}}, nil
 	})
 
 	if _, allowed, err := limiter.ReserveTenantTokens(ctx, tenant, 5, 1_000_000, 1_000_000); err != nil || !allowed {
@@ -205,5 +205,93 @@ func TestRebuildQuotaCountersLeavesPresentCountersAlone(t *testing.T) {
 	}
 	if got := mustGet(t, client, dailyKey); got != 105 {
 		t.Fatalf("daily key = %d, want 105 (100 present + 5 reserved, no rebuild)", got)
+	}
+}
+
+// TestRebuildQuotaCountersDoesNotRebuildEveryRequest pins the fix for a rebuild
+// storm. A tenant the log has no settled rows for has no counter because it has
+// nothing to count, not because the cache was cleared; a missing key alone must
+// not rebuild on every request. The rebuild arms the counter with its measured
+// baseline — zero — so the next probe finds it present. The request here is
+// larger than the whole limit, so the gate refuses it and never INCRBYs; without
+// the baseline the counter would stay absent forever and reconstitute the whole
+// month on each attempt.
+func TestRebuildQuotaCountersDoesNotRebuildEveryRequest(t *testing.T) {
+	client := redisTestClient(t)
+	ctx := context.Background()
+
+	const tenant = "ffffffff-0000-0000-0000-000000000006"
+	day := time.Now().UTC().Format("20060102")
+	month := time.Now().UTC().Format("200601")
+	dailyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:day:%s", tenant, day)
+	monthlyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:month:%s", tenant, month)
+	t.Cleanup(func() { _ = client.Del(ctx, dailyKey, monthlyKey).Err() })
+	// The baseline is armed per tenant key, so another test's counters cannot
+	// disturb this one; only this tenant's keys matter.
+	_ = client.Del(ctx, dailyKey, monthlyKey).Err()
+
+	limiter := New(client)
+	calls := 0
+	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaSettledRow, error) {
+		calls++
+		return nil, nil // this tenant has settled nothing this month
+	})
+
+	for i := 0; i < 3; i++ {
+		if _, allowed, err := limiter.ReserveTenantTokens(ctx, tenant, 200, 100, 100); err != nil || allowed {
+			t.Fatalf("attempt %d: allowed=%v err=%v, want denied", i, allowed, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("rebuild source consulted %d times, want 1: a legitimately absent counter must not rebuild on every request", calls)
+	}
+}
+
+// TestRebuildQuotaCountersRebuildsAfterAGenuineClear is the other half of the
+// trigger. The armed baseline is not a permanent "trust me" flag: when the cache
+// really is cleared — the counter and the baseline go together — the next
+// request must rebuild from the log again.
+func TestRebuildQuotaCountersRebuildsAfterAGenuineClear(t *testing.T) {
+	client := redisTestClient(t)
+	ctx := context.Background()
+
+	const tenant = "99999999-0000-0000-0000-000000000009"
+	day := time.Now().UTC().Format("20060102")
+	month := time.Now().UTC().Format("200601")
+	dailyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:day:%s", tenant, day)
+	monthlyKey := fmt.Sprintf("gw:quota:tenant:%s:tokens:month:%s", tenant, month)
+	t.Cleanup(func() { _ = client.Del(ctx, dailyKey, monthlyKey).Err() })
+	_ = client.Del(ctx, dailyKey, monthlyKey).Err()
+
+	limiter := New(client)
+	calls := 0
+	limiter.SetQuotaRebuildSource(func(context.Context) ([]model.QuotaSettledRow, error) {
+		calls++
+		return []model.QuotaSettledRow{{TenantID: tenant, Day: day, Requests: 1, Tokens: 500}}, nil
+	})
+
+	if _, allowed, err := limiter.ReserveTenantTokens(ctx, tenant, 10, 1_000_000, 1_000_000); err != nil || !allowed {
+		t.Fatalf("first reserve: allowed=%v err=%v", allowed, err)
+	}
+	if calls != 1 {
+		t.Fatalf("rebuild source consulted %d times, want 1", calls)
+	}
+	if got := mustGet(t, client, dailyKey); got != 510 {
+		t.Fatalf("daily key = %d, want 510 (500 settled + 10 reserved)", got)
+	}
+
+	// A flush takes the counter and the baseline at once.
+	if err := client.Del(ctx, dailyKey, monthlyKey).Err(); err != nil {
+		t.Fatalf("clear cache: %v", err)
+	}
+
+	if _, allowed, err := limiter.ReserveTenantTokens(ctx, tenant, 10, 1_000_000, 1_000_000); err != nil || !allowed {
+		t.Fatalf("second reserve: allowed=%v err=%v", allowed, err)
+	}
+	if calls != 2 {
+		t.Fatalf("rebuild source consulted %d times, want 2: a cleared cache must rebuild again", calls)
+	}
+	if got := mustGet(t, client, dailyKey); got != 510 {
+		t.Fatalf("daily key after a real clear = %d, want 510", got)
 	}
 }

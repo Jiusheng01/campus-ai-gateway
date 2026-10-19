@@ -66,7 +66,7 @@ type Limiter struct {
 // rebuild needs. The gateway wires it to the storage layer; providing it from
 // the app keeps the limiter free of any storage dependency while still letting
 // the hot path trigger a rebuild when it finds a counter missing.
-type QuotaRebuildSource func(ctx context.Context) ([]model.QuotaUsageRow, error)
+type QuotaRebuildSource func(ctx context.Context) ([]model.QuotaSettledRow, error)
 
 type TPMReservation struct {
 	rdb    *redis.Client
@@ -106,25 +106,47 @@ func (l *Limiter) SetQuotaRebuildSource(src QuotaRebuildSource) {
 // against zero and over-run the tenant's quota. The rebuild is idempotent
 // (SET, not INCRBY) and serialised so concurrent requests cannot stampede the
 // storage loader.
-func (l *Limiter) ensureQuotaCounters(ctx context.Context, probeKey string) error {
+//
+// Absence is not proof of loss, though, and treating it as such rebuilt the
+// whole month on every request for a tenant the log has no settled rows for: a
+// new UTC day or a zero-usage tenant has no counter because it has nothing to
+// count, not because the cache was cleared. A rebuild that leaves the probe key
+// absent therefore arms it with its measured baseline — zero — under ttl, so the
+// next probe finds the key present and stops rebuilding. A genuine clear (a
+// flush) removes that baseline along with the counters, so a real loss still
+// rebuilds. The gate then INCRBYs on top of the baseline, and a denied request
+// (which never reaches the INCRBY) still leaves an armed counter behind.
+func (l *Limiter) ensureQuotaCounters(ctx context.Context, probeKey string, ttl time.Duration) error {
 	if l.rebuildSrc == nil {
 		return nil
 	}
-	exists, err := l.rdb.Exists(ctx, probeKey).Result()
+	present, err := l.rdb.Exists(ctx, probeKey).Result()
 	if err != nil {
 		return err
 	}
-	if exists == 1 {
+	if present == 1 {
 		return nil
 	}
 	l.rebuildMu.Lock()
 	defer l.rebuildMu.Unlock()
+	// Re-check under the lock: a concurrent request may have rebuilt between the
+	// first probe and here, and rebuilding twice would double the storage load.
+	if present, err := l.rdb.Exists(ctx, probeKey).Result(); err != nil {
+		return err
+	} else if present == 1 {
+		return nil
+	}
 	rows, err := l.rebuildSrc(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = l.RebuildQuotaCounters(ctx, rows)
-	return err
+	if _, err := l.RebuildQuotaCounters(ctx, rows); err != nil {
+		return err
+	}
+	// SetNX, not Set: the rebuild already wrote the real baseline for every
+	// tenant that had settled rows, so this only fills in the measured-zero
+	// case and never overwrites a derived value.
+	return l.rdb.SetNX(ctx, probeKey, 0, ttl).Err()
 }
 
 func minuteBucket() string {
@@ -171,7 +193,7 @@ func (l *Limiter) AllowTenantRequest(ctx context.Context, tenantID string, month
 		return true, nil
 	}
 	key := quotaRequestsKey(tenantID, tenantMonthBucket())
-	if err := l.ensureQuotaCounters(ctx, key); err != nil {
+	if err := l.ensureQuotaCounters(ctx, key, quotaMonthlyTTL); err != nil {
 		return false, err
 	}
 	allowed, err := tenantRequestScript.Run(ctx, l.rdb, []string{key}, monthlyLimit, int64(quotaMonthlyTTL/time.Second)).Int()
@@ -184,7 +206,7 @@ func (l *Limiter) ReserveTenantTokens(ctx context.Context, tenantID string, amou
 	}
 	dailyKey := quotaDailyTokensKey(tenantID, tenantDayBucket())
 	monthlyKey := quotaMonthlyTokensKey(tenantID, tenantMonthBucket())
-	if err := l.ensureQuotaCounters(ctx, dailyKey); err != nil {
+	if err := l.ensureQuotaCounters(ctx, dailyKey, quotaDailyTTL); err != nil {
 		return nil, false, err
 	}
 	allowed, err := tenantTokenScript.Run(

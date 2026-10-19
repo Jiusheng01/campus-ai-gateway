@@ -7,7 +7,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// DailyQuotaUsage aggregates the settled request log by tenant and UTC day in
+// DailySettledQuota aggregates the settled request log by tenant and UTC day in
 // [from, to), so a Quota Counter rebuild can reconstruct the Redis cache from
 // the durable truth.
 //
@@ -17,7 +17,7 @@ import (
 // log's created_at is a timestamptz, and to_char would otherwise format it in
 // the database session's zone, shifting the daily boundary away from the one
 // the gate's live counters use.
-func (p *Postgres) DailyQuotaUsage(ctx context.Context, from, to time.Time) ([]model.QuotaUsageRow, error) {
+func (p *Postgres) DailySettledQuota(ctx context.Context, from, to time.Time) ([]model.QuotaSettledRow, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT tenant_id::text,
        to_char(created_at AT TIME ZONE 'UTC', 'YYYYMMDD') AS day,
@@ -32,9 +32,9 @@ ORDER BY tenant_id, day
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.QuotaUsageRow
+	var out []model.QuotaSettledRow
 	for rows.Next() {
-		var v model.QuotaUsageRow
+		var v model.QuotaSettledRow
 		if err := rows.Scan(&v.TenantID, &v.Day, &v.Requests, &v.Tokens); err != nil {
 			return nil, err
 		}

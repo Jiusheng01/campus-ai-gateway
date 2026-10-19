@@ -8,7 +8,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// TestDailyQuotaUsageAggregatesSettledRequestLogByTenantAndDay checks the
+// TestDailySettledQuotaAggregatesSettledRequestLogByTenantAndDay checks the
 // aggregation a Quota Counter rebuild feeds on: one row per (tenant, UTC day)
 // with the settled request count and token sum, bucketed exactly like the
 // limiter's day keys.
@@ -18,7 +18,7 @@ import (
 // request under the wrong day and the rebuild would re-arm a counter with the
 // wrong baseline. It skips when no TEST_DATABASE_URL / local Postgres answers,
 // matching the other request-log integration tests.
-func TestDailyQuotaUsageAggregatesSettledRequestLogByTenantAndDay(t *testing.T) {
+func TestDailySettledQuotaAggregatesSettledRequestLogByTenantAndDay(t *testing.T) {
 	pg := testPostgres(t)
 	clearRequestLogs(t, pg)
 	clearTenantsAndKeys(t, pg)
@@ -39,16 +39,16 @@ func TestDailyQuotaUsageAggregatesSettledRequestLogByTenantAndDay(t *testing.T) 
 		{"q-b-nm-1", beta, "gpt-4o", "openai", 200, 7, 0, false, nextMonth},
 	})
 
-	got, err := pg.DailyQuotaUsage(context.Background(),
+	got, err := pg.DailySettledQuota(context.Background(),
 		time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
 		time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
-		t.Fatalf("DailyQuotaUsage: %v", err)
+		t.Fatalf("DailySettledQuota: %v", err)
 	}
 
 	// Look up by (tenant, day): tenant ids are UUIDs, so ORDER BY tenant_id is
 	// lexicographic, not creation order, and no test may rely on a position.
-	byKey := make(map[string]model.QuotaUsageRow, len(got))
+	byKey := make(map[string]model.QuotaSettledRow, len(got))
 	for _, v := range got {
 		byKey[v.TenantID+"|"+v.Day] = v
 	}
@@ -74,10 +74,10 @@ func TestDailyQuotaUsageAggregatesSettledRequestLogByTenantAndDay(t *testing.T) 
 	}
 }
 
-// TestDailyQuotaUsageRangeIsHalfOpen pins the boundary semantics: a row sitting
+// TestDailySettledQuotaRangeIsHalfOpen pins the boundary semantics: a row sitting
 // exactly on the end of the range must not leak in, or a month-over-month
 // rebuild would double-count the boundary.
-func TestDailyQuotaUsageRangeIsHalfOpen(t *testing.T) {
+func TestDailySettledQuotaRangeIsHalfOpen(t *testing.T) {
 	pg := testPostgres(t)
 	clearRequestLogs(t, pg)
 	clearTenantsAndKeys(t, pg)
@@ -91,10 +91,10 @@ func TestDailyQuotaUsageRangeIsHalfOpen(t *testing.T) {
 	})
 
 	// [2026-10-01, 2026-11-01): the first row is in, the boundary row is out.
-	got, err := pg.DailyQuotaUsage(context.Background(),
+	got, err := pg.DailySettledQuota(context.Background(),
 		time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), nextMonthStart)
 	if err != nil {
-		t.Fatalf("DailyQuotaUsage: %v", err)
+		t.Fatalf("DailySettledQuota: %v", err)
 	}
 	if len(got) != 1 || got[0].Tokens != 5 || got[0].Day != "20261031" {
 		t.Fatalf("quarter boundary: got %#v, want just the pre-boundary row (5 tokens on 20261031)", got)

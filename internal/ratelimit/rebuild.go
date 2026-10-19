@@ -17,25 +17,25 @@ type RebuildResult struct {
 // RebuildQuotaCounters resets the tenant quota counters to the settled usage
 // derived from the request log (the durable truth of the system).
 //
-// daily is one row per (tenant, UTC day), produced by aggregating
+// settled is one row per (tenant, UTC day), produced by aggregating
 // gateway_request_log. Every counter is written with SET, not INCRBY: a rebuild
 // replaces the cache with the log-derived baseline, so a stale or inflated live
 // counter (in-flight reservations that never settled, or a cache that was
 // cleared) cannot push the gate's view away from the truth. In-flight usage is
-// deliberately absent from daily and is therefore not counted; it reconciles or
-// disappears with the request that holds it.
+// deliberately absent from settled and is therefore not counted; it reconciles
+// or disappears with the request that holds it.
 //
 // The month counters are derived as the sum of the day rows, and the period key
 // of a month is the day key's prefix, so the reconstructed keys are exactly the
 // ones the limiter's hot path reads (see quotaRequestsKey / quotaDailyTokensKey
 // / quotaMonthlyTokensKey). Triggered at startup, when a counter is found
 // missing, and on manual reconciliation.
-func (l *Limiter) RebuildQuotaCounters(ctx context.Context, daily []model.QuotaUsageRow) (RebuildResult, error) {
+func (l *Limiter) RebuildQuotaCounters(ctx context.Context, settled []model.QuotaSettledRow) (RebuildResult, error) {
 	var res RebuildResult
 
 	// Daily token counters: one per settled (tenant, day), overwriting whatever
 	// lived in the cache before.
-	dayTokens := make(map[string]int64, len(daily))
+	dayTokens := make(map[string]int64, len(settled))
 
 	// Monthly aggregates folded from the day rows, keyed by (tenant, month) so
 	// the two month counters (tokens and requests) accumulate across the month's
@@ -45,7 +45,7 @@ func (l *Limiter) RebuildQuotaCounters(ctx context.Context, daily []model.QuotaU
 	type monthly struct{ tokens, requests int64 }
 	months := make(map[monthKey]monthly)
 
-	for _, r := range daily {
+	for _, r := range settled {
 		if r.TenantID == "" || r.Day == "" {
 			continue
 		}

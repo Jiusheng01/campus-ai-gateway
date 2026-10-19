@@ -163,16 +163,15 @@ type RequestLogUsage struct {
 	ByKey  []APIKeyUsage         `json:"by_key"`
 }
 
+// RequestLogUsageTotals is the summary plus the quota bands. It embeds
+// RequestLogSummary rather than repeating its eight fields so the totals here
+// cannot drift from the summary endpoint's: there is one definition of what the
+// aggregate for a filter selection is, and this type extends it. The embedded
+// struct is inlined on the wire, so the JSON is exactly the summary's fields
+// followed by quota.
 type RequestLogUsageTotals struct {
-	Requests      int64           `json:"requests"`
-	Errors        int64           `json:"errors"`
-	InputTokens   int64           `json:"input_tokens"`
-	OutputTokens  int64           `json:"output_tokens"`
-	TotalTokens   int64           `json:"total_tokens"`
-	AvgLatencyMS  float64         `json:"avg_latency_ms"`
-	P95LatencyMS  float64         `json:"p95_latency_ms"`
-	FailoverCount int64           `json:"failover_count"`
-	Quota         RequestLogQuota `json:"quota"`
+	RequestLogSummary
+	Quota RequestLogQuota `json:"quota"`
 }
 
 // RequestLogQuota is the tenant quota share for one filter selection. Each

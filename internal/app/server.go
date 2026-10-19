@@ -187,10 +187,23 @@ func NewServer(cfg Config) (*Server, error) {
 // makes a reconstructed monthly counter correct: starting at midnight today
 // would re-arm the month counter with only today's share and under-count the
 // rest of the month, so the gate would over-admit for the remainder of it.
-func (s *Server) currentMonthQuotaUsage(ctx context.Context) ([]model.QuotaUsageRow, error) {
+func (s *Server) currentMonthQuotaUsage(ctx context.Context) ([]model.QuotaSettledRow, error) {
 	now := time.Now().UTC()
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	return s.pg.DailyQuotaUsage(ctx, from, from.AddDate(0, 1, 0))
+	return s.pg.DailySettledQuota(ctx, from, from.AddDate(0, 1, 0))
+}
+
+// runQuotaRebuild is the single rebuild routine behind all three triggers — the
+// startup reconstruction, the limiter's missing-counter hot path and the manual
+// endpoint. Keeping one implementation means the three cannot drift into three
+// subtly different baselines, and it reads the settled month-to-date usage from
+// the request log (the durable truth) before resetting the Redis counters to it.
+func (s *Server) runQuotaRebuild(ctx context.Context) (ratelimit.RebuildResult, error) {
+	settled, err := s.currentMonthQuotaUsage(ctx)
+	if err != nil {
+		return ratelimit.RebuildResult{}, fmt.Errorf("aggregate request log: %w", err)
+	}
+	return s.limit.RebuildQuotaCounters(ctx, settled)
 }
 
 // rebuildQuotaCounters reconstructs the Redis tenant quota counters from the
@@ -202,17 +215,9 @@ func (s *Server) currentMonthQuotaUsage(ctx context.Context) ([]model.QuotaUsage
 // only be logged, because the live reserve/reconcile path keeps the counters
 // warm from then on and the manual reconciliation trigger can retry.
 func (s *Server) rebuildQuotaCounters(ctx context.Context) {
-	daily, err := s.currentMonthQuotaUsage(ctx)
+	res, err := s.runQuotaRebuild(ctx)
 	if err != nil {
-		log.Printf("quota rebuild: cannot aggregate request log: %v", err)
-		return
-	}
-	if len(daily) == 0 {
-		return
-	}
-	res, err := s.limit.RebuildQuotaCounters(ctx, daily)
-	if err != nil {
-		log.Printf("quota rebuild: cannot write counters: %v", err)
+		log.Printf("quota rebuild: %v", err)
 		return
 	}
 	log.Printf("quota rebuild: reconstructed %d daily, %d monthly token, %d monthly request counter(s) from the request log",
@@ -230,14 +235,9 @@ func (s *Server) handleQuotaRebuild(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	daily, err := s.currentMonthQuotaUsage(r.Context())
+	res, err := s.runQuotaRebuild(r.Context())
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to aggregate the request log for reconciliation", reqID)
-		return
-	}
-	res, err := s.limit.RebuildQuotaCounters(r.Context(), daily)
-	if err != nil {
-		httpx.Error(w, http.StatusServiceUnavailable, "redis_error", "Unable to write the reconstructed quota counters", reqID)
+		httpx.Error(w, http.StatusInternalServerError, "quota_rebuild_failed", "Unable to rebuild the quota counters from the request log", reqID)
 		return
 	}
 	log.Printf("quota rebuild: manual reconciliation reconstructed %d daily, %d monthly token, %d monthly request counter(s)",
@@ -326,10 +326,6 @@ func (s *Server) routes() {
 	s.mux.Handle("/admin/thinkwatch/sync", s.adminMiddleware(http.HandlerFunc(s.handleThinkWatchSync)))
 	s.mux.Handle("/admin/model-test", s.adminMiddleware(http.HandlerFunc(s.handleModelTest)))
 	s.mux.Handle("/admin/model-test-options", s.adminMiddleware(http.HandlerFunc(s.handleModelTestOptions)))
-	// Manual reconciliation of the Quota Counters. Registered before the
-	// catch-all below; the longer exact prefix wins, so this reaches its own
-	// handler rather than handleAdmin.
-	s.mux.Handle("/admin/quota-rebuild", s.adminMiddleware(http.HandlerFunc(s.handleQuotaRebuild)))
 	s.mux.Handle("/admin/", s.adminMiddleware(http.HandlerFunc(s.handleAdmin)))
 }
 

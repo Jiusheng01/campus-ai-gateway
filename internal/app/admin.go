@@ -137,6 +137,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleRequestLogFacets(w, r)
 	case r.URL.Path == "/admin/request-logs/export":
 		s.handleRequestLogsExport(w, r)
+	case r.URL.Path == "/admin/quota-rebuild":
+		s.handleQuotaRebuild(w, r)
 	case r.URL.Path == "/admin/admin-audit":
 		s.handleAdminAuditLogs(w, r)
 	case r.URL.Path == "/admin/security-events":
@@ -743,14 +745,7 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to aggregate request logs", reqID)
 		return
 	}
-	out.Totals.Requests = summary.Requests
-	out.Totals.Errors = summary.Errors
-	out.Totals.InputTokens = summary.InputTokens
-	out.Totals.OutputTokens = summary.OutputTokens
-	out.Totals.TotalTokens = summary.TotalTokens
-	out.Totals.AvgLatencyMS = summary.AvgLatencyMS
-	out.Totals.P95LatencyMS = summary.P95LatencyMS
-	out.Totals.FailoverCount = summary.FailoverCount
+	out.Totals.RequestLogSummary = summary
 
 	byKey, err := s.pg.GroupRequestLogsByKey(r.Context(), f)
 	if err != nil {
