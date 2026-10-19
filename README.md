@@ -8,7 +8,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 >
 > 已真实验证：Qwen 完整数据链路；Volcengine Ark / 豆包真实模型连通；管理员账号密码登录、会话轮换、多标签页并发刷新、RBAC、trusted-header 认证边界；2026-10-17 的修复项已用可控制的模拟上游在本地跑完 25/25 项行为断言；2026-10-18 在临时 PostgreSQL 17 与 Redis 7 上重跑 `go test ./...` 全绿、无 SKIP，CI 通过。
 >
-> 仍未做：完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。
+> 暂缓（冻结）：以下不在当前迭代范围内——完整业务数据面的双 Provider Failover 现场验收、学校真实 IdP、Multi-Gateway / PostgreSQL / Redis HA、Embedding / ASR 真实 Provider，以及 30,000 RPM 性能目标。当前迭代聚焦收敛：把限流边界收敛到租户、修正并发语义，并移除承诺了却不存在的能力。
 
 ---
 
@@ -38,7 +38,7 @@ Campus AI Gateway 位于校园 AI 平台的统一模型入口层：对上提供 
 | trusted-header / 校园 SSO 边界 | ✅* | Gateway 侧完成；学校真实 IdP 待验收 |
 | 管理审计 / 安全事件 | ✅ | 与业务请求日志分离 |
 | Prometheus / 健康检查 | ✅ | `/healthz`、`/readyz`、`/metrics` |
-| 30,000 RPM | ⏳ | k6 工具已完成，目标环境尚未正式压测 |
+| 30,000 RPM | 🧊 冻结 | k6 工具已完成；性能目标暂缓，等真实环境与压测证据 |
 
 ---
 
@@ -117,7 +117,6 @@ http://127.0.0.1:8080/admin-ui
 - 用户（super_admin）
 - 使用日志筛选、分页、CSV 与详情
 - 审计日志与安全事件
-- 任务日志（占位：网关为同步代理，暂无异步任务数据源）
 - 个人资料、安全与访问（修改密码、登录设备、退出登录）
 
 默认：

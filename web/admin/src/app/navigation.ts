@@ -3,7 +3,6 @@ import {
   FileClock,
   KeyRound,
   LayoutDashboard,
-  ListChecks,
   Network,
   Route,
   ScrollText,
@@ -22,7 +21,6 @@ export type Page =
   | 'logs'
   | 'audit'
   | 'security'
-  | 'tasks'
   | 'providers'
   | 'models'
   | 'users'
@@ -72,7 +70,6 @@ export const navGroups: NavGroup[] = [
       {id: 'logs', label: '使用日志', icon: FileClock, roles: ['super_admin', 'auditor']},
       {id: 'audit', label: '审计日志', icon: ScrollText, roles: ['super_admin', 'auditor']},
       {id: 'security', label: '安全事件', icon: ShieldAlert, roles: ['super_admin', 'auditor']},
-      {id: 'tasks', label: '任务日志', icon: ListChecks, roles: ['super_admin', 'auditor']},
     ],
   },
   {
@@ -114,7 +111,6 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   logs: {title: '使用日志', subtitle: '检索与排查业务请求'},
   audit: {title: '审计日志', subtitle: '管理员对控制面的操作记录'},
   security: {title: '安全事件', subtitle: '鉴权、权限与配额拒绝事件'},
-  tasks: {title: '任务日志', subtitle: '异步任务的提交与执行记录'},
   providers: {title: '渠道', subtitle: '管理模型渠道的接入与凭据来源'},
   models: {title: '模型与路由', subtitle: '管理对外模型与上游线路'},
   users: {title: '用户', subtitle: '管理注册用户和管理员角色'},
