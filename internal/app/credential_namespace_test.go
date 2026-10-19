@@ -33,7 +33,6 @@ func TestCredentialEnvRefusesEveryFamilyTheTicketNames(t *testing.T) {
 		{"management plane", "ADMIN_SESSION_SECRET"},
 		{"management plane proxy", "ADMIN_PROXY_SECRET"},
 		{"API key signing", "API_KEY_HMAC_SECRET"},
-		{"ThinkWatch credential", "THINKWATCH_GATEWAY_KEY"},
 		{"upstream core", "TWCORE_ENDPOINT"},
 		{"database", "DATABASE_URL"},
 		{"cache", "REDIS_PASSWORD"},

@@ -1,6 +1,6 @@
 import {useCallback, useState} from 'react'
-import {ChevronDown, FlaskConical, Pencil, Plus, RefreshCw, Route, Trash2} from 'lucide-react'
-import {api, type DashboardStatus, type ModelConfig, type ModelRoute, type Provider} from '../api'
+import {ChevronDown, FlaskConical, Pencil, Plus, Route, Trash2} from 'lucide-react'
+import {api, type ModelConfig, type ModelRoute, type Provider} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge, StatusBadge} from '../components/ui/Badge'
@@ -15,7 +15,7 @@ import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {friendlyProviderName} from '../components/providers/templates'
 import {useResource} from '../lib/useResource'
 
-type ModelBundle = {models: ModelConfig[]; providers: Provider[]; routes: Record<string, ModelRoute[]>; dataPlane: 'direct' | 'thinkwatch'}
+type ModelBundle = {models: ModelConfig[]; providers: Provider[]; routes: Record<string, ModelRoute[]>}
 
 type DrawerState =
   | {kind: 'model'; draft: ModelDraft}
@@ -27,21 +27,11 @@ export function ModelsPage() {
   const toast = useToast()
   const confirm = useConfirm()
   const [drawer, setDrawer] = useState<DrawerState>(null)
-  const [syncing, setSyncing] = useState(false)
 
   const loader = useCallback(async (): Promise<ModelBundle> => {
-    const [m, p, status] = await Promise.all([
+    const [m, p] = await Promise.all([
       api<{data: ModelConfig[]}>('/admin/models'),
       api<{data: Provider[]}>('/admin/providers'),
-      // Which data plane is running decides whether 同步 ThinkWatch has
-      // anything to write to. /admin/status is the only endpoint that reports
-      // it, and every role that can open this page may read it.
-      //
-      // A failure here must not blank the page: the sync button is a
-      // convenience, the model list is the point. Falling back to "thinkwatch"
-      // matches the gateway's own default, so the worst case is a button that
-      // answers with a clear 409 instead of disappearing.
-      api<DashboardStatus>('/admin/status').catch(() => null),
     ])
     const models = m.data || []
     const routePairs = await Promise.all(
@@ -54,29 +44,10 @@ export function ModelsPage() {
       models,
       providers: p.data || [],
       routes: Object.fromEntries(routePairs),
-      dataPlane: status?.data_plane === 'direct' ? 'direct' : 'thinkwatch',
     }
   }, [])
 
   const {data, loading, error, errorStatus, reload} = useResource(loader)
-
-  const sync = async () => {
-    const ok = await confirm({
-      title: '同步 ThinkWatch 配置？',
-      description: '将当前渠道、模型和线路配置写入 ThinkWatch。同步后业务请求会立即按新线路路由。',
-      confirmText: '确认同步',
-    })
-    if (!ok) return
-    setSyncing(true)
-    try {
-      const out = await api<{providers: number; aliases: number}>('/admin/thinkwatch/sync', {method: 'POST'})
-      toast.success(`ThinkWatch 同步成功：${out.providers} 个渠道 / ${out.aliases} 个对外模型`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'ThinkWatch 同步失败')
-    } finally {
-      setSyncing(false)
-    }
-  }
 
   const saveModel = async (v: ModelDraft) => {
     try {
@@ -122,16 +93,10 @@ export function ModelsPage() {
 
   const models = data?.models || []
   const providers = data?.providers || []
-  const direct = data?.dataPlane === 'direct'
 
   return (
     <div className="stack">
       <div className="quickActions">
-        {!direct && (
-          <Button icon={<RefreshCw />} loading={syncing} onClick={() => void sync()}>
-            同步 ThinkWatch
-          </Button>
-        )}
         <Button variant="primary" icon={<FlaskConical />} onClick={() => setDrawer({kind: 'test'})}>
           模型连通测试
         </Button>
@@ -307,7 +272,7 @@ export function ModelsPage() {
         </Drawer>
       )}
 
-      {drawer?.kind === 'test' && <ModelTestDrawer models={models} initialModel={drawer.model} direct={direct} onClose={() => setDrawer(null)} />}
+      {drawer?.kind === 'test' && <ModelTestDrawer models={models} initialModel={drawer.model} onClose={() => setDrawer(null)} />}
     </div>
   )
 }

@@ -139,8 +139,6 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleRequestLogFacets(w, r)
 	case r.URL.Path == "/admin/request-logs/export":
 		s.handleRequestLogsExport(w, r)
-	case r.URL.Path == "/admin/shadow-report":
-		s.handleShadowReport(w, r)
 	case r.URL.Path == "/admin/quota-rebuild":
 		s.handleQuotaRebuild(w, r)
 	case r.URL.Path == "/admin/admin-audit":
@@ -199,25 +197,8 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	thinkwatchOK := false
-	if s.cfg.UsesThinkWatch() {
-		client := &http.Client{Timeout: 2 * time.Second}
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(s.cfg.ThinkWatchURL, "/")+"/v1/models", nil)
-		if err == nil {
-			if s.cfg.ThinkWatchKey != "" {
-				req.Header.Set("Authorization", "Bearer "+s.cfg.ThinkWatchKey)
-			}
-			if resp, err := client.Do(req); err == nil {
-				thinkwatchOK = resp.StatusCode >= 200 && resp.StatusCode < 500
-				_ = resp.Body.Close()
-			}
-		}
-	}
-
-	// data_plane is authoritative and always present. thinkwatch is reported
-	// only in the mode where it means something: a deployment running the
-	// direct plane would otherwise show a red "ThinkWatch 异常" for a process
-	// it never intended to run.
+	// data_plane is authoritative and always present: it names the one data
+	// plane this gateway runs.
 	out := map[string]any{
 		"gateway":        true,
 		"postgres":       dbOK,
@@ -226,13 +207,10 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"stats":          stats,
 		"provider_stats": providerStats,
 	}
-	if s.cfg.UsesThinkWatch() {
-		out["thinkwatch"] = thinkwatchOK
-	}
 	// The per-provider circuits are only meaningful for the direct plane, which
 	// is the only one that breaks them. Exposing them lets an operator see why a
 	// channel is not being used instead of guessing.
-	if !s.cfg.UsesThinkWatch() && s.breaker != nil {
+	if s.breaker != nil {
 		out["circuits"] = s.breaker.circuits()
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -254,7 +232,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateProvider(&in, !s.cfg.UsesThinkWatch()); err != "" {
+		if err := validateProvider(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 			return
 		}
@@ -287,7 +265,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateProvider(&in, !s.cfg.UsesThinkWatch()); err != "" {
+	if err := validateProvider(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 		return
 	}
@@ -689,58 +667,6 @@ func (s *Server) handleRequestLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": f.Limit, "offset": f.Offset})
 }
 
-// handleShadowReport compares the direct plane's shadow decisions with what
-// ThinkWatch actually served, over a window.
-//
-// It only means anything while the deployment runs DATA_PLANE=shadow: outside
-// that mode there are no shadow rows to compare, and answering an empty report
-// would read as "the planes agree" rather than "there is nothing to compare".
-func (s *Server) handleShadowReport(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
-		return
-	}
-	if !s.cfg.ShadowDirect() {
-		httpx.Error(w, http.StatusConflict, "data_plane_not_shadow",
-			"The shadow report is only available while DATA_PLANE=shadow", reqID)
-		return
-	}
-
-	window := 24 * time.Hour
-	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 || d > 30*24*time.Hour {
-			httpx.Error(w, http.StatusBadRequest, "invalid_window", "window must be a positive duration no longer than 720h", reqID)
-			return
-		}
-		window = d
-	}
-	limit := 100
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 || n > 1000 {
-			httpx.Error(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 1000", reqID)
-			return
-		}
-		limit = n
-	}
-
-	sampled, mismatched, mismatches, err := s.pg.ShadowReport(r.Context(), time.Now().UTC().Add(-window), limit)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the shadow report", reqID)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"window":     window.String(),
-		"limit":      limit,
-		"sampled":    sampled,
-		"mismatched": mismatched,
-		"data":       mismatches,
-	})
-}
-
 // handleRequestLogAttempts returns one request's Routing Attempt chain.
 //
 // It is a separate call from the log list on purpose: a list of fifty requests
@@ -1051,7 +977,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 var reservedCredentialEnvPrefixes = []string{
 	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "DATABASE_", "DATA_PLANE",
 	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "HTTPS_", "KUBERNETES_",
-	"NO_PROXY", "ALL_PROXY", "PG", "PUBLIC_", "REDIS_", "TEST_", "THINKWATCH_",
+	"NO_PROXY", "ALL_PROXY", "PG", "PUBLIC_", "REDIS_", "TEST_",
 	"TRUSTED_", "TWCORE_",
 }
 
@@ -1078,12 +1004,12 @@ func validateCredentialEnv(name string) string {
 
 // validateProvider validates a channel.
 //
-// direct selects the stricter protocol rule: the in-process data plane speaks
-// the OpenAI wire format only, so a channel marked anthropic or gemini would be
-// sent an OpenAI body and fail at request time. ThinkWatch mode keeps the wider
-// enum because the protocol is written into its configuration and ThinkWatch
-// performs the translation.
-func validateProvider(v *model.Provider, direct bool) string {
+// The gateway speaks the OpenAI wire format only: the in-process data plane
+// sends the OpenAI chat body it received straight to the provider, so a channel
+// marked anthropic or gemini would be sent a body it cannot read and fail at
+// request time. Refusing it when it is saved is a configuration error instead
+// of an outage.
+func validateProvider(v *model.Provider) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
@@ -1097,12 +1023,9 @@ func validateProvider(v *model.Provider, direct bool) string {
 	switch v.Protocol {
 	case "":
 		v.Protocol = "openai-chat"
-	case "openai-chat", "openai-responses", "anthropic", "gemini":
+	case "openai-chat":
 	default:
-		return "unsupported protocol"
-	}
-	if direct && v.Protocol != "openai-chat" {
-		return "the direct data plane only speaks the OpenAI chat format; set protocol to openai-chat or run with ThinkWatch"
+		return "unsupported protocol; the gateway only speaks the OpenAI chat format"
 	}
 	if v.Status == 0 {
 		v.Status = 1

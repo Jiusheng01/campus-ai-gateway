@@ -13,7 +13,6 @@ function Port-Status([int]$Port) {
 Write-Host ""
 Write-Host "Campus AI Gateway - Local Status" -ForegroundColor Cyan
 Write-Host ("Gateway    : " + (Port-Status 8080))
-Write-Host ("ThinkWatch : " + (Port-Status 8788))
 
 try {
     & docker compose -f .\deploy\docker-compose.yml -f .\deploy\docker-compose.dev.yml ps

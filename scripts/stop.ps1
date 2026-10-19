@@ -37,5 +37,4 @@ else {
 
 Write-Host ""
 Write-Host "Stopped." -ForegroundColor Green
-Write-Host "ThinkWatch Core is not stopped automatically because it may be used by other clients."
 Write-Host ""

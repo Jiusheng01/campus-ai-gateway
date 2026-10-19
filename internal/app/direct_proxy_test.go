@@ -399,12 +399,12 @@ func TestServeModelTestDirectReportsTheServingChannel(t *testing.T) {
 	payload := []byte(`{"model":"campus-smart","messages":[{"role":"user","content":"ping"}],"stream":false}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
-	s.serveModelTestDirect(rec, req, thinkWatchTestRequest{Model: "campus-smart", Prompt: "ping"}, payload, "req_test")
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "campus-smart", Prompt: "ping"}, payload, "req_test")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	var out thinkWatchTestResult
+	var out modelTestResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("response is not JSON: %v", err)
 	}

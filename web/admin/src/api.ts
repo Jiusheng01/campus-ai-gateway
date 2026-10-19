@@ -13,23 +13,13 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
 /**
  * Which data plane the gateway is running.
  *
- * "thinkwatch" proxies every business request to ThinkWatch Core, which owns
- * model resolution and failover. "direct" resolves the model against the
- * channel configuration and dials it in-process, so there is no second process
- * to run and no configuration to synchronise.
- *
- * The distinction is not cosmetic: in direct mode the 同步 ThinkWatch action
- * has nothing to write to, and a ThinkWatch health light would report on a
- * process the deployment never started.
+ * There is one: "direct" resolves the model against the channel configuration
+ * and dials it in-process, so there is no second process to run and no
+ * configuration to synchronise.
  */
-export type DataPlane='direct'|'thinkwatch'|'shadow'
+export type DataPlane='direct'
 
-/**
- * `thinkwatch` is absent in direct mode rather than false. A `false` would read
- * as "the router is down", which is a different and alarming claim from "there
- * is no router here".
- */
-export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;thinkwatch?:boolean;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
+export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
 export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
 
 /**

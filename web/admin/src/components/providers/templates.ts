@@ -70,8 +70,14 @@ export const providerTemplates: ProviderTemplate[] = [
   },
 ]
 
-export const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic', 'gemini'] as const
+// The data plane dials channels itself and speaks one protocol: OpenAI chat.
+// Offering the others here would be a trap — the gateway rejects them on save —
+// so the picker lists only what can actually be saved.
+export const PROTOCOLS = ['openai-chat'] as const
 
+// Labels for a protocol already stored on a row. Kept wider than PROTOCOLS so a
+// channel saved before the restriction still renders a name instead of a bare
+// string.
 const PROTOCOL_LABELS: Record<string, string> = {
   'openai-chat': 'OpenAI Compatible',
   'openai-responses': 'OpenAI Responses',

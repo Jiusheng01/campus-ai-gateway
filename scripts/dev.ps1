@@ -2,9 +2,6 @@ param(
     [switch]$ForceRestart,
     [switch]$SkipTests,
     [switch]$NoBrowser,
-    # Run the gateway's own data plane instead of ThinkWatch. Equivalent to
-    # setting DATA_PLANE=direct, and it stops this script from starting twcore.
-    [switch]$Direct,
     [string]$AdminToken = "campus-admin-local-secret",
     [string]$HmacSecret = "campus-local-test-secret"
 )
@@ -78,36 +75,6 @@ function Import-UserEnv([string]$Name) {
     }
 }
 
-function Find-TwCore {
-    if ($env:TWCORE_EXE -and (Test-Path $env:TWCORE_EXE)) {
-        return $env:TWCORE_EXE
-    }
-
-    $cmd = Get-Command twcore -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source) {
-        return $cmd.Source
-    }
-
-    $candidates = @()
-    if ($env:LOCALAPPDATA) {
-        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\ThinkWatch Lite\twcore\twcore.exe")
-        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\ThinkWatch Lite\resources\twcore\twcore.exe")
-        $candidates += (Join-Path $env:LOCALAPPDATA "ThinkWatch\twcore.exe")
-    }
-    if ($env:ProgramFiles) {
-        $candidates += (Join-Path $env:ProgramFiles "ThinkWatch Lite\twcore\twcore.exe")
-        $candidates += (Join-Path $env:ProgramFiles "ThinkWatch\twcore.exe")
-    }
-
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path $candidate)) {
-            return $candidate
-        }
-    }
-
-    return $null
-}
-
 function Wait-TcpPort([string]$HostName, [int]$Port, [int]$Seconds = 30) {
     for ($i = 0; $i -lt $Seconds; $i++) {
         try {
@@ -146,8 +113,6 @@ Write-Host "============================================" -ForegroundColor DarkC
 Write-Host ""
 
 Refresh-Path
-Import-UserEnv "TWCORE_EXE"
-Import-UserEnv "THINKWATCH_GATEWAY_KEY"
 Import-UserEnv "DASHSCOPE_API_KEY"
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
@@ -237,99 +202,11 @@ if (-not $env:API_KEY_HMAC_SECRET) {
 }
 $env:REDIS_ADDR = "127.0.0.1:6379"
 
-# ThinkWatch is optional. The gateway runs the direct data plane when
-# THINKWATCH_URL is empty, so an operator who does not want a second process
-# sets DATA_PLANE=direct (or just leaves THINKWATCH_URL blank) and this script
-# stops trying to start twcore. The default stays "use ThinkWatch if it is
-# configured", which is what every existing local setup expects.
-if (-not $env:DATA_PLANE) {
-    $env:DATA_PLANE = "auto"
-}
-if ($Direct) {
-    $env:DATA_PLANE = "direct"
-}
-if ($env:DATA_PLANE -eq "direct") {
-    $env:THINKWATCH_URL = ""
-}
-elseif (-not $env:THINKWATCH_URL) {
-    $env:THINKWATCH_URL = "http://127.0.0.1:8788"
-}
-
-$useThinkWatch = $env:DATA_PLANE -ne "direct" -and [bool]$env:THINKWATCH_URL
-if ($useThinkWatch) {
-    Write-Host ("       Data plane: ThinkWatch (" + $env:THINKWATCH_URL + ")")
-}
-else {
-    Write-Host "       Data plane: direct (channels are dialled in-process)"
-}
-
-if (-not $env:THINKWATCH_CONFIG_PATH) {
-    if ($env:APPDATA) {
-        $env:THINKWATCH_CONFIG_PATH = Join-Path $env:APPDATA "ThinkWatch\config.yaml"
-    }
-}
-if ($env:THINKWATCH_CONFIG_PATH) {
-    Write-Host ("       ThinkWatch config: " + $env:THINKWATCH_CONFIG_PATH)
-}
-
-if (-not $env:TWCORE_EXE) {
-    $detectedTwCore = Find-TwCore
-    if ($detectedTwCore) {
-        $env:TWCORE_EXE = $detectedTwCore
-        Write-Ok ("Detected ThinkWatch Core: " + $env:TWCORE_EXE)
-    }
-}
-
-$thinkWatchRunning = $false
-if ($useThinkWatch) {
-    $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 1
-}
-if ($useThinkWatch -and -not $thinkWatchRunning) {
-    $twExe = $env:TWCORE_EXE
-    if ($twExe -and (Test-Path $twExe)) {
-        if (-not $env:DASHSCOPE_API_KEY) {
-            Write-Warn "DASHSCOPE_API_KEY is not set. ThinkWatch may start, but Qwen calls can fail."
-        }
-        if ($env:THINKWATCH_CONFIG_PATH -and (Test-Path $env:THINKWATCH_CONFIG_PATH)) {
-            Write-Step "Validating ThinkWatch config..."
-            Invoke-Native { & $twExe --config $env:THINKWATCH_CONFIG_PATH check }
-            if (-not (Test-NativeSuccess)) {
-                Fail "ThinkWatch config validation failed. Core was not started."
-            }
-        }
-        Write-Step "Starting ThinkWatch Core..."
-        $psi = [System.Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName = $twExe
-        $psi.WorkingDirectory = Split-Path $twExe -Parent
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        if ($env:THINKWATCH_CONFIG_PATH) {
-            $psi.ArgumentList.Add("--config")
-            $psi.ArgumentList.Add($env:THINKWATCH_CONFIG_PATH)
-        }
-        $psi.ArgumentList.Add("serve")
-        try {
-            $twProcess = [System.Diagnostics.Process]::Start($psi)
-            Write-Host ("       ThinkWatch PID=" + $twProcess.Id)
-        }
-        catch {
-            Fail ("Unable to start ThinkWatch Core: " + $_.Exception.Message)
-        }
-        $thinkWatchRunning = Wait-TcpPort "127.0.0.1" 8788 15
-    }
-}
-
-if ($thinkWatchRunning) {
-    Write-Ok "ThinkWatch is listening on :8788"
-}
-elseif ($useThinkWatch) {
-    Write-Warn "ThinkWatch is not running on :8788 and twcore.exe could not be started automatically."
-    Write-Warn "Set TWCORE_EXE once if automatic detection cannot find your installation."
-}
-
-if ($useThinkWatch -and -not $env:THINKWATCH_GATEWAY_KEY) {
-    Write-Warn "THINKWATCH_GATEWAY_KEY is not set. The admin UI can still open, but real model proxy requests may fail."
-}
+# The direct data plane is the only data plane: the gateway resolves the model
+# against gateway_model_route and dials the channel in-process. Only PostgreSQL
+# and Redis are needed, and there is no second process to detect or start.
+$env:DATA_PLANE = "direct"
+Write-Host "       Data plane: direct (channels are dialled in-process)"
 
 Write-Step "Building Admin UI v2..."
 $adminDir = Join-Path $RepoRoot "web\admin"
@@ -428,7 +305,6 @@ Write-Host " READY" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor DarkCyan
 Write-Host (" Admin UI:    " + $adminURL)
 Write-Host (" Admin Token: " + $env:ADMIN_TOKEN)
-Write-Host (" ThinkWatch:  http://127.0.0.1:8788")
 Write-Host ""
 Write-Host " Stop local services with:"
 Write-Host "   .\scripts\stop.ps1"

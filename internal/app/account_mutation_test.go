@@ -528,7 +528,7 @@ func TestModelTestOptionViewDropsEverythingElse(t *testing.T) {
 	for _, forbidden := range []string{
 		"provider_id", "provider_name", "upstream_model",
 		"credential_env", "base_url", "api_key", "secret", "password",
-		"thinkwatch", "route_group",
+		"route_group",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("the option view exposes %q: %s", forbidden, body)
@@ -593,7 +593,7 @@ func TestOperatorCanTestModelsButNotAdministerThem(t *testing.T) {
 		{http.MethodPost, "/admin/models"},
 		{http.MethodGet, "/admin/providers"},
 		{http.MethodGet, "/admin/model-routes"},
-		{http.MethodPost, "/admin/thinkwatch/sync"},
+		{http.MethodPost, "/admin/providers"},
 		{http.MethodGet, "/admin/tenants"},
 		{http.MethodGet, "/admin/api-keys"},
 		{http.MethodGet, "/admin/request-logs"},

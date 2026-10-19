@@ -198,98 +198,70 @@ func TestAdminPublicOriginDefaultsToUnset(t *testing.T) {
 // --- data plane selection --------------------------------------------------
 
 // loadConfigWithDataPlane exercises the real environment-parsing path for the
-// two variables that decide which data plane the gateway runs.
-func loadConfigWithDataPlane(t *testing.T, dataPlane, thinkWatchURL string) (Config, error) {
+// variable that decides which data plane the gateway runs.
+func loadConfigWithDataPlane(t *testing.T, dataPlane string) (Config, error) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
 	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
 	t.Setenv("ADMIN_SESSION_SECRET", "")
 	t.Setenv("ADMIN_AUTH_MODE", "session")
 	t.Setenv("DATA_PLANE", dataPlane)
-	t.Setenv("THINKWATCH_URL", thinkWatchURL)
 	return LoadConfig()
 }
 
-// The default is a rule, not a value: configuring THINKWATCH_URL keeps routing
-// through it, and not configuring it gets the in-process plane. Every entry
-// point in this repository sets THINKWATCH_URL, so existing deployments are
-// unchanged; a bare binary stops needing a second process.
-func TestDataPlaneAutoFollowsThinkWatchURL(t *testing.T) {
-	cases := []struct {
-		name      string
-		dataPlane string
-		url       string
-		want      string
-		wantThink bool
-	}{
-		{name: "nothing configured means direct", dataPlane: "", url: "", want: DataPlaneDirect},
-		{name: "a configured URL means ThinkWatch", dataPlane: "", url: "http://127.0.0.1:8788", want: DataPlaneThinkWatch, wantThink: true},
-		{name: "auto is spelled out", dataPlane: "auto", url: "http://127.0.0.1:8788", want: DataPlaneThinkWatch, wantThink: true},
-		{name: "auto without a URL means direct", dataPlane: "AUTO", url: "  ", want: DataPlaneDirect},
-	}
-	for _, tc := range cases {
+// The direct plane is the only data plane, so every accepted spelling of "the
+// default" resolves to it and nothing else has to be configured.
+func TestDataPlaneResolvesToDirect(t *testing.T) {
+	for _, tc := range []struct{ name, dataPlane string }{
+		{name: "nothing configured", dataPlane: ""},
+		{name: "auto", dataPlane: "auto"},
+		{name: "auto is case-insensitive", dataPlane: "AUTO"},
+		{name: "direct", dataPlane: "direct"},
+		{name: "direct with surrounding whitespace", dataPlane: "  direct  "},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := loadConfigWithDataPlane(t, tc.dataPlane, tc.url)
+			cfg, err := loadConfigWithDataPlane(t, tc.dataPlane)
 			if err != nil {
 				t.Fatalf("LoadConfig: %v", err)
 			}
-			if cfg.DataPlane != tc.want {
-				t.Fatalf("DataPlane = %q, want %q", cfg.DataPlane, tc.want)
+			if cfg.DataPlane != DataPlaneDirect {
+				t.Fatalf("DataPlane = %q, want %q", cfg.DataPlane, DataPlaneDirect)
 			}
-			if cfg.UsesThinkWatch() != tc.wantThink {
-				t.Fatalf("UsesThinkWatch() = %v, want %v", cfg.UsesThinkWatch(), tc.wantThink)
-			}
-			if cfg.DataPlaneMode() != tc.want {
-				t.Fatalf("DataPlaneMode() = %q, want %q", cfg.DataPlaneMode(), tc.want)
+			if got := cfg.DataPlaneMode(); got != DataPlaneDirect {
+				t.Fatalf("DataPlaneMode() = %q, want %q", got, DataPlaneDirect)
 			}
 		})
 	}
 }
 
-// Naming the plane you want must win over the presence of a URL, otherwise an
-// operator could not opt out of ThinkWatch without deleting configuration other
-// tooling still reads.
-func TestDataPlaneExplicitDirectWinsOverAConfiguredURL(t *testing.T) {
-	cfg, err := loadConfigWithDataPlane(t, "direct", "http://127.0.0.1:8788")
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.UsesThinkWatch() {
-		t.Fatalf("DATA_PLANE=direct must be honoured even when THINKWATCH_URL is set")
-	}
-}
-
-func TestDataPlaneThinkWatchRequiresAURL(t *testing.T) {
-	if _, err := loadConfigWithDataPlane(t, "thinkwatch", ""); err == nil {
-		t.Fatal("DATA_PLANE=thinkwatch without THINKWATCH_URL must fail startup rather than fall back")
+// The modes that used to select a second process are gone, and naming one has
+// to stop startup rather than resolve to something else. An operator whose
+// environment still names a retired mode would otherwise get a gateway that
+// behaves differently from what the variable claims, and would have no way to
+// notice until a request went somewhere unexpected.
+func TestDataPlaneRejectsRetiredModes(t *testing.T) {
+	for _, mode := range []string{"think" + "watch", "shadow", "THINK" + "WATCH", "Shadow"} {
+		t.Run("DATA_PLANE="+mode, func(t *testing.T) {
+			if _, err := loadConfigWithDataPlane(t, mode); err == nil {
+				t.Fatal("a removed data plane must fail startup rather than fall back")
+			}
+		})
 	}
 }
 
 func TestDataPlaneRejectsAnUnknownValue(t *testing.T) {
-	if _, err := loadConfigWithDataPlane(t, "thinkwatch-direct", "http://127.0.0.1:8788"); err == nil {
+	if _, err := loadConfigWithDataPlane(t, "bogus"); err == nil {
 		t.Fatal("an unknown DATA_PLANE must be rejected")
 	}
 }
 
-// url.Parse accepts "127.0.0.1:8788" and calls "127.0.0.1" the scheme, which
-// would surface as a dial error on the first business request instead of a
-// startup failure.
-func TestDataPlaneRejectsAThinkWatchURLWithoutAScheme(t *testing.T) {
-	if _, err := loadConfigWithDataPlane(t, "thinkwatch", "127.0.0.1:8788"); err == nil {
-		t.Fatal("a THINKWATCH_URL without an http(s) scheme must be rejected")
-	}
-}
-
 // A Config built as a literal — in a test, or by a caller that predates this
-// field — must keep the old behaviour. Opting out of a routing process has to
-// be deliberate, never the consequence of a field nobody set.
-func TestZeroValueConfigKeepsThinkWatch(t *testing.T) {
+// field — must keep the behaviour this gateway actually has: there is one data
+// plane, and a zero value reads as it.
+func TestZeroValueConfigIsTheDirectPlane(t *testing.T) {
 	var cfg Config
-	if !cfg.UsesThinkWatch() {
-		t.Fatal("a zero-value Config must not switch the deployment onto the direct plane")
-	}
-	if cfg.DataPlaneMode() != DataPlaneThinkWatch {
-		t.Fatalf("DataPlaneMode() = %q, want %q", cfg.DataPlaneMode(), DataPlaneThinkWatch)
+	if got := cfg.DataPlaneMode(); got != DataPlaneDirect {
+		t.Fatalf("DataPlaneMode() = %q, want %q", got, DataPlaneDirect)
 	}
 }
 
@@ -303,7 +275,6 @@ func setConfigEnv(t *testing.T, adminAuthMode string) {
 	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
 	t.Setenv("ADMIN_SESSION_SECRET", "phase1-session-signing-secret-value")
 	t.Setenv("DATA_PLANE", "direct")
-	t.Setenv("THINKWATCH_URL", "")
 	t.Setenv("ADMIN_AUTH_MODE", adminAuthMode)
 }
 

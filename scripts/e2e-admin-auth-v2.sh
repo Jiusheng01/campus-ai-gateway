@@ -293,22 +293,13 @@ rbac() {
   check "$role $method $path" "$got" "$want"
 }
 rbac super_admin    /admin/status        GET  200
-# These instances run the direct data plane (no THINKWATCH_URL), so the sync
-# endpoint answers 409 data_plane_direct — there is nothing to synchronise to.
-# The rows still prove the RBAC matrix: the roles that may reach it are let
-# through (not 403) and the others are refused below.
-rbac super_admin    /admin/thinkwatch/sync POST 409
-rbac gateway_admin  /admin/thinkwatch/sync POST 409
 rbac gateway_admin  /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
 # Phase 1 (P1-02): the global tenant_admin grant was withdrawn. The role now
 # fails closed at the RBAC layer — 403 before the handler — instead of reaching
 # the handler and being refused for its body (the old 400).
 rbac tenant_admin   /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
-rbac tenant_admin   /admin/thinkwatch/sync POST 403
 rbac auditor        /admin/security-events GET 200
-rbac auditor        /admin/thinkwatch/sync POST 403
 rbac operator       /admin/model-test    POST 400
-rbac operator       /admin/thinkwatch/sync POST 403
 
 title "18. 前端不得把凭据写入浏览器持久化存储"
 LEAK=$(grep -rnE 'localStorage\.(setItem|getItem)\(|sessionStorage\.|indexedDB' web/admin/src 2>/dev/null \

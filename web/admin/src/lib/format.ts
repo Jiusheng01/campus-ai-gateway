@@ -57,9 +57,9 @@ export function shortId(v?: string | null): string {
 }
 
 /**
- * Telemetry fields are genuinely absent when ThinkWatch does not report them.
- * Zero and false are real values, so only undefined/null/'' mean "unknown" —
- * the UI must never invent a provider or upstream model.
+ * Telemetry fields are genuinely absent when the data plane does not report
+ * them. Zero and false are real values, so only undefined/null/'' mean
+ * "unknown" — the UI must never invent a provider or upstream model.
  */
 export function isUnknown(v: unknown): boolean {
   return v === undefined || v === null || v === ''

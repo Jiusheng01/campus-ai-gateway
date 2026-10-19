@@ -578,7 +578,7 @@ func TestMemberDeniedEveryManagementEndpoint(t *testing.T) {
 		{http.MethodGet, "/admin/models"},
 		{http.MethodPost, "/admin/models/x/routes"},
 		{http.MethodPut, "/admin/model-routes/x"},
-		{http.MethodPost, "/admin/thinkwatch/sync"},
+		{http.MethodPost, "/admin/providers"},
 		{http.MethodPost, "/admin/model-test"},
 		{http.MethodGet, "/admin/tenants"},
 		{http.MethodGet, "/admin/api-keys"},
@@ -625,7 +625,7 @@ func TestMemberSessionIsRejectedByTheMiddleware(t *testing.T) {
 		{http.MethodGet, "/admin/admin-audit"},
 		{http.MethodGet, "/admin/security-events"},
 		{http.MethodGet, "/admin/users"},
-		{http.MethodPost, "/admin/thinkwatch/sync"},
+		{http.MethodPost, "/admin/providers"},
 		{http.MethodPost, "/admin/model-test"},
 		{http.MethodGet, "/admin/model-test-options"},
 	}
