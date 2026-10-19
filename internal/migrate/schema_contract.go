@@ -88,13 +88,27 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
-				{"daily_token_limit", "bigint", true},
-				{"monthly_token_limit", "bigint", true},
-				{"monthly_request_limit", "bigint", true},
+				// The six enforced limits are three-state since 0013: NULL means
+				// "inherit from the nearest ancestor", 0 means "explicitly
+				// unlimited". They are therefore nullable by contract -- a
+				// NOT NULL here would reject the inheritance state.
+				{"daily_token_limit", "bigint", false},
+				{"monthly_token_limit", "bigint", false},
+				{"monthly_request_limit", "bigint", false},
+				{"rpm_limit", "bigint", false},
+				{"tpm_limit", "bigint", false},
+				{"max_concurrency", "bigint", false},
+				// Stored but not enforced (no price data exists), so it keeps the
+				// two-state convention it was created with: converting it would
+				// add a distinction nothing reads.
 				{"monthly_budget_micros", "bigint", true},
-				{"rpm_limit", "bigint", true},
-				{"tpm_limit", "bigint", true},
-				{"max_concurrency", "bigint", true},
+				// The hierarchy (0013). path is mandatory: every write sets it.
+				{"parent_id", "uuid", false},
+				{"path", "text", true},
+				{"depth", "integer", true},
+				{"kind", "text", true},
+				// The access axis. NULL = inherit (intersect), [] = deny all.
+				{"allowed_models", "jsonb", false},
 			},
 		},
 		{
@@ -235,6 +249,9 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"last_login_at", "timestamp with time zone", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
+				// NULL means global reach. A non-NULL value confines the account
+				// to the strict descendants of that tenant (0014).
+				{"scope_tenant_id", "uuid", false},
 			},
 		},
 		{
@@ -256,6 +273,20 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"revoke_reason", "character varying", true},
 				{"previous_refresh_hash", "character varying", true},
 				{"previous_refresh_valid_until", "timestamp with time zone", false},
+			},
+		},
+		{
+			Name: "gateway_model_quota",
+			Columns: []contractColumn{
+				{"id", "uuid", true},
+				// NULL = the system-wide pool for this model.
+				{"tenant_id", "uuid", false},
+				{"model_alias", "character varying", true},
+				// NULL = inherit / 0 = unlimited / >0 = cap (0015).
+				{"daily_token_limit", "bigint", false},
+				{"monthly_token_limit", "bigint", false},
+				{"created_at", "timestamp with time zone", true},
+				{"updated_at", "timestamp with time zone", true},
 			},
 		},
 	}
@@ -282,6 +313,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_security_event", "id", "p"},
 		{"gateway_admin_user", "id", "p"},
 		{"gateway_admin_session", "sid", "p"},
+		{"gateway_model_quota", "id", "p"},
 	}
 
 	fks = []contractFK{
@@ -290,6 +322,15 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
+		// A tenant's parent: RESTRICT, because deleting a parent would orphan a
+		// subtree and silently detach its quota inheritance.
+		{"gateway_tenant", "parent_id", "gateway_tenant", "id", "r"},
+		// A scope is a privilege boundary: RESTRICT, because SET NULL would
+		// promote a confined administrator to global reach on tenant deletion.
+		{"gateway_admin_user", "scope_tenant_id", "gateway_tenant", "id", "r"},
+		// A model quota belongs to its tenant: CASCADE, since a deleted tenant
+		// has no usage left to account for.
+		{"gateway_model_quota", "tenant_id", "gateway_tenant", "id", "c"},
 	}
 
 	indexes = []contractIndex{
@@ -314,12 +355,27 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_admin_user", "idx_gateway_admin_user_status", false, []string{"status"}, `CREATE INDEX idx_gateway_admin_user_status ON gateway_admin_user(status)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_user", false, []string{"user_id", "created_at DESC"}, `CREATE INDEX idx_gateway_admin_session_user ON gateway_admin_session(user_id, created_at DESC)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_expires", false, []string{"expires_at"}, `CREATE INDEX idx_gateway_admin_session_expires ON gateway_admin_session(expires_at)`},
+		// The hierarchy's two access paths (0013): walking up via parent_id, and
+		// matching a subtree with a LIKE 'prefix%' scan. The index is declared
+		// with text_pattern_ops, but pg_get_indexdef() reports only the column,
+		// so the opclass is not part of what this contract can assert.
+		{"gateway_tenant", "idx_gateway_tenant_parent", false, []string{"parent_id"}, `CREATE INDEX idx_gateway_tenant_parent ON gateway_tenant(parent_id)`},
+		{"gateway_tenant", "idx_gateway_tenant_path", false, []string{"path"}, `CREATE INDEX idx_gateway_tenant_path ON gateway_tenant(path text_pattern_ops)`},
+		// Resolving an administrator's reach on every request (0014).
+		{"gateway_admin_user", "idx_gateway_admin_user_scope", false, []string{"scope_tenant_id"}, `CREATE INDEX idx_gateway_admin_user_scope ON gateway_admin_user(scope_tenant_id)`},
+		// One quota per (subject, model). This is a unique index rather than a
+		// UNIQUE constraint because NULLS NOT DISTINCT is only expressible on an
+		// index, and without it the system-pool row could be inserted repeatedly.
+		{"gateway_model_quota", "uq_model_quota_tenant_model", true, []string{"tenant_id", "model_alias"}, `CREATE UNIQUE INDEX uq_model_quota_tenant_model ON gateway_model_quota(tenant_id, model_alias) NULLS NOT DISTINCT`},
+		{"gateway_model_quota", "idx_model_quota_model", false, []string{"model_alias"}, `CREATE INDEX idx_model_quota_model ON gateway_model_quota(model_alias)`},
+		{"gateway_model_quota", "idx_model_quota_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_model_quota_tenant ON gateway_model_quota(tenant_id)`},
 	}
 
 	checks = []contractCheck{
 		{"gateway_model_route", "gateway_model_route_priority_chk", "CHECK (priority >= 1)"},
 		{"gateway_model_route", "gateway_model_route_weight_chk", "CHECK (weight >= 0)"},
 		{"gateway_model_route", "gateway_model_route_timeout_chk", "CHECK (timeout_ms > 0)"},
+		{"gateway_tenant", "chk_gateway_tenant_parent_not_self", "CHECK (parent_id IS NULL OR parent_id <> id)"},
 	}
 
 	return tables, keys, fks, indexes, checks
@@ -349,6 +405,7 @@ func finalColumnLengths() map[string]int {
 		"gateway_admin_session.refresh_hash": 128, "gateway_admin_session.login_method": 32, "gateway_admin_session.ip": 64,
 		"gateway_admin_session.user_agent": 256, "gateway_admin_session.revoke_reason": 64,
 		"gateway_admin_session.previous_refresh_hash": 128,
+		"gateway_model_quota.model_alias":             128,
 	}
 }
 
@@ -360,9 +417,14 @@ func finalColumnDefaults() map[string]string {
 	return map[string]string{
 		"gateway_tenant.id": "gen_random_uuid()", "gateway_tenant.status": "1",
 		"gateway_tenant.created_at": "now()", "gateway_tenant.updated_at": "now()",
-		"gateway_tenant.daily_token_limit": "0", "gateway_tenant.monthly_token_limit": "0",
-		"gateway_tenant.monthly_request_limit": "0", "gateway_tenant.monthly_budget_micros": "0",
-		"gateway_tenant.rpm_limit": "0", "gateway_tenant.tpm_limit": "0", "gateway_tenant.max_concurrency": "0",
+		// The six enforced limits deliberately have NO default since 0013: an
+		// INSERT that omits them must land on NULL (inherit), not on 0
+		// (unlimited). Only the two-state budget column keeps its 0.
+		"gateway_tenant.monthly_budget_micros": "0",
+		// Hierarchy defaults (0013). path has no default -- it is derived from
+		// the parent's path and the new row's id, which a column default cannot
+		// know, so the write path always supplies it.
+		"gateway_tenant.depth": "0", "gateway_tenant.kind": "'tenant'::text",
 
 		"gateway_api_key.id": "gen_random_uuid()", "gateway_api_key.status": "1",
 		"gateway_api_key.allowed_models": "'[]'::jsonb", "gateway_api_key.allowed_ips": "'[]'::jsonb",
@@ -402,6 +464,9 @@ func finalColumnDefaults() map[string]string {
 		"gateway_admin_session.created_at": "now()", "gateway_admin_session.last_active_at": "now()",
 		"gateway_admin_session.revoke_reason":         "''::character varying",
 		"gateway_admin_session.previous_refresh_hash": "''::character varying",
+
+		"gateway_model_quota.id":         "gen_random_uuid()",
+		"gateway_model_quota.created_at": "now()", "gateway_model_quota.updated_at": "now()",
 	}
 }
 
