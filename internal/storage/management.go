@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -99,9 +100,10 @@ RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, cr
 // would leave its Credential — and the sealed secret in it — behind.
 //
 // The cascade deliberately bypasses the single-Route invariant
-// (ErrLastModelRoute): a Route is deletable here because the Virtual Model left
-// with zero Routes is deleted too (ADR-0019). A Route that still has another
-// Provider is kept, and so is its model.
+// (ErrLastModelRoute): a Route is deletable here because the Virtual Model is
+// then checked for remaining Routes, and one left with zero Routes is deleted
+// too (ADR-0019). A Virtual Model that still has another Route is kept, and so
+// is that Route.
 //
 // The Provider row is deleted before its Credential, not after as the prose
 // order suggests: the foreign key is provider -> credential, so deleting the
@@ -114,17 +116,10 @@ func (p *Postgres) DeleteProvider(ctx context.Context, id string) (model.Provide
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the channel first: a missing row is the whole answer, and holding the
-	// lock stops a concurrent edit from changing what this delete is looking at.
-	var credentialID string
-	if err := tx.QueryRow(ctx, `
-SELECT credential_id::text
-FROM gateway_provider
-WHERE id=$1::uuid
-FOR UPDATE`, id).Scan(&credentialID); err != nil {
-		return out, err
-	}
-
+	// Read the models that route here now only to pre-lock them before the
+	// Provider row. This is not the delete list: a Route committed between this
+	// read and the Provider lock below is invisible here, so the models to remove
+	// are derived from the Route DELETE's RETURNING rows instead.
 	rows, err := tx.Query(ctx, `
 SELECT DISTINCT model_id::text
 FROM gateway_model_route
@@ -147,11 +142,22 @@ ORDER BY model_id`, id)
 		return out, err
 	}
 
-	// Lock the affected models before touching their Routes. A concurrent Route
-	// write locks the model too, so this makes "delete the Routes, then delete a
-	// model only if none remain" atomic against it: a Route added to another
-	// Provider either commits before the orphan check (and saves the model) or
-	// waits until this transaction is done (and then finds its model gone).
+	// Lock order: Virtual Model rows first, then the Provider row.
+	// CreateModelRoute, UpdateModelRoute and DeleteModelRoute all lock the model
+	// first; the inserting or moving writes then take the Provider's FK KEY
+	// SHARE. Locking the Provider here first would close a cycle with any of
+	// them. Holding the Provider with FOR UPDATE then blocks a new Route from
+	// completing its FK check, so no Route can be committed between that lock
+	// and the DELETE below.
+	//
+	// Residual window: a Route write for a Virtual Model that had no Route here
+	// at the read is not pre-locked. If another Route onto this Provider
+	// committed for that model in the gap, the model is in the RETURNING set, and
+	// a second Route write holding that model while waiting for the Provider's
+	// KEY SHARE forms a cycle with this transaction (which holds the Provider and
+	// needs the model). PostgreSQL detects the cycle and aborts one transaction;
+	// because the cascade is one transaction, the abort leaves every row in place
+	// rather than a half-deleted channel.
 	if len(modelIDs) > 0 {
 		locks, err := tx.Query(ctx, `
 SELECT id::text
@@ -175,26 +181,86 @@ FOR UPDATE`, modelIDs)
 		}
 	}
 
-	tag, err := tx.Exec(ctx, `DELETE FROM gateway_model_route WHERE provider_id=$1::uuid`, id)
+	var credentialID string
+	if err := tx.QueryRow(ctx, `
+SELECT credential_id::text
+FROM gateway_provider
+WHERE id=$1::uuid
+FOR UPDATE`, id).Scan(&credentialID); err != nil {
+		return out, err
+	}
+
+	// RETURNING is the record of what this delete touched. A Route inserted after
+	// the read above is caught here, so its model is considered for deletion even
+	// though the precomputed list never named it.
+	rows, err = tx.Query(ctx, `
+DELETE FROM gateway_model_route
+WHERE provider_id=$1::uuid
+RETURNING model_id::text`, id)
 	if err != nil {
 		return out, err
 	}
-	out.DeletedRoutes = int(tag.RowsAffected())
+	affectedSet := make(map[string]struct{})
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			rows.Close()
+			return out, err
+		}
+		affectedSet[modelID] = struct{}{}
+		out.DeletedRoutes++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
 
-	if len(modelIDs) > 0 {
-		tag, err = tx.Exec(ctx, `
-DELETE FROM gateway_model m
-WHERE m.id = ANY($1::uuid[])
-  AND NOT EXISTS (SELECT 1 FROM gateway_model_route r WHERE r.model_id = m.id)`, modelIDs)
+	affected := make([]string, 0, len(affectedSet))
+	for modelID := range affectedSet {
+		affected = append(affected, modelID)
+	}
+	sort.Strings(affected)
+
+	if len(affected) > 0 {
+		// A model that only became affected after the initial read was not locked
+		// above, so lock the whole returned set in id order. The "no Routes left"
+		// check runs only after those locks are held: a concurrent Route write
+		// either committed before them (and the model survives) or waits for the
+		// model lock and then finds no model to attach to.
+		locks, err := tx.Query(ctx, `
+SELECT id::text
+FROM gateway_model
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR UPDATE`, affected)
 		if err != nil {
 			return out, err
 		}
-		out.DeletedModels = int(tag.RowsAffected())
+		for locks.Next() {
+			var locked string
+			if err := locks.Scan(&locked); err != nil {
+				locks.Close()
+				return out, err
+			}
+		}
+		locks.Close()
+		if err := locks.Err(); err != nil {
+			return out, err
+		}
+
+		tag, err := tx.Exec(ctx, `
+DELETE FROM gateway_model m
+WHERE m.id = ANY($1::uuid[])
+  AND NOT EXISTS (SELECT 1 FROM gateway_model_route r WHERE r.model_id = m.id)`, affected)
+		if err != nil {
+			return out, err
+		}
+		out.DeletedVirtualModels = int(tag.RowsAffected())
 	}
 
 	// The table has ON DELETE CASCADE, but the rows are deleted explicitly: the
 	// count is part of the answer the operator sees.
-	tag, err = tx.Exec(ctx, `DELETE FROM gateway_provider_model WHERE provider_id=$1::uuid`, id)
+	tag, err := tx.Exec(ctx, `DELETE FROM gateway_provider_model WHERE provider_id=$1::uuid`, id)
 	if err != nil {
 		return out, err
 	}

@@ -97,34 +97,55 @@ Write-Ok "Docker is ready"
 # "new" clone can look like it already has channels and tenants. Honour the
 # override here too, so reset targets the project this shell would otherwise
 # start.
+#
+# Collision risk that the typed confirmation cannot remove: "down -v" deletes
+# the volumes of the matched Compose project. If a second checkout of this repo
+# uses the same project name (the default "deploy" does), both checkouts mount
+# the same volumes, and resetting either one deletes the other's data. The
+# project name below is normalized the way Compose normalizes it, printed, and
+# passed with -p so the operator confirms the exact target rather than an
+# assumed one.
 $ProjectName = $env:COMPOSE_PROJECT_NAME
+if ($ProjectName) {
+    $ProjectName = $ProjectName.Trim().ToLowerInvariant()
+}
 if (-not $ProjectName) {
     $ProjectName = "deploy"
+}
+# Compose accepts only lowercase letters, digits, dashes and underscores, and
+# requires the name to begin with a letter or digit. Refuse anything else rather
+# than silently targeting a project different from the one Compose would use.
+if ($ProjectName -notmatch '^[a-z0-9][a-z0-9_-]*$') {
+    Fail ("COMPOSE_PROJECT_NAME normalizes to '" + $ProjectName + "', which is not a valid Compose project name.")
 }
 $PostgresVolume = $ProjectName + "_postgres_data"
 $RedisVolume = $ProjectName + "_redis_data"
 
 Write-Host "The following will be removed:"
-Write-Host ("  - Compose project '" + $ProjectName + "' containers (default project name: deploy)")
+Write-Host ("  - Compose project '" + $ProjectName + "' (normalized; default project name: deploy)")
 Write-Host ("  - Docker volume " + $PostgresVolume + ": administrators, tenants, API keys,")
 Write-Host "    channels, models, routes, audit and request records"
 Write-Host ("  - Docker volume " + $RedisVolume + ": rate-limit and quota counters")
 Write-Host ""
+Write-Warn "Another checkout of this repo that shares the project name '" + $ProjectName + "' also shares these volumes; this reset deletes its data too."
+Write-Host ""
 
 if (-not $Force) {
-    $answer = Read-Host "Type 'reset' to continue, or press Enter to abort"
-    if ("$answer".Trim().ToLowerInvariant() -ne "reset") {
+    # Typing the project name, not a fixed word, makes it impossible to confirm
+    # without having read which project is about to be destroyed.
+    $answer = Read-Host ("Type the Compose project name '" + $ProjectName + "' to continue, or press Enter to abort")
+    if ("$answer".Trim() -cne $ProjectName) {
         Write-Host "Aborted. Nothing was deleted." -ForegroundColor Yellow
         Write-Host ""
         exit 0
     }
 }
 else {
-    Write-Warn "-Force given; skipping the confirmation prompt."
+    Write-Warn ("-Force given: skipping the typed confirmation. The irreversible target is Compose project '" + $ProjectName + "' and its volumes " + $PostgresVolume + ", " + $RedisVolume + ".")
 }
 
-Write-Step "Removing the stack and its volumes (docker compose down -v)..."
-Invoke-Native { & docker compose -f .\deploy\docker-compose.yml down -v }
+Write-Step ("Removing Compose project '" + $ProjectName + "' and its volumes (docker compose down -v)...")
+Invoke-Native { & docker compose -p $ProjectName -f .\deploy\docker-compose.yml down -v }
 if (-not (Test-NativeSuccess)) {
     Fail "docker compose down -v failed."
 }
@@ -133,8 +154,12 @@ Write-Ok "Stack stopped and volumes removed"
 # Start through the normal path rather than reimplementing it: dev.ps1 waits
 # for PostgreSQL, runs cmd/migrate, builds the console and starts the gateway.
 # Migrations recreate the schema on the now-empty volume; nothing is seeded.
+#
+# dev.ps1's Fail helper calls exit 1. When a script is invoked with &, that exit
+# returns here with $LASTEXITCODE=1 rather than ending this script, so the result
+# is checked. The old "$global:LASTEXITCODE = 0" before the call is gone: the
+# successful "down -v" above already left 0, so it had nothing to reset.
 Write-Step "Starting from an empty database via dev.ps1..."
-$global:LASTEXITCODE = 0
 & (Join-Path $PSScriptRoot "dev.ps1") -ForceRestart
 if ($LASTEXITCODE -ne 0) {
     Fail "dev.ps1 did not complete successfully."

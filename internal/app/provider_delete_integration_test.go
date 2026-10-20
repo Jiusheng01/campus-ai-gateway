@@ -94,7 +94,7 @@ func TestDeleteProviderEndpointCascadesAndReportsCounts(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode delete result: %v", err)
 	}
-	if got.DeletedRoutes != 2 || got.DeletedModels != 1 || got.DeletedProviderModels != 1 {
+	if got.DeletedRoutes != 2 || got.DeletedVirtualModels != 1 || got.DeletedProviderModels != 1 {
 		t.Fatalf("counts = %+v, want 2 routes / 1 model / 1 provider model", got)
 	}
 
@@ -153,24 +153,70 @@ func TestDeleteProviderEndpointRejectsOtherMethods(t *testing.T) {
 
 // The role boundary is the one the rest of /admin/providers already has: the
 // channel administrators and super administrators may delete, operators and
-// auditors may not. Nothing in the handler adds a second rule.
+// auditors may not. The requests go through the real middleware into the real
+// deleteProvider handler, with a database behind it.
+//
+// A denied role is tested against an id that does not exist: 403 proves the
+// middleware refused before the handler ran, while 404 would prove it ran.
+// An allowed role must actually delete a seeded channel and report its deletion.
 func TestDeleteProviderRBAC(t *testing.T) {
-	s, _ := newTestServer(t, trustedHeaderConfig())
-	const path = "/admin/providers/11111111-1111-1111-1111-111111111111"
+	pg := usagePostgres(t)
+	clearProviderDeleteFixtures(t, pg)
+	s := &Server{pg: pg, cfg: trustedHeaderConfig()}
+	ctx := context.Background()
+	const missing = "/admin/providers/11111111-1111-1111-1111-111111111111"
+
+	for _, roles := range []string{RoleOperator, RoleAuditor, RoleMember} {
+		rec := trustedHeaderThrough(t, s, roles, http.MethodDelete, missing, http.HandlerFunc(s.handleProviderByID))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("DELETE as %q = %d, want 403; body %s", roles, rec.Code, rec.Body.String())
+		}
+	}
 
 	for _, tc := range []struct {
-		roles string
-		want  int
+		role string
+		name string
 	}{
-		{RoleGatewayAdmin, http.StatusOK},
-		{RoleSuperAdmin, http.StatusOK},
-		{RoleOperator, http.StatusForbidden},
-		{RoleAuditor, http.StatusForbidden},
-		{RoleMember, http.StatusForbidden},
+		{RoleGatewayAdmin, "rbac-gateway-admin"},
+		{RoleSuperAdmin, "rbac-super-admin"},
 	} {
-		if rec := trustedHeaderCall(t, s, tc.roles, http.MethodDelete, path); rec.Code != tc.want {
-			t.Fatalf("DELETE as %q = %d, want %d", tc.roles, rec.Code, tc.want)
+		provider, err := pg.CreateProvider(ctx, model.Provider{
+			Name:          tc.name,
+			BaseURL:       "https://" + tc.name + ".example.test",
+			Protocol:      "openai-chat",
+			CredentialEnv: "TEST_RBAC_KEY",
+			Status:        1,
+		})
+		if err != nil {
+			t.Fatalf("create provider for %q: %v", tc.role, err)
 		}
+
+		rec := trustedHeaderThrough(t, s, tc.role, http.MethodDelete, "/admin/providers/"+provider.ID, http.HandlerFunc(s.handleProviderByID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("DELETE as %q = %d, want 200; body %s", tc.role, rec.Code, rec.Body.String())
+		}
+		var got model.ProviderDeleteResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode delete result: %v", err)
+		}
+		if got.DeletedRoutes != 0 || got.DeletedVirtualModels != 0 || got.DeletedProviderModels != 0 {
+			t.Fatalf("DELETE as %q reported %+v, want all zero", tc.role, got)
+		}
+
+		var remaining int
+		if err := pg.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_provider WHERE id=$1::uuid`, provider.ID).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 0 {
+			t.Fatalf("DELETE as %q returned 200 but the provider still exists", tc.role)
+		}
+	}
+
+	// The same allowed role reaches the handler for an id that names no row; the
+	// handler's 404 is distinct from the middleware's 403.
+	rec := trustedHeaderThrough(t, s, RoleGatewayAdmin, http.MethodDelete, missing, http.HandlerFunc(s.handleProviderByID))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE of a missing provider = %d, want 404; body %s", rec.Code, rec.Body.String())
 	}
 }
 

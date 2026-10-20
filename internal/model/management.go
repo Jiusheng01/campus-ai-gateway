@@ -75,7 +75,7 @@ type Provider struct {
 // happened rather than the one they expected.
 type ProviderDeleteResult struct {
 	DeletedRoutes         int `json:"deleted_routes"`
-	DeletedModels         int `json:"deleted_models"`
+	DeletedVirtualModels  int `json:"deleted_virtual_models"`
 	DeletedProviderModels int `json:"deleted_provider_models"`
 }
 

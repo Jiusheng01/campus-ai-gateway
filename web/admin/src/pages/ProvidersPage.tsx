@@ -82,7 +82,7 @@ export function ProvidersPage() {
     try {
       const result = await api<ProviderDeleteResult>(`/admin/providers/${encodeURIComponent(p.id)}`, {method: 'DELETE'})
       toast.success(
-        `已删除渠道：${result.deleted_routes} 条线路、${result.deleted_models} 个对外模型、${result.deleted_provider_models} 条模型清单`,
+        `已删除渠道：${result.deleted_routes} 条线路、${result.deleted_virtual_models} 个对外模型、${result.deleted_provider_models} 条模型清单`,
       )
       reload()
     } catch (e) {

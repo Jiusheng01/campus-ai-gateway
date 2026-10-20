@@ -77,11 +77,15 @@ docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --bu
 ### 清空本机数据（reset）
 
 ```powershell
-.\scripts\reset.ps1          # 需要输入 reset 确认
-.\scripts\reset.ps1 -Force   # 跳过确认
+.\scripts\reset.ps1          # 需要输入规范化后的 Compose 项目名确认
+.\scripts\reset.ps1 -Force   # 跳过输入确认，但仍打印目标项目与卷
 ```
 
-`reset.ps1` 先执行 `docker compose -f deploy/docker-compose.yml down -v`，删除 `deploy` 项目的容器与命名卷（PostgreSQL 与 Redis 数据全部丢失），再调用 `dev.ps1 -ForceRestart` 走常规启动路径：容器重建、迁移重新应用、数据库为空。
+`reset.ps1` 从 `COMPOSE_PROJECT_NAME` 取项目名（未设置时用默认的 `deploy`），按 Compose 的规则规范化（转小写、只允许 `[a-z0-9_-]`、首字符必须是字母或数字），打印并校验它，然后执行 `docker compose -p <项目名> -f deploy/docker-compose.yml down -v`：删除该项目的容器与命名卷（PostgreSQL 与 Redis 数据全部丢失）。默认项目名对应 `deploy_postgres_data` 与 `deploy_redis_data`。之后调用 `dev.ps1 -ForceRestart` 走常规启动路径：容器重建、迁移重新应用、数据库为空。
+
+确认提示要求输入**上面打印的项目名本身**，而不是固定的 `reset`。这样无法在不看目标的情况下顺手确认；`-Force` 仍然可用，但它会明确打印将要删除的项目与两个卷。
+
+**残留的冲突风险：** `down -v` 只删除匹配到的 Compose 项目的卷，无法判断同一台机器上是否还有另一个 checkout 在用同一个项目名。默认名 `deploy` 下，第二个 checkout 与本 checkout 挂的是同一组卷——在任意一个 checkout 里执行 reset，都会删掉另一个 checkout 的数据。`COMPOSE_PROJECT_NAME` 只影响之后启动的容器与卷，不能把已经写在 `deploy` 名下的数据隔离开；需要隔离时，应在首次启动前就设置独立的项目名。
 
 **这是清空数据的唯一预期方式。** 网关启动时不会删除任何数据，迁移里也没有 seed。只想停止服务而保留数据，用 `.\scripts\stop.ps1`。
 
