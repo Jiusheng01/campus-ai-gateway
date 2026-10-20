@@ -119,6 +119,19 @@ Docker Compose:
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
+**Where your data lives.** Administrators, tenants, API keys, channels, models, routes and the audit/request records are stored in the Docker named volume `deploy_postgres_data`, not in the repository. The compose file has no top-level `name:`, so Compose derives the project name from the `deploy/` directory (`deploy`) — **every checkout on this machine attaches to the same project and the same volumes by default.** A second clone therefore starts with whatever the first one created; that state is not a seed in the repository. To isolate a checkout, give it its own project name (Compose derives distinct volumes from it):
+
+```powershell
+$env:COMPOSE_PROJECT_NAME = "campus-gateway-sandbox"
+.\scripts\setup.ps1
+```
+
+```bash
+docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --build
+```
+
+To start over from an empty database, run `.\scripts\reset.ps1` (it asks for confirmation unless you pass `-Force`). It removes the stack **with its volumes** and then starts it again through the normal path, so migrations rebuild an empty schema. Nothing is deleted when the gateway starts, and the migrations contain no seed data.
+
 Then open <http://127.0.0.1:8080/admin-ui> and create the first administrator there. **There is no built-in account or default password.**
 
 The first hop stays in the console: **create the first administrator → add a channel (paste the vendor API key into the password field) → open a model from the catalog on the 模型 page in one click → call it**. The 模型服务 navigation group is now 渠道 / 模型: the 渠道 page manages access and credential source, while the 模型 page opens on a cross-channel Model Catalog where 开放 makes a model callable. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.

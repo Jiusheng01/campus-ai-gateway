@@ -52,6 +52,39 @@ cd D:\AI\campus-ai-gateway
 .\scripts\stop.ps1
 ```
 
+### Docker 卷与同机多个 checkout
+
+网关的全部状态都保存在 Docker 命名卷里，不在仓库中：
+
+- `deploy_postgres_data`：PostgreSQL——管理员、租户、业务 Key、渠道、模型、线路、审计与请求记录
+- `deploy_redis_data`：Redis——限流、配额投影与登录限流计数
+
+`deploy/docker-compose.yml` 没有顶层 `name:`，Compose 的项目名取自 compose 文件所在目录，即 `deploy`。因此同一台机器上的**任意 checkout 默认共用 `deploy` 项目与同一组卷**：在第二个 clone 里看到渠道和租户，是前一个 checkout 留下的数据；迁移里没有任何 seed 语句。
+
+需要隔离时，在启动前给该 checkout 指定独立项目名（Compose 会据此派生独立的卷名）：
+
+```powershell
+$env:COMPOSE_PROJECT_NAME = "campus-gateway-sandbox"
+.\scripts\setup.ps1
+```
+
+或直接使用 Compose：
+
+```bash
+docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --build
+```
+
+### 清空本机数据（reset）
+
+```powershell
+.\scripts\reset.ps1          # 需要输入 reset 确认
+.\scripts\reset.ps1 -Force   # 跳过确认
+```
+
+`reset.ps1` 先执行 `docker compose -f deploy/docker-compose.yml down -v`，删除 `deploy` 项目的容器与命名卷（PostgreSQL 与 Redis 数据全部丢失），再调用 `dev.ps1 -ForceRestart` 走常规启动路径：容器重建、迁移重新应用、数据库为空。
+
+**这是清空数据的唯一预期方式。** 网关启动时不会删除任何数据，迁移里也没有 seed。只想停止服务而保留数据，用 `.\scripts\stop.ps1`。
+
 ---
 
 ## 数据库迁移
@@ -144,6 +177,7 @@ scripts/
 ├── dev.ps1
 ├── status.ps1
 ├── stop.ps1
+├── reset.ps1
 ├── verify-failover.ps1
 └── e2e-admin-auth-v2.sh
 ```
