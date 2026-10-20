@@ -60,6 +60,12 @@ type Server struct {
 	// breaker is the per-provider circuit: a channel that keeps failing is
 	// skipped for a cooldown instead of being tried on every request.
 	breaker *circuitBreaker
+
+	// credentialSealingKey seals inline provider credentials at write time and
+	// opens them at request time (ADR-0017). It is fixed for the process: a key
+	// change is a restart, which is also why the fallback warning is emitted once
+	// at startup.
+	credentialSealingKey []byte
 }
 
 type requestEnvelope struct {
@@ -146,6 +152,12 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s.upstream = http.HandlerFunc(s.serveDirect)
 	log.Printf("data plane: direct — channels are dialled in-process")
+	credentialKey, derivedCredentialKey := cfg.CredentialSealingKey()
+	if derivedCredentialKey {
+		log.Printf("CREDENTIAL_ENCRYPTION_KEY is not configured; derived development key is being used. " +
+			"Set CREDENTIAL_ENCRYPTION_KEY in production; changing it makes existing inline credentials unreadable.")
+	}
+	s.credentialSealingKey = credentialKey
 	// The direct plane is the only plane, so its state is always built: the
 	// transports it dials with, the rotation that picks a line, and the breaker
 	// that skips a failing channel.
@@ -175,6 +187,17 @@ func NewServer(cfg Config) (*Server, error) {
 	s.limit.SetQuotaRebuildSource(s.currentMonthQuotaUsage)
 	s.rebuildQuotaCounters(ctx)
 	return s, nil
+}
+
+// sealingKey returns the credential sealing key. A Server built outside
+// NewServer (a unit test, a probe) falls back to deriving it from its Config, so
+// the key is never silently empty.
+func (s *Server) sealingKey() []byte {
+	if len(s.credentialSealingKey) == security.CredentialKeySize {
+		return s.credentialSealingKey
+	}
+	key, _ := s.cfg.CredentialSealingKey()
+	return key
 }
 
 // currentMonthQuotaUsage aggregates the settled request log for the current UTC
@@ -401,17 +424,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			allowed[m] = struct{}{}
 		}
 		id := model.Identity{
-			TenantID:       k.TenantID,
-			APIKeyID:       k.ID,
-			AllowedModels:  allowed,
-			AllModels:      allModels,
-			AllowedIPs:     k.AllowedIPs,
-			RPMLimit:       k.RPMLimit,
-			TPMLimit:       k.TPMLimit,
-			MaxConcurrency: k.MaxConcurrency,
-			RouteGroup:     k.RouteGroup,
-			DailyTokenLimit: k.DailyTokenLimit,
-			MonthlyTokenLimit: k.MonthlyTokenLimit,
+			TenantID:            k.TenantID,
+			APIKeyID:            k.ID,
+			AllowedModels:       allowed,
+			AllModels:           allModels,
+			AllowedIPs:          k.AllowedIPs,
+			RPMLimit:            k.RPMLimit,
+			TPMLimit:            k.TPMLimit,
+			MaxConcurrency:      k.MaxConcurrency,
+			RouteGroup:          k.RouteGroup,
+			DailyTokenLimit:     k.DailyTokenLimit,
+			MonthlyTokenLimit:   k.MonthlyTokenLimit,
 			MonthlyRequestLimit: k.MonthlyRequestLimit,
 		}
 

@@ -488,6 +488,58 @@ func TestFinalSchemaDroppedLegacyModelRoutingColumns(t *testing.T) {
 	}
 }
 
+// ADR-0017 (migration 0015): a Provider references a first-class Credential, so
+// gateway_credential exists, gateway_provider.credential_id points at it, and the
+// gateway_provider.credential_env column is gone. A database that reintroduces
+// the column has a second place a credential can be named, so it must fail
+// closed.
+func TestFinalSchemaHasTheCredentialEntityAndNoCredentialEnv(t *testing.T) {
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	defer conn.Close(context.Background())
+
+	var hasCredentialTable bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'gateway_credential')`).Scan(&hasCredentialTable); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCredentialTable {
+		t.Fatal("gateway_credential must exist after the migration set runs")
+	}
+
+	var hasCredentialID bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'gateway_provider' AND column_name = 'credential_id')`).Scan(&hasCredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCredentialID {
+		t.Fatal("gateway_provider.credential_id must exist after the migration set runs")
+	}
+
+	var hasCredentialEnv bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'gateway_provider' AND column_name = 'credential_env')`).Scan(&hasCredentialEnv); err != nil {
+		t.Fatal(err)
+	}
+	if hasCredentialEnv {
+		t.Fatal("gateway_provider.credential_env must be dropped by 0015")
+	}
+
+	if _, err := conn.Exec(context.Background(),
+		`ALTER TABLE gateway_provider ADD COLUMN credential_env VARCHAR(128)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckFinalSchema(context.Background(), conn); err == nil {
+		t.Fatal("a reintroduced gateway_provider.credential_env must fail the contract")
+	}
+}
+
 // P1-01 §14: dropping a foreign key after a successful apply must be caught.
 func TestFinalSchemaDetectsDroppedForeignKey(t *testing.T) {
 	url := isolatedDatabase(t)

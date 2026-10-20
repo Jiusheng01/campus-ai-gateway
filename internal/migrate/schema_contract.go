@@ -156,13 +156,25 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			},
 		},
 		{
+			Name: "gateway_credential",
+			Columns: []contractColumn{
+				{"id", "uuid", true},
+				{"name", "character varying", true},
+				{"source_type", "character varying", true},
+				{"secret_ref", "character varying", false},
+				{"ciphertext", "text", false},
+				{"created_at", "timestamp with time zone", true},
+				{"updated_at", "timestamp with time zone", true},
+			},
+		},
+		{
 			Name: "gateway_provider",
 			Columns: []contractColumn{
 				{"id", "uuid", true},
 				{"name", "character varying", true},
 				{"base_url", "text", true},
 				{"protocol", "character varying", true},
-				{"credential_env", "character varying", true},
+				{"credential_id", "uuid", true},
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -271,6 +283,8 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_request_log", "id", "p"},
 		{"gateway_request_log", "request_id", "u"},
 		{"gateway_request_attempt", "id", "p"},
+		{"gateway_credential", "id", "p"},
+		{"gateway_credential", "name", "u"},
 		{"gateway_provider", "id", "p"},
 		{"gateway_provider", "name", "u"},
 		{"gateway_model", "id", "p"},
@@ -284,6 +298,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 
 	fks = []contractFK{
 		{"gateway_api_key", "tenant_id", "gateway_tenant", "id", "a"},
+		{"gateway_provider", "credential_id", "gateway_credential", "id", "a"},
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
@@ -334,7 +349,8 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_attempt.request_id": 64, "gateway_request_attempt.provider": 128,
 		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
 		"gateway_request_attempt.error_kind": 32,
-		"gateway_provider.name":              128, "gateway_provider.protocol": 32, "gateway_provider.credential_env": 128,
+		"gateway_credential.name": 128, "gateway_credential.source_type": 16, "gateway_credential.secret_ref": 128,
+		"gateway_provider.name":              128, "gateway_provider.protocol": 32,
 		"gateway_model.alias":                128,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
@@ -372,6 +388,7 @@ func finalColumnDefaults() map[string]string {
 		"gateway_request_attempt.id":         "nextval('gateway_request_attempt_id_seq'::regclass)",
 		"gateway_request_attempt.latency_ms": "0", "gateway_request_attempt.created_at": "now()",
 
+		"gateway_credential.id": "gen_random_uuid()", "gateway_credential.created_at": "now()", "gateway_credential.updated_at": "now()",
 		"gateway_provider.id": "gen_random_uuid()", "gateway_provider.protocol": "'openai-chat'::character varying",
 		"gateway_provider.status": "1", "gateway_provider.created_at": "now()", "gateway_provider.updated_at": "now()",
 		"gateway_model.id": "gen_random_uuid()", "gateway_model.status": "1",
@@ -443,6 +460,9 @@ var droppedColumns = []droppedColumnRef{
 	// replaced, so Route is the only routing authority (ADR-0005).
 	{"gateway_model", "provider_id"},
 	{"gateway_model", "upstream_model"},
+	// Retired by 0015: the Provider now references a first-class Credential, so
+	// the environment-variable name lives on that row (ADR-0017).
+	{"gateway_provider", "credential_env"},
 }
 
 // verifyFinalSchema checks the connected database against the contract. It

@@ -22,6 +22,12 @@ const AdminSessionSecretMinBytes = 32
 // every other HMAC the gateway computes with that secret.
 const adminSessionDerivationLabel = "campus-admin-session-v1"
 
+// credentialEncryptionDerivationLabel domain-separates the development fallback
+// for sealing provider credentials. It keeps that key distinct from the
+// API-key HMAC and from the administrator-session key, so a compromise of one
+// purpose does not hand over the other.
+const credentialEncryptionDerivationLabel = "credential-encryption-v1"
+
 // adminRefreshReplayGraceDefault is how long a just-superseded refresh token
 // remains acceptable as a benign concurrent refresh when
 // ADMIN_REFRESH_REPLAY_GRACE is not set.
@@ -67,7 +73,6 @@ type Config struct {
 	// plane this gateway actually runs.
 	DataPlane string
 
-
 	// AdminToken is the break-glass credential. It only takes effect when
 	// ADMIN_AUTH_MODE is "token"; in "session" mode it is ignored so a stale
 	// environment variable cannot silently bypass the login system.
@@ -89,13 +94,13 @@ type Config struct {
 	AdminProxyCIDRs []string
 
 	// Admin session authentication.
-	AdminAccessTTL         time.Duration // lifetime of an access token
-	AdminRefreshTTL        time.Duration // lifetime of a session and its refresh cookie
-	AdminLoginMaxAttempts  int64         // failed attempts allowed per window
-	AdminLoginWindow       time.Duration // length of the login rate-limit window
-	AdminCookieSecure      bool          // add Secure to the refresh cookie (needs HTTPS)
-	AdminSetupLocalOnly    bool          // first-run setup is localhost-only
-	TrustedProxyCIDRs      []string      // proxies whose X-Forwarded-For we trust
+	AdminAccessTTL        time.Duration // lifetime of an access token
+	AdminRefreshTTL       time.Duration // lifetime of a session and its refresh cookie
+	AdminLoginMaxAttempts int64         // failed attempts allowed per window
+	AdminLoginWindow      time.Duration // length of the login rate-limit window
+	AdminCookieSecure     bool          // add Secure to the refresh cookie (needs HTTPS)
+	AdminSetupLocalOnly   bool          // first-run setup is localhost-only
+	TrustedProxyCIDRs     []string      // proxies whose X-Forwarded-For we trust
 
 	// AdminPublicOrigin is the browser-facing origin of the console, such as
 	// "https://gateway.example.edu". It is optional and only consulted by the
@@ -106,8 +111,8 @@ type Config struct {
 	// Origin header against the request's own authority can never match and
 	// every refresh would look like a cross-site request. Setting it gives the
 	// gateway a second, explicit authority to accept.
-	AdminPublicOrigin string
-	AdminBootstrapUsername string        // optional non-interactive bootstrap
+	AdminPublicOrigin      string
+	AdminBootstrapUsername string // optional non-interactive bootstrap
 	AdminBootstrapPassword string
 
 	// AdminSessionSecret is the dedicated key for administrator session
@@ -117,6 +122,12 @@ type Config struct {
 	// derived from API_KEY_HMAC_SECRET so local development needs no extra
 	// configuration; production is expected to set it explicitly.
 	AdminSessionSecret string
+
+	// CredentialEncryptionKey seals provider credentials stored inline
+	// (ADR-0017). When empty, a domain-separated key is derived from
+	// API_KEY_HMAC_SECRET so local development needs no extra configuration;
+	// production is expected to set it explicitly.
+	CredentialEncryptionKey string
 
 	// AdminRefreshReplayGrace is how long a just-rotated refresh token is still
 	// accepted as a benign concurrent refresh (two browser tabs racing). Reuse
@@ -171,6 +182,7 @@ func LoadConfig() (Config, error) {
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
 
 		AdminSessionSecret:      os.Getenv("ADMIN_SESSION_SECRET"),
+		CredentialEncryptionKey: os.Getenv("CREDENTIAL_ENCRYPTION_KEY"),
 		AdminRefreshReplayGrace: getenvDuration("ADMIN_REFRESH_REPLAY_GRACE", adminRefreshReplayGraceDefault),
 
 		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", false),
@@ -373,6 +385,26 @@ func (c Config) AdminSessionKey() ([]byte, bool) {
 	}
 	mac := hmac.New(sha256.New, []byte(c.KeyHMACSecret))
 	mac.Write([]byte(adminSessionDerivationLabel))
+	return mac.Sum(nil), true
+}
+
+// CredentialSealingKey returns the 32-byte AES-256 key used to seal inline
+// provider credentials.
+//
+// A configured CREDENTIAL_ENCRYPTION_KEY is hashed to exactly 32 bytes, so an
+// operator can supply the usual long random string (for example
+// `openssl rand -base64 48`) without having to produce a raw 32-byte value. The
+// returned bool reports whether the development fallback was used, so startup
+// can warn. The fallback mirrors AdminSessionKey: a labelled HMAC over
+// API_KEY_HMAC_SECRET, which domain-separates credential encryption from every
+// other use of that secret.
+func (c Config) CredentialSealingKey() ([]byte, bool) {
+	if s := strings.TrimSpace(c.CredentialEncryptionKey); s != "" {
+		sum := sha256.Sum256([]byte(s))
+		return sum[:], false
+	}
+	mac := hmac.New(sha256.New, []byte(c.KeyHMACSecret))
+	mac.Write([]byte(credentialEncryptionDerivationLabel))
 	return mac.Sum(nil), true
 }
 

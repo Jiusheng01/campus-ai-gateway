@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -225,7 +226,11 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list providers", reqID)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": items})
+		views := make([]model.Provider, len(items))
+		for i := range items {
+			views[i] = s.providerView(items[i])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": views})
 	case http.MethodPost:
 		var in model.Provider
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -236,12 +241,17 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 			return
 		}
+		if err := s.sealProviderCredential(&in); err != nil {
+			log.Printf("providers: seal credential for new channel: %v", err)
+			httpx.Error(w, http.StatusInternalServerError, "credential_seal_failed", "Unable to encrypt the channel credential", reqID)
+			return
+		}
 		out, err := s.pg.CreateProvider(r.Context(), in)
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "provider_create_failed", "Provider could not be created", reqID)
 			return
 		}
-		writeJSON(w, http.StatusCreated, out)
+		writeJSON(w, http.StatusCreated, s.providerView(out))
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
@@ -265,8 +275,13 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateProvider(&in); err != "" {
+	if err := validateProviderForUpdate(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
+		return
+	}
+	if err := s.sealProviderCredential(&in); err != nil {
+		log.Printf("providers: seal credential for channel %s: %v", id, err)
+		httpx.Error(w, http.StatusInternalServerError, "credential_seal_failed", "Unable to encrypt the channel credential", reqID)
 		return
 	}
 	out, err := s.pg.UpdateProvider(r.Context(), id, in)
@@ -274,7 +289,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found or could not be updated", reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, s.providerView(out))
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -942,7 +957,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=campus-gateway-request-logs.csv")
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"created_at","request_id","tenant_id","requested_model","actual_model","provider","upstream_model","route_priority","attempts","failover","tokens","latency_ms","status_code","error_code"})
+	_ = cw.Write([]string{"created_at", "request_id", "tenant_id", "requested_model", "actual_model", "provider", "upstream_model", "route_priority", "attempts", "failover", "tokens", "latency_ms", "status_code", "error_code"})
 	for _, v := range items {
 		_ = cw.Write([]string{
 			v.CreatedAt.Format(time.RFC3339), v.RequestID, v.TenantID, v.RequestedModel, v.ActualModel,
@@ -953,6 +968,7 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 	}
 	cw.Flush()
 }
+
 // reservedCredentialEnvPrefixes names the environment-variable families the
 // gateway process itself owns.
 //
@@ -1002,7 +1018,8 @@ func validateCredentialEnv(name string) string {
 	return ""
 }
 
-// validateProvider validates a channel.
+// validateProvider validates a channel write that must name a credential (a
+// create).
 //
 // The gateway speaks the OpenAI wire format only: the in-process data plane
 // sends the OpenAI chat body it received straight to the provider, so a channel
@@ -1010,15 +1027,39 @@ func validateCredentialEnv(name string) string {
 // request time. Refusing it when it is saved is a configuration error instead
 // of an outage.
 func validateProvider(v *model.Provider) string {
+	return validateProviderInput(v, true)
+}
+
+// validateProviderForUpdate permits a write with no credential at all, which
+// means "keep the stored one" — the console sends that when an operator edits
+// the base URL and leaves the key field blank.
+func validateProviderForUpdate(v *model.Provider) string {
+	return validateProviderInput(v, false)
+}
+
+func validateProviderInput(v *model.Provider, requireCredential bool) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
-	if v.Name == "" || v.BaseURL == "" || v.CredentialEnv == "" {
-		return "name, base_url and credential_env are required"
+	v.APIKey = strings.TrimSpace(v.APIKey)
+	if v.Name == "" || v.BaseURL == "" {
+		return "name and base_url are required"
 	}
-	if reason := validateCredentialEnv(v.CredentialEnv); reason != "" {
-		return reason
+	// Two sources on one write is ambiguous: it is not clear whether the operator
+	// wants to replace an inline key with a variable reference or the reverse.
+	if v.APIKey != "" && v.CredentialEnv != "" {
+		return "api_key and credential_env are mutually exclusive"
+	}
+	// The namespace guard belongs to the env source only. An inline key is a
+	// secret, not a variable name, and is never resolved through os.Getenv.
+	if v.CredentialEnv != "" {
+		if reason := validateCredentialEnv(v.CredentialEnv); reason != "" {
+			return reason
+		}
+	}
+	if requireCredential && v.APIKey == "" && v.CredentialEnv == "" {
+		return "api_key or credential_env is required"
 	}
 	switch v.Protocol {
 	case "":
@@ -1034,6 +1075,82 @@ func validateProvider(v *model.Provider) string {
 		return "status must be 1 (enabled) or 2 (disabled)"
 	}
 	return ""
+}
+
+// sealProviderCredential turns the write-only input into the credential fields
+// storage persists. An inline key never travels further than this function in
+// plaintext: it is sealed here, and the input field is cleared so a response
+// built from the same value cannot echo it.
+//
+// A write with neither api_key nor credential_env clears those fields, which
+// storage reads as "keep the existing credential" on an update.
+func (s *Server) sealProviderCredential(v *model.Provider) error {
+	v.APIKey = strings.TrimSpace(v.APIKey)
+	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
+	if v.APIKey != "" {
+		sealed, err := security.Seal(s.sealingKey(), []byte(v.APIKey))
+		if err != nil {
+			return err
+		}
+		v.CredentialSource = model.CredentialSourceInline
+		v.CredentialSecretRef = ""
+		v.CredentialCiphertext = sealed
+		v.APIKey = ""
+		return nil
+	}
+	if v.CredentialEnv != "" {
+		v.CredentialSource = model.CredentialSourceEnv
+		v.CredentialSecretRef = v.CredentialEnv
+		v.CredentialCiphertext = ""
+		return nil
+	}
+	v.CredentialSource = ""
+	v.CredentialSecretRef = ""
+	v.CredentialCiphertext = ""
+	return nil
+}
+
+// providerView builds the read shape of a Provider. It is the only place the
+// management API turns a stored credential into client-visible data, so it can
+// guarantee the rule once: source, configured, last four — never the secret
+// (ADR-0017). An env value is read from the process environment because the
+// console is entitled to know the reference is live; only its tail is returned.
+func (s *Server) providerView(p model.Provider) model.Provider {
+	p.APIKey = ""
+	source := p.CredentialSource
+	ref := p.CredentialSecretRef
+	if source == "" && strings.TrimSpace(p.CredentialEnv) != "" {
+		source = model.CredentialSourceEnv
+		ref = p.CredentialEnv
+	}
+
+	summary := &model.CredentialSummary{SourceType: source}
+	switch source {
+	case model.CredentialSourceEnv:
+		p.CredentialEnv = ref
+		value := strings.TrimSpace(os.Getenv(ref))
+		summary.Configured = value != ""
+		summary.Last4 = credentialLast4(value)
+	case model.CredentialSourceInline:
+		p.CredentialEnv = ""
+		summary.Configured = strings.TrimSpace(p.CredentialCiphertext) != ""
+		if plaintext, err := security.Open(s.sealingKey(), p.CredentialCiphertext); err == nil {
+			summary.Last4 = credentialLast4(strings.TrimSpace(string(plaintext)))
+		}
+	default:
+		p.CredentialEnv = ""
+	}
+	p.Credential = summary
+	return p
+}
+
+// credentialLast4 is the entire disclosure a read response makes about a secret.
+func credentialLast4(value string) string {
+	runes := []rune(value)
+	if len(runes) <= 4 {
+		return string(runes)
+	}
+	return string(runes[len(runes)-4:])
 }
 
 // validateModel checks a model write. requireBinding is true for a create,
