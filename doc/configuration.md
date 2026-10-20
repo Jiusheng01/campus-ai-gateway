@@ -25,9 +25,9 @@
 | `REDIS_ADDR` | Redis 地址 | 否 | 代码默认 `redis:6379`；`.env.example` 示例 `localhost:6379` |
 | `REDIS_PASSWORD` | Redis 密码 | 否 | 空 |
 | `REDIS_DB` | Redis DB 序号 | 否 | `0` |
-| `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥 | 是 | 无 |
+| `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥。**至少 16 字节，且不能是占位符**（见下文「启动时的占位符检查」）；不满足时启动直接失败。更换该密钥会让所有已存 API Key 的 digest 失效，必须重新创建这些 Key | 是 | 无 |
 | `DATA_PLANE` | 数据面选择。只接受 `direct`；`auto` 与留空同样解析为 `direct`（`thinkwatch` / `shadow` 已随该数据面一起移除，写了会启动失败） | 否 | `direct` |
-| `CREDENTIAL_ENCRYPTION_KEY` | 内联 Provider Credential 的 AES-256-GCM 加密密钥；任意长随机字符串会被哈希为 32 字节 | 生产必填 | 空（留空时从 `API_KEY_HMAC_SECRET` 派生域分离密钥并打警告，仅供本地开发） |
+| `CREDENTIAL_ENCRYPTION_KEY` | 内联 Provider Credential 的 AES-256-GCM 加密密钥；任意长随机字符串会被哈希为 32 字节。显式设置时不能是占位符 | 生产必填 | 空（留空时从 `API_KEY_HMAC_SECRET` 派生域分离密钥并打警告，仅供本地开发） |
 | `PROVIDER_HTTP_ALLOWLIST` | 允许以明文 `http://` 出站的 Provider host 或 CIDR，逗号分隔（例如 `10.0.0.0/8,campus-llm.example.edu`）。留空表示拒绝所有 `http://`；`https://` 不受影响。**loopback（`127.0.0.0/8`、`::1`）始终被拨号策略拒绝，写进本变量也不会生效**；生产环境请使用非 loopback 的校园地址。非法条目启动失败 | 否 | 空 |
 
 ### 管理员认证与会话
@@ -60,11 +60,11 @@
 
 | 变量 | 用途 | 必填 | 默认值 |
 | --- | --- | --- | --- |
-| `ADMIN_PROXY_SECRET` | trusted-header 模式下整个控制面的共享字符串，**至少 32 字符**，不足启动直接失败 | `ADMIN_AUTH_MODE=trusted-header` 时必填 | 空 |
+| `ADMIN_PROXY_SECRET` | trusted-header 模式下整个控制面的共享字符串，**至少 32 字符且不能是占位符**，不满足启动直接失败（仅在 trusted-header 模式检查） | `ADMIN_AUTH_MODE=trusted-header` 时必填 | 空 |
 | `ADMIN_PROXY_CIDRS` | 允许尝试 trusted-header 认证的对端地址段，逗号分隔；留空表示任何对端都可试（启动打印警告） | 强烈建议 | 空 |
 | `ADMIN_USER_HEADER` | 注入用户名的请求头 | 否 | `X-Forwarded-User` |
 | `ADMIN_ROLES_HEADER` | 注入角色的请求头 | 否 | `X-Forwarded-Groups` |
-| `ADMIN_TOKEN` | `ADMIN_AUTH_MODE=token` 的 break-glass Token，Admin UI 不提供输入框 | `token` 模式时必填 | 无 |
+| `ADMIN_TOKEN` | `ADMIN_AUTH_MODE=token` 的 break-glass Token，Admin UI 不提供输入框。`token` 模式下占位符值会让启动失败，其他模式不读取该变量 | `token` 模式时必填 | 无 |
 
 ### 凭据环境变量（仅在渠道引用时使用）
 
@@ -192,6 +192,17 @@ $env:ARK_API_KEY = "…"
 - HTTPS
 - Secret Manager / KMS / Vault
 - PostgreSQL / Redis / Gateway HA
+
+### 启动时的占位符检查
+
+仓库自带的示例值不是密钥。以下变量在启动时会被检查，命中占位符列表（`change-me-in-production`、`replace-with-a-long-random-secret`、`changeme`，比较时忽略大小写与首尾空白）或长度不足时，进程直接退出，并在错误信息里说明原因和生成方式，而不是带着占位符继续运行：
+
+- `API_KEY_HMAC_SECRET`：始终检查，且至少 16 字节。`scripts/dev.ps1` 的本地默认值 `campus-local-test-secret` 满足规则。
+- `CREDENTIAL_ENCRYPTION_KEY`：仅在显式设置时检查（留空仍走开发回退）。
+- `ADMIN_TOKEN`：仅在 `ADMIN_AUTH_MODE=token` 时检查。
+- `ADMIN_PROXY_SECRET`：仅在 `ADMIN_AUTH_MODE=trusted-header` 时检查，并沿用至少 32 字符的下限。
+
+> **更换 `API_KEY_HMAC_SECRET` 的后果**：API Key 的 digest 是 `HMAC-SHA256(API_KEY_HMAC_SECRET, 明文 Key)`，数据库里不保存明文。更换密钥后，所有已存 digest 立刻与调用方持有的 Key 不再匹配，数据面返回 `401 invalid_api_key`，而管理台里的 Key 状态看起来仍然正常。因为没有明文，无法把旧 digest「迁移」到新密钥；正确做法是在维护窗口内为所有调用方**重新创建 API Key 并分发新值**。这也正是网关拒绝在占位符上启动的原因：占位符迟早会被换成真实密钥，而更换的那一刻就等于让全部 Key 失效。
 
 使用 `ADMIN_AUTH_MODE=trusted-header` 时还需：
 
