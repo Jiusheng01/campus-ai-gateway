@@ -146,6 +146,16 @@ func TestDirectTargetURL(t *testing.T) {
 		{name: "vendor root keeps the path", base: "https://api.test", path: "/v1/chat/completions", want: "https://api.test/v1/chat/completions"},
 		{name: "trailing slash on base", base: "https://api.test/v1/", path: "/v1/embeddings", want: "https://api.test/v1/embeddings"},
 		{name: "query is preserved", base: "https://api.test/v1", path: "/v1/models", query: "limit=5", want: "https://api.test/v1/models?limit=5"},
+		// A base whose version segment is not /v1 still carries the version: the
+		// inbound /v1 is the gateway's own route prefix, not part of the
+		// vendor path. Ark serves /api/v3/chat/completions, not /api/v3/v1/...
+		{name: "ark api v3", base: "https://ark.cn-beijing.volces.com/api/v3", path: "/v1/chat/completions", want: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{name: "zhipu paas v4", base: "https://open.bigmodel.cn/api/paas/v4", path: "/v1/chat/completions", want: "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{name: "dashscope compatible-mode v1", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", path: "/v1/chat/completions", want: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		// A non-version last segment is a proxy prefix, not a version: the
+		// inbound /v1 is how the upstream addresses its API and is kept.
+		{name: "non-version prefix keeps the path", base: "https://host.test/gateway", path: "/v1/chat/completions", want: "https://host.test/gateway/v1/chat/completions"},
+		{name: "trailing slash on a versioned base", base: "https://ark.cn-beijing.volces.com/api/v3/", path: "/v1/chat/completions", want: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
 		{name: "empty base is an error", base: "  ", path: "/v1/chat/completions", wantErr: true},
 	}
 	for _, tc := range cases {

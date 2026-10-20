@@ -123,6 +123,8 @@ Base URL 在**创建与更新**时都会被校验，必须是绝对 URL，形式
 - 该判断不仅发生在保存时，也发生在**每次出站前**：写入校验上线前已存在的 `http://` 行，或后来从 allowlist 移除的 host，都会在建立连接前被拒绝。地址策略与它是两条独立的线：即使 allowlist 命中，loopback / link-local / multicast / `0.0.0.0/8` / 云 metadata 地址仍会被拨号时的地址拒绝拦下，因此 loopback 端点无法通过 allowlist 放行。
 - 路径中的空格（`0x20`）、控制字符与 DEL（`0x7f`）一律拒绝。
 
+**Base URL 契约**：`base_url` 必须指向厂商的 **API 根地址，并包含其版本段**（例如 `https://api.openai.com/v1`、`https://ark.cn-beijing.volces.com/api/v3`、`https://open.bigmodel.cn/api/paas/v4`）。网关的入站路径总是以它自己的 `/v1` 路由前缀开头；当 `base_url` 的最后一段是版本段（`v` + 数字，可再跟字母和数字，例如 `v1`、`v3`、`v4`、`v1beta1`，大小写不敏感）时，网关会去掉入站路径开头的一个 `/v1`，因此 Ark 渠道收到的是 `/api/v3/chat/completions`，而不是 `/api/v3/v1/chat/completions`。裸 host（`https://api.test`）或最后一段不是版本段的前缀（如 `/gateway`）保留入站 `/v1`，不做改写。
+
 > **升级注意（fail-closed）**：默认拒绝 `http://` 会让存量明文渠道在下次保存**或首次出站**时失败。如果校园自建端点确实只能走 HTTP，把它的 host 或地址段加入 `PROVIDER_HTTP_ALLOWLIST`；其余渠道应改用 `https://`。loopback 目标不能靠 allowlist 例外，只能改用非 loopback 的校园端点。`PROVIDER_HTTP_ALLOWLIST` 中的条目只接受 hostname、IP 或 CIDR，写错（例如带了 `http://`、端口或通配符）会让网关启动失败，而不是悄悄匹配不到。
 
 Provider 模板包括（模板只预填 Base URL / 协议 / 环境变量名；凭据来源仍由表单里的开关决定）：

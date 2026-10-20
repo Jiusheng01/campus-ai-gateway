@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1000,18 +1001,31 @@ func (s *Server) serveDirectModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": out})
 }
 
+// apiVersionSegment matches an API version path segment: "v" followed by
+// digits, optionally followed by letters and digits (v1, v3, v4, v1beta1).
+// The comparison is case-insensitive.
+var apiVersionSegment = regexp.MustCompile(`(?i)^v[0-9]+[a-z0-9]*$`)
+
 // directTargetURL joins a channel's base URL with the request path.
 //
-// A base that already ends in /v1 is the OpenAI-compatible convention, and the
-// incoming path repeats it; keeping both would produce /v1/v1/chat/completions.
-// A base without /v1 is a vendor root, where the path is already correct.
+// The contract is that a base URL points at the vendor's API root, including
+// its version segment. The inbound path always starts with the gateway's own
+// /v1 route prefix, so when the base already carries a version segment
+// (/v1, /api/v3, /api/paas/v4, /compatible-mode/v1) that prefix is removed;
+// keeping both would produce /api/v3/v1/chat/completions, which the vendor
+// does not serve. A bare host or a non-version prefix (/gateway) has no
+// version to carry, so the inbound path is left unchanged.
 func directTargetURL(base string, u *url.URL) (string, error) {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
 		return "", fmt.Errorf("base_url is empty")
 	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("base_url %q is not a valid URL: %w", base, err)
+	}
 	suffix := u.Path
-	if strings.HasSuffix(base, "/v1") {
+	if lastPathSegmentIsVersion(parsed.Path) {
 		suffix = strings.TrimPrefix(u.Path, "/v1")
 	}
 	if suffix == "" {
@@ -1025,6 +1039,19 @@ func directTargetURL(base string, u *url.URL) (string, error) {
 		return "", fmt.Errorf("base_url %q produced an invalid URL: %w", base, err)
 	}
 	return target, nil
+}
+
+// lastPathSegmentIsVersion reports whether a URL path ends in an API version
+// segment. Only the last non-empty segment is considered: /api/v3 and
+// /api/paas/v4 carry a version, while /gateway and the empty path do not.
+func lastPathSegmentIsVersion(path string) bool {
+	segments := strings.Split(strings.TrimRight(path, "/"), "/")
+	for i := len(segments) - 1; i >= 0; i-- {
+		if segments[i] != "" {
+			return apiVersionSegment.MatchString(segments[i])
+		}
+	}
+	return false
 }
 
 // rewriteJSONModel replaces the model field of a JSON body, leaving every other
