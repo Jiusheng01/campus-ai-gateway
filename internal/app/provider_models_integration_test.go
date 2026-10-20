@@ -48,7 +48,7 @@ func clearProviderFixtures(t *testing.T, pg *storage.Postgres) {
 func createChannelThroughAPI(t *testing.T, s *Server, name, baseURL string) model.Provider {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
-		"name": name, "base_url": baseURL, "protocol": "openai-chat", "api_key": "sk-test-value",
+		"name": name, "base_url": baseURL, "protocol": "openai-chat", "credential_secret": "sk-test-value",
 	})
 	rec := httptest.NewRecorder()
 	s.handleAdmin(rec, httptest.NewRequest(http.MethodPost, "/admin/providers", bytes.NewReader(body)))
@@ -106,6 +106,30 @@ func TestCreatingAChannelSeedsAndListsItsPresetModels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the preset list is missing deepseek-chat: %+v", models)
+	}
+}
+
+// The seed follows the endpoint, not the display name. An operator who picks a
+// template and then renames the channel must still get that supplier's models;
+// otherwise the first hop depends on leaving the template's name untouched.
+func TestRenamedChannelIsSeededFromItsBaseURL(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	s := providerModelTestServer(t, pg)
+
+	created := createChannelThroughAPI(t, s, "prod-east-channel", "https://api.deepseek.com/v1")
+	models := listChannelModelsThroughAPI(t, s, created.ID)
+	if len(models) == 0 {
+		t.Fatal("a renamed channel on the DeepSeek base URL must still be seeded")
+	}
+	found := false
+	for _, m := range models {
+		if m.UpstreamModel == "deepseek-chat" && m.Source == model.ProviderModelSourcePreset {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the renamed channel is missing the DeepSeek preset: %+v", models)
 	}
 }
 

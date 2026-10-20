@@ -26,43 +26,47 @@ const providerModelRefreshTimeoutMS = 10000
 // buffers. Management JSON is limited to 1 MiB (ADR-0012).
 const maxUpstreamModelListBytes = 1 << 20
 
+// providerModelsPath is appended to the channel's configured base URL to read
+// its model list. The base already ends in /v1, /api/v3 or /api/paas/v4, and
+// directTargetURL leaves a path that does not start with /v1 untouched, so
+// naming /v1/models here would ask those channels for /api/v3/v1/models.
+const providerModelsPath = "/models"
+
 // The Provider Model list is what a channel says it can serve. It is managed
 // per channel — /admin/providers/{id}/models — because the list belongs to the
 // channel's credential boundary: two channels for the same supplier may expose
 // different models.
 
-// providerIDFromModelsPath parses /admin/providers/{id}/models.
-func providerIDFromModelsPath(path string) (string, bool) {
-	rest := strings.TrimPrefix(path, "/admin/providers/")
-	if rest == path || !strings.HasSuffix(rest, "/models") {
-		return "", false
-	}
-	id := strings.TrimSuffix(rest, "/models")
-	if id == "" || strings.Contains(id, "/") {
-		return "", false
-	}
-	if _, err := uuid.Parse(id); err != nil {
-		return "", false
-	}
-	return id, true
-}
-
-// providerIDFromModelsRefreshPath parses
-// /admin/providers/{id}/models/refresh.
-func providerIDFromModelsRefreshPath(path string) (string, bool) {
-	const suffix = "/models/refresh"
+// providerIDFromProviderPath parses /admin/providers/{id}{suffix}, where the
+// suffix is the fixed tail after the provider id. The id has to be a single
+// UUID segment: a non-UUID cannot name a row, and the database cast would fail
+// the whole statement.
+func providerIDFromProviderPath(path, suffix string) (string, bool) {
 	rest := strings.TrimPrefix(path, "/admin/providers/")
 	if rest == path || !strings.HasSuffix(rest, suffix) {
 		return "", false
 	}
 	id := strings.TrimSuffix(rest, suffix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", false
-	}
-	if _, err := uuid.Parse(id); err != nil {
+	if id == "" || strings.Contains(id, "/") || !isUUID(id) {
 		return "", false
 	}
 	return id, true
+}
+
+func isUUID(s string) bool {
+	_, err := uuid.Parse(s)
+	return err == nil
+}
+
+// providerIDFromModelsPath parses /admin/providers/{id}/models.
+func providerIDFromModelsPath(path string) (string, bool) {
+	return providerIDFromProviderPath(path, "/models")
+}
+
+// providerIDFromModelsRefreshPath parses
+// /admin/providers/{id}/models/refresh.
+func providerIDFromModelsRefreshPath(path string) (string, bool) {
+	return providerIDFromProviderPath(path, "/models/refresh")
 }
 
 // providerModelIDsFromPath parses
@@ -73,13 +77,7 @@ func providerModelIDsFromPath(path string) (providerID, modelID string, ok bool)
 		return "", "", false
 	}
 	parts := strings.Split(rest, "/")
-	if len(parts) != 3 || parts[1] != "models" {
-		return "", "", false
-	}
-	if _, err := uuid.Parse(parts[0]); err != nil {
-		return "", "", false
-	}
-	if _, err := uuid.Parse(parts[2]); err != nil {
+	if len(parts) != 3 || parts[1] != "models" || !isUUID(parts[0]) || !isUUID(parts[2]) {
 		return "", "", false
 	}
 	return parts[0], parts[2], true
@@ -200,7 +198,7 @@ func validateProviderModelName(name string) string {
 //
 // It reuses the admin-triggered, gateway-to-provider outbound path — the same
 // credential resolution and transport as the model connectivity test — with a
-// fixed GET /v1/models target derived from the channel's base URL. Nothing from
+// fixed GET /models target appended to the channel's base URL. Nothing from
 // the admin request (headers, query, body) is forwarded, so the refresh cannot
 // be pointed anywhere the channel is not already configured to go.
 //
@@ -240,7 +238,7 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 		CredentialCiphertext: provider.CredentialCiphertext,
 		TimeoutMS:            providerModelRefreshTimeoutMS,
 	}
-	probe, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "/v1/models", nil)
+	probe, err := http.NewRequestWithContext(r.Context(), http.MethodGet, providerModelsPath, nil)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "refresh_request_failed", "Unable to create the refresh request", reqID)
 		return

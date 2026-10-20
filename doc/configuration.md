@@ -188,7 +188,7 @@ $env:ARK_API_KEY = "…"
 ### Credential 的边界
 
 - **内联 Credential** 以 AES-256-GCM 密文保存在 `gateway_credential`，密钥来自 `CREDENTIAL_ENCRYPTION_KEY`。数据库转储或备份泄露不等于厂商密钥泄露；但**加密密钥必须与数据库分开保管**（Secret Manager / KMS / Vault），同时拿到两者仍可解密。
-- **只写不读**：读取接口只返回来源（`inline` / `env`）、是否已配置和尾 4 位，永不返回明文或密文；写接口接受 `api_key`（内联）或 `credential_env`（环境变量名），两者互斥。
+- **只写不读**：读取接口只返回来源（`inline` / `env`）、是否已配置和尾 4 位，永不返回明文或密文；写接口接受 `credential_secret`（内联）或 `credential_env`（环境变量名），两者互斥。
 - **环境变量来源**的引用名只允许指向第三方凭据，**不允许指向网关自用的变量**（`ADMIN_*` / `API_KEY_*` / `DATABASE_*` / `REDIS_*` 等）。数据面在请求时才用 `os.Getenv(名字)` 取值并发往渠道 `base_url`，因此一个能编辑渠道的人如果可以把名字指成网关自己的密钥，就等于可以读走该密钥；这条约束在保存渠道时就拒绝（`validateCredentialEnv`）。
 - **编辑渠道现在等于能令该渠道的 Credential 被解密**（ADR-0017）：内联来源下，管理员可以把它改成环境变量引用、或把 `base_url` 指向自己控制的地址，从而让凭据外发。授予 `gateway_admin` 渠道编辑权时，应按"可接触密钥"处理。
 - **fail-closed**：环境变量为空或密文无法解密时，请求按既有 `missingCredentialError` 语义失败，不会以空密钥或旧密钥继续发往上游。

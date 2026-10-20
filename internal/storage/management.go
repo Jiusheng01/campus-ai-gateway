@@ -160,7 +160,7 @@ func normaliseNewProviderCredential(v *model.Provider) error {
 	if source == "" {
 		ref := strings.TrimSpace(v.CredentialEnv)
 		if ref == "" {
-			return errors.New("a provider requires an api_key or credential_env")
+			return errors.New("a provider requires a credential_secret or credential_env")
 		}
 		source = model.CredentialSourceEnv
 		v.CredentialSecretRef = ref
@@ -274,61 +274,21 @@ VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 	return v, nil
 }
 
-// UpdateModel updates the model's identity and lifecycle state, and — only when
-// the caller supplies a binding — rewrites its FIRST Route.
+// UpdateModel updates the model's identity and lifecycle state only.
 //
-// "First" means the Route created with the model, ordered by creation time. The
-// previous implementation picked the best *enabled* Route (highest priority,
-// then weight) and overwrote it, so disabling the primary and then editing the
-// model silently re-pointed the backup line. The first Route is stable across
-// status and priority changes, which is what an edit of the model should target;
-// the backup lines are edited through the Route API, one Route at a time.
+// It deliberately touches no Route. An earlier implementation picked a Route
+// (the best enabled one, then the first one) and overwrote its channel and
+// upstream model, which made a model edit a second routing authority. Routes are
+// now edited one at a time through the Route API; a binding supplied to this
+// function is ignored rather than applied.
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
-	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return v, err
-	}
-	defer tx.Rollback(ctx)
-
-	err = tx.QueryRow(ctx, `
+	err := p.Pool.QueryRow(ctx, `
 UPDATE gateway_model
 SET alias=$2, status=$3, updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING `+modelColumns+`
 `, id, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
-		return v, err
-	}
-
-	if v.ProviderID != "" && v.UpstreamModel != "" {
-		var routeID string
-		err = tx.QueryRow(ctx, `
-SELECT id::text
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-ORDER BY created_at ASC, id ASC
-LIMIT 1
-FOR UPDATE
-`, id).Scan(&routeID)
-		if err == pgx.ErrNoRows {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
-VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
-`, id, v.ProviderID, v.UpstreamModel); err != nil {
-				return v, err
-			}
-		} else if err != nil {
-			return v, err
-		} else if _, err := tx.Exec(ctx, `
-UPDATE gateway_model_route
-SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
-WHERE id=$1::uuid
-`, routeID, v.ProviderID, v.UpstreamModel); err != nil {
-			return v, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
 	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""

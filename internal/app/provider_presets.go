@@ -1,6 +1,9 @@
 package app
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // providerModelPresets is the server-side supplier catalog: the common upstream
 // model names a channel of that supplier usually offers.
@@ -62,17 +65,59 @@ var providerPresetAliases = map[string]string{
 	"ark":            "doubao",
 }
 
+// providerPresetBaseURLs maps a normalised base URL — lower-case host, then the
+// path without its leading or trailing slash — onto the catalog key.
+//
+// The base URL is the primary identifier because the channel name is only a
+// form prefill: an operator who picks the DeepSeek template and then renames the
+// channel still pointed it at DeepSeek's endpoint, and must still get DeepSeek's
+// presets. A name that happens to match another supplier must not override the
+// endpoint that was configured.
+var providerPresetBaseURLs = map[string]string{
+	"dashscope.aliyuncs.com/compatible-mode/v1": "qwen",
+	"api.deepseek.com":                          "deepseek",
+	"api.deepseek.com/v1":                       "deepseek",
+	"api.openai.com/v1":                         "openai",
+	"open.bigmodel.cn/api/paas/v4":              "glm",
+	"api.moonshot.cn/v1":                        "kimi",
+	"ark.cn-beijing.volces.com/api/v3":          "doubao",
+}
+
 // presetProviderModels returns a copy of the seed list for a supplier, or nil
-// when the supplier is unknown. The copy matters: the seed is handed to storage
-// and to callers, and no caller may mutate the catalog for the next channel.
-func presetProviderModels(providerName string) []string {
-	key := strings.ToLower(strings.TrimSpace(providerName))
-	if alias, ok := providerPresetAliases[key]; ok {
-		key = alias
+// when the supplier is unknown. The base URL decides first and the name is the
+// fallback. The copy matters: the seed is handed to storage and to callers, and
+// no caller may mutate the catalog for the next channel.
+func presetProviderModels(providerName, baseURL string) []string {
+	key := presetKeyFromBaseURL(baseURL)
+	if key == "" {
+		key = presetKeyFromName(providerName)
 	}
 	names := providerModelPresets[key]
 	if len(names) == 0 {
 		return nil
 	}
 	return append([]string(nil), names...)
+}
+
+func presetKeyFromName(providerName string) string {
+	key := strings.ToLower(strings.TrimSpace(providerName))
+	if alias, ok := providerPresetAliases[key]; ok {
+		return alias
+	}
+	return key
+}
+
+// presetKeyFromBaseURL normalises a configured base URL to the catalog key. A
+// host is mandatory; the scheme, port, query and fragment do not identify the
+// supplier, so they are not part of the key.
+func presetKeyFromBaseURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	key := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if path := strings.ToLower(strings.Trim(u.Path, "/")); path != "" {
+		key += "/" + path
+	}
+	return providerPresetBaseURLs[key]
 }

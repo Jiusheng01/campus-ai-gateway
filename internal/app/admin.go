@@ -262,7 +262,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		}
 		// The seed is part of the create, not a follow-up: a newly created
 		// channel already knows the common models its supplier offers.
-		out, err := s.pg.CreateProviderWithPresetModels(r.Context(), in, presetProviderModels(in.Name))
+		out, err := s.pg.CreateProviderWithPresetModels(r.Context(), in, presetProviderModels(in.Name, in.BaseURL))
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "provider_create_failed", "Provider could not be created", reqID)
 			return
@@ -1001,13 +1001,15 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 //
 // The list is prefixes rather than exact names on purpose: a new ADMIN_*
 // variable added later must be protected without anyone remembering to update
-// this function.
+// this function. CREDENTIAL_ is the same argument for the sealing key: naming
+// CREDENTIAL_ENCRYPTION_KEY here would make the gateway send the one key that
+// opens every inline Credential to the channel's configured base URL.
 // The proxy entries are separate because the direct data plane builds its
 // transport with http.ProxyFromEnvironment, which reads HTTPS_PROXY, NO_PROXY
 // and ALL_PROXY as well as HTTP_PROXY. Those values routinely embed
 // "user:password@proxy", and "HTTPS_" is not covered by "HTTP_".
 var reservedCredentialEnvPrefixes = []string{
-	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "DATABASE_", "DATA_PLANE",
+	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "CREDENTIAL_", "DATABASE_", "DATA_PLANE",
 	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "HTTPS_", "KUBERNETES_",
 	"NO_PROXY", "ALL_PROXY", "PG", "PUBLIC_", "REDIS_", "TEST_",
 	"TRUSTED_", "TWCORE_",
@@ -1058,14 +1060,14 @@ func validateProviderInput(v *model.Provider, requireCredential bool) string {
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
-	v.APIKey = strings.TrimSpace(v.APIKey)
+	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
 	if v.Name == "" || v.BaseURL == "" {
 		return "name and base_url are required"
 	}
 	// Two sources on one write is ambiguous: it is not clear whether the operator
 	// wants to replace an inline key with a variable reference or the reverse.
-	if v.APIKey != "" && v.CredentialEnv != "" {
-		return "api_key and credential_env are mutually exclusive"
+	if v.CredentialSecret != "" && v.CredentialEnv != "" {
+		return "credential_secret and credential_env are mutually exclusive"
 	}
 	// The namespace guard belongs to the env source only. An inline key is a
 	// secret, not a variable name, and is never resolved through os.Getenv.
@@ -1074,8 +1076,8 @@ func validateProviderInput(v *model.Provider, requireCredential bool) string {
 			return reason
 		}
 	}
-	if requireCredential && v.APIKey == "" && v.CredentialEnv == "" {
-		return "api_key or credential_env is required"
+	if requireCredential && v.CredentialSecret == "" && v.CredentialEnv == "" {
+		return "credential_secret or credential_env is required"
 	}
 	switch v.Protocol {
 	case "":
@@ -1098,20 +1100,20 @@ func validateProviderInput(v *model.Provider, requireCredential bool) string {
 // plaintext: it is sealed here, and the input field is cleared so a response
 // built from the same value cannot echo it.
 //
-// A write with neither api_key nor credential_env clears those fields, which
-// storage reads as "keep the existing credential" on an update.
+// A write with neither credential_secret nor credential_env clears those
+// fields, which storage reads as "keep the existing credential" on an update.
 func (s *Server) sealProviderCredential(v *model.Provider) error {
-	v.APIKey = strings.TrimSpace(v.APIKey)
+	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
-	if v.APIKey != "" {
-		sealed, err := security.Seal(s.sealingKey(), []byte(v.APIKey))
+	if v.CredentialSecret != "" {
+		sealed, err := security.Seal(s.sealingKey(), []byte(v.CredentialSecret))
 		if err != nil {
 			return err
 		}
 		v.CredentialSource = model.CredentialSourceInline
 		v.CredentialSecretRef = ""
 		v.CredentialCiphertext = sealed
-		v.APIKey = ""
+		v.CredentialSecret = ""
 		return nil
 	}
 	if v.CredentialEnv != "" {
@@ -1132,7 +1134,7 @@ func (s *Server) sealProviderCredential(v *model.Provider) error {
 // (ADR-0017). An env value is read from the process environment because the
 // console is entitled to know the reference is live; only its tail is returned.
 func (s *Server) providerView(p model.Provider) model.Provider {
-	p.APIKey = ""
+	p.CredentialSecret = ""
 	source := p.CredentialSource
 	ref := p.CredentialSecretRef
 	if source == "" && strings.TrimSpace(p.CredentialEnv) != "" {
@@ -1161,20 +1163,27 @@ func (s *Server) providerView(p model.Provider) model.Provider {
 }
 
 // credentialLast4 is the entire disclosure a read response makes about a secret.
+// A value shorter than eight characters is masked: returning its tail would
+// return the whole secret, which is the one thing the summary must never do.
+// An absent value stays empty, because "not configured" is not a disclosure.
 func credentialLast4(value string) string {
+	if value == "" {
+		return ""
+	}
 	runes := []rune(value)
-	if len(runes) <= 4 {
-		return string(runes)
+	if len(runes) < 8 {
+		return "****"
 	}
 	return string(runes[len(runes)-4:])
 }
 
 // validateModel checks a model write. requireBinding is true for a create,
 // where the channel and upstream model name the model's first Route and a model
-// without one could never serve traffic. On an update the binding is optional:
-// leaving it out edits only the identity and lifecycle state, which is how a
-// model edit avoids touching any Route at all. When it is supplied, both halves
-// must be, because half a binding would write a Route with an empty side.
+// without one could never serve traffic; both halves are required together.
+//
+// An update never carries a binding: it changes the alias and lifecycle state
+// only, and routing is edited through the Route API. Refusing a binding here
+// keeps the API from accepting a field it would silently ignore.
 func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	v.Alias = strings.TrimSpace(v.Alias)
 	v.ProviderID = strings.TrimSpace(v.ProviderID)
@@ -1182,11 +1191,12 @@ func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	if v.Alias == "" {
 		return "alias is required"
 	}
-	if requireBinding && (v.ProviderID == "" || v.UpstreamModel == "") {
-		return "provider_id and upstream_model are required to create the model's first route"
-	}
-	if (v.ProviderID == "") != (v.UpstreamModel == "") {
-		return "provider_id and upstream_model must be supplied together"
+	if requireBinding {
+		if v.ProviderID == "" || v.UpstreamModel == "" {
+			return "provider_id and upstream_model are required to create the model's first route"
+		}
+	} else if v.ProviderID != "" || v.UpstreamModel != "" {
+		return "a model edit changes only alias and status; edit a Route to change routing"
 	}
 	if v.Status == 0 {
 		v.Status = 1

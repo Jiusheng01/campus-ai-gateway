@@ -21,11 +21,14 @@
 //     taken over the body with line endings normalised, so the same commit
 //     yields the same checksum from a Windows checkout and a Linux one: a
 //     difference in newline style is not an edit to the migration.
-//   - A database that predates the table is replayed from the beginning —
-//     the migrations are written to be replay-safe — and the replayed schema
-//     is verified against the end-state baseline before anything is recorded,
-//     so bringing an old deployment up to date is one command and a drifted
-//     database is reported rather than quietly marked as migrated.
+//   - A database that predates the table is replayed from the beginning. Every
+//     migration is idempotent when applied forward, but a historical file can
+//     still stop replaying against an end-state database (0014 retires a column
+//     0002 indexed); applyBootstrap explains why that is tolerated and what
+//     keeps the tolerance sound. The replayed schema is verified against the
+//     end-state baseline before anything is recorded, so bringing an old
+//     deployment up to date is one command and a drifted database is reported
+//     rather than quietly marked as migrated.
 //   - Concurrent runs serialise on a PostgreSQL advisory lock, so two
 //     containers starting at once cannot interleave.
 package migrate
@@ -525,6 +528,12 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration) error {
 // not satisfy it is relying on the replay, and a file that does not apply is a
 // real gap that must stop the run — recording it would claim a history the
 // database does not have.
+//
+// That tolerance has a maintenance dependency: it is only sound while
+// verifyFinalSchema is updated with every new migration. A migration that
+// retires or renames something without the contract learning about it would let
+// a drifted database pass the gate and be recorded as fully migrated. The
+// contract check, not a clean replay, is what makes the outcome trustworthy.
 func applyBootstrap(ctx context.Context, conn *pgx.Conn, files []Migration) error {
 	wasCurrent := verifyFinalSchema(ctx, conn) == nil
 
@@ -554,8 +563,10 @@ func applyBootstrap(ctx context.Context, conn *pgx.Conn, files []Migration) erro
 
 // applyWithoutRecording replays every migration in its own committed
 // transaction, without writing any bookkeeping. It is the replay half of the
-// bootstrap: the migrations are replay-safe, so this is safe to run against a
-// database that already has some or all of the objects.
+// bootstrap: each file is idempotent when applied forward, so running it against
+// a database that already has some or all of the objects does nothing. A file
+// that names an object a later migration retired can still fail; the caller
+// decides whether that failure matters by verifying the end state.
 //
 // A file that fails is rolled back and recorded in the returned slice, and the
 // replay continues with the next one. Continuing is deliberate: a database

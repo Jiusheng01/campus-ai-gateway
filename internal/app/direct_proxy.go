@@ -197,9 +197,12 @@ func assembleRouteTable(providers []model.Provider, models []model.ModelConfig, 
 			if !ok {
 				continue
 			}
+			// A Route without an upstream model is not a usable line. The
+			// retired model column is not a fallback: filling it from there
+			// would make a deleted field a second routing authority again.
 			upstream := strings.TrimSpace(rt.UpstreamModel)
 			if upstream == "" {
-				upstream = strings.TrimSpace(m.UpstreamModel)
+				continue
 			}
 			source := p.CredentialSource
 			ref := p.CredentialSecretRef

@@ -105,13 +105,15 @@ func TestCreateModelWritesFirstRoute(t *testing.T) {
 	}
 }
 
-// Editing a model rewrites its FIRST Route, not the best enabled one.
+// Editing a model changes its alias and status only. It never rewrites a Route,
+// not the first one and not the best enabled one.
 //
 // The legacy path picked the highest-priority enabled Route and overwrote it, so
 // disabling the primary and then editing the model silently re-pointed the
-// backup line. The first Route — the one created with the model — is stable
-// across status and priority changes, and the backup must come away untouched.
-func TestUpdateModelRewritesFirstRouteNotBestEnabled(t *testing.T) {
+// backup line. Routing is now edited through the Route API one Route at a time;
+// a model edit must leave every Route byte-for-byte alone even when the request
+// carries a binding.
+func TestUpdateModelChangesIdentityOnlyAndLeavesRoutesAlone(t *testing.T) {
 	ctx := context.Background()
 	pg := testPostgres(t)
 	clearModelsAndProviders(t, pg)
@@ -149,26 +151,38 @@ func TestUpdateModelRewritesFirstRouteNotBestEnabled(t *testing.T) {
 		t.Fatalf("disable first route: %v", err)
 	}
 
-	// Edit the model's channel/upstream.
-	if _, err := pg.UpdateModel(ctx, created.ID, model.ModelConfig{
-		Alias: "failover", ProviderID: primary.ID, UpstreamModel: "up-primary-v2", Status: 1,
-	}); err != nil {
+	// Edit the model's identity and status. The request deliberately carries a
+	// binding too: it must be ignored, because routing is not model state.
+	updated, err := pg.UpdateModel(ctx, created.ID, model.ModelConfig{
+		Alias: "failover-renamed", ProviderID: primary.ID, UpstreamModel: "up-primary-v2", Status: 2,
+	})
+	if err != nil {
 		t.Fatalf("UpdateModel: %v", err)
+	}
+	if updated.Alias != "failover-renamed" || updated.Status != 2 {
+		t.Fatalf("the edit must change alias and status, got %+v", updated)
+	}
+	if updated.ProviderID != "" || updated.ProviderName != "" || updated.UpstreamModel != "" {
+		t.Fatalf("the model acknowledgement must not carry routing fields, got %q/%q/%q",
+			updated.ProviderID, updated.ProviderName, updated.UpstreamModel)
 	}
 
 	routes, err = pg.ListModelRoutes(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("ListModelRoutes after edit: %v", err)
 	}
-	editedFirst := routeByUpstream(routes, "up-primary-v2")
-	editedBackup := routeByUpstream(routes, "up-backup")
-	if editedFirst == nil {
-		t.Fatalf("the first route must take the edit, got %+v", routes)
+	if len(routes) != 2 {
+		t.Fatalf("a model edit must not add or remove routes, got %+v", routes)
 	}
-	if editedFirst.ID != first.ID {
-		t.Fatalf("the edit must rewrite the first route %s, not %s", first.ID, editedFirst.ID)
+	editedFirst := routeByUpstream(routes, "up-primary")
+	editedBackup := routeByUpstream(routes, "up-backup")
+	if editedFirst == nil || editedFirst.ID != first.ID || editedFirst.Status != 2 || editedFirst.ProviderID != primary.ID {
+		t.Fatalf("the first route must be untouched by a model edit, got %+v", routes)
 	}
 	if editedBackup == nil || editedBackup.ID != second.ID || editedBackup.ProviderID != backup.ID {
 		t.Fatalf("the backup route must be untouched by a model edit, got %+v", routes)
+	}
+	if routeByUpstream(routes, "up-primary-v2") != nil {
+		t.Fatalf("the update's binding must not be written to any route, got %+v", routes)
 	}
 }

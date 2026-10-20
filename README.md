@@ -121,7 +121,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 Then open <http://127.0.0.1:8080/admin-ui> and create the first administrator there. **There is no built-in account or default password.**
 
-The first hop stays in the console: add a channel, paste the vendor API key into the password field, and bind a virtual model to that channel. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.
+The first hop stays in the console: **create the first administrator → add a channel (paste the vendor API key into the password field) → open a model from the catalog on the 模型 page in one click → call it**. The 模型服务 navigation group is now 渠道 / 模型: the 渠道 page manages access and credential source, while the 模型 page opens on a cross-channel Model Catalog where 开放 makes a model callable. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.
 
 > All configuration comes from **process environment variables**; no `.env` file is read. Provider API keys are the exception: paste them into the channel form and the gateway seals them in PostgreSQL. [`.env.example`](.env.example) is a reference list of names — see [Configuration](doc/configuration.md).
 

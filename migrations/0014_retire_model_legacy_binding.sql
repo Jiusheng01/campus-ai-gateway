@@ -1,5 +1,17 @@
 -- 0014_retire_model_legacy_binding.sql
--- ADR-0005 contract: Route is the sole model routing authority. Replay-safe.
+-- ADR-0005 contract: Route is the sole model routing authority.
+--
+-- Idempotent when applied forward: the backfill skips every model that already
+-- owns a Route, and the two DROPs use IF EXISTS, so re-running this file
+-- against its own end state does nothing.
+--
+-- It is NOT replay-safe as part of the whole set against an end-state database:
+-- 0002 creates an index on gateway_model.provider_id and this file drops that
+-- column, so replaying 0002 after 0014 has run fails with "column does not
+-- exist". The migration bootstrap tolerates that only because it does not
+-- require every historical file to replay: it verifies the final schema
+-- contract and records the history only after that check passes (see
+-- internal/migrate/migrate.go).
 --
 -- gateway_model.provider_id / upstream_model were the single-binding model that
 -- gateway_model_route replaced in 0003. That migration kept them on purpose so

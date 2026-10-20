@@ -110,16 +110,20 @@ func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 	}
 }
 
-func TestAssembleRouteTableFallsBackToTheModelUpstreamName(t *testing.T) {
+// A Route with no upstream model cannot serve a request, and the retired model
+// column is not a second authority to fill it from. The line is skipped instead
+// of being silently pointed at whatever the model used to say.
+func TestAssembleRouteTableSkipsARouteWithNoUpstreamModel(t *testing.T) {
 	providers := []model.Provider{{ID: "p1", Name: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K1", Status: 1}}
+	// UpstreamModel on the model is the retired field; it must have no effect.
 	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", UpstreamModel: "qwen-plus", Status: 1}}
 	routesByModel := map[string][]model.ModelRoute{
 		"m1": {{ModelID: "m1", ProviderID: "p1", UpstreamModel: "", Priority: 1, Status: 1}},
 	}
 
-	routes := assembleRouteTable(providers, models, routesByModel).models["campus-smart"]
-	if len(routes) != 1 || routes[0].UpstreamModel != "qwen-plus" {
-		t.Fatalf("empty route upstream must fall back to the model's: %+v", routes)
+	table := assembleRouteTable(providers, models, routesByModel)
+	if routes, ok := table.models["campus-smart"]; ok {
+		t.Fatalf("a Route without an upstream model must not be routable, got %+v", routes)
 	}
 }
 

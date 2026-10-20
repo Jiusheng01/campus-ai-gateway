@@ -47,13 +47,13 @@ export function ProviderForm({
   }
 
   const submit = () => {
-    const apiKey = (v.api_key || '').trim()
+    const credentialSecret = (v.credential_secret || '').trim()
     const credentialEnv = (v.credential_env || '').trim()
     if (mode === 'env' && !credentialEnv) {
       setFormError('请输入凭据环境变量名。')
       return
     }
-    if (isNew && mode === 'inline' && !apiKey) {
+    if (isNew && mode === 'inline' && !credentialSecret) {
       setFormError('请粘贴厂商 API Key，或改为引用环境变量。')
       return
     }
@@ -64,7 +64,7 @@ export function ProviderForm({
     // ambiguous. An empty inline key on edit means "keep the stored credential".
     const payload: ProviderDraft = {
       ...v,
-      api_key: mode === 'inline' ? apiKey : undefined,
+      credential_secret: mode === 'inline' ? credentialSecret : undefined,
       credential_env: mode === 'env' ? credentialEnv : undefined,
     }
     delete payload.credential
@@ -121,8 +121,8 @@ export function ProviderForm({
           }
         >
           <PasswordInput
-            value={v.api_key || ''}
-            onChange={key => setV({...v, api_key: key})}
+            value={v.credential_secret || ''}
+            onChange={key => setV({...v, credential_secret: key})}
             placeholder={inlineConfigured ? `已配置（尾号 ${credential?.last4 || '****'}），留空不改动` : 'sk-…'}
             autoComplete="new-password"
           />

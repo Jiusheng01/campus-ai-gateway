@@ -40,16 +40,34 @@ func TestValidateModelUpdateAcceptsIdentityOnly(t *testing.T) {
 	}
 }
 
-// Half a binding would name a channel with no upstream model, or the reverse.
-// Whatever wrote that Route would leave it unusable, so neither half alone is
-// accepted.
-func TestValidateModelRejectsHalfABinding(t *testing.T) {
+// An edit that carries a channel or upstream model is refused outright. It
+// would otherwise read as a request to re-point a Route, which is exactly the
+// "pick a Route and overwrite it" path ticket 01 removed. Routing changes are
+// Route writes.
+func TestValidateModelUpdateRejectsAnyBinding(t *testing.T) {
 	for name, v := range map[string]model.ModelConfig{
+		"both":                {Alias: "m", ProviderID: "6ba7b811-9dad-11d1-80b4-00c04fd430c8", UpstreamModel: "qwen-max"},
 		"provider only":       {Alias: "m", ProviderID: "6ba7b811-9dad-11d1-80b4-00c04fd430c8"},
 		"upstream model only": {Alias: "m", UpstreamModel: "qwen-max"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := validateModel(&v, false); err == "" {
+				t.Fatalf("a model edit must not accept a routing binding: %+v", v)
+			}
+		})
+	}
+}
+
+// Half a binding would name a channel with no upstream model, or the reverse.
+// Whatever wrote that Route would leave it unusable, so neither half alone is
+// accepted on create.
+func TestValidateModelCreateRejectsHalfABinding(t *testing.T) {
+	for name, v := range map[string]model.ModelConfig{
+		"provider only":       {Alias: "m", ProviderID: "6ba7b811-9dad-11d1-80b4-00c04fd430c8"},
+		"upstream model only": {Alias: "m", UpstreamModel: "qwen-max"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateModel(&v, true); err == "" {
 				t.Fatalf("half a binding must be rejected: %+v", v)
 			}
 		})

@@ -48,9 +48,11 @@ type Provider struct {
 	// it is empty for an inline Credential. It remains the write field for the
 	// environment-variable source so existing clients keep working.
 	CredentialEnv string `json:"credential_env"`
-	// APIKey is the write-only inline credential. It is accepted on create and
-	// update, sealed before it reaches storage, and never populated on a read.
-	APIKey string `json:"api_key,omitempty"`
+	// CredentialSecret is the write-only inline credential. It is accepted on
+	// create and update, sealed before it reaches storage, and never populated on
+	// a read. It is named for the Credential it becomes: the gateway-issued API
+	// Key is a different concept.
+	CredentialSecret string `json:"credential_secret,omitempty"`
 	// Credential is the read-only summary. It is filled by the management API.
 	Credential *CredentialSummary `json:"credential,omitempty"`
 	Status     int                `json:"status"`
@@ -71,12 +73,12 @@ type Provider struct {
 // model's Routes (ADR-0005).
 //
 // ProviderID and UpstreamModel survive on this type only as the *write* binding
-// for a create or update: they name the channel and upstream model of the first
-// Route to write. Reads never populate them, and they are omitted from the JSON
+// for a create, where they name the channel and upstream model of the first
+// Route to write. An update accepts neither: editing a model changes its alias
+// and status only. Reads never populate them, and they are omitted from the JSON
 // when empty, so a model response carries no routing field to mistake for a
-// second source of truth. ProviderName is never written by a client; it is
-// retained only because the in-process route table still accepts it as a
-// fallback upstream for a Route that has none.
+// second source of truth. ProviderName is never written by a client and is
+// cleared on every acknowledgement.
 type ModelConfig struct {
 	ID        string    `json:"id"`
 	Alias     string    `json:"alias"`

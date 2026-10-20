@@ -1,6 +1,33 @@
 package app
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+)
+
+// The model list lives under the channel's configured base URL, which already
+// ends in /v1, /api/v3 or /api/paas/v4. The refresh path is therefore /models,
+// not /v1/models: inserting /v1 would ask Ark for /api/v3/v1/models and GLM for
+// /api/paas/v4/v1/models, both of which are 404s.
+func TestProviderModelsProbePathAppendsToTheConfiguredBase(t *testing.T) {
+	cases := []struct{ name, base, want string }{
+		{"openai-style v1", "https://api.deepseek.com/v1", "https://api.deepseek.com/v1/models"},
+		{"ark v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/models"},
+		{"glm v4", "https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4/models"},
+		{"trailing slash", "https://api.deepseek.com/v1/", "https://api.deepseek.com/v1/models"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := directTargetURL(tc.base, &url.URL{Path: providerModelsPath})
+			if err != nil {
+				t.Fatalf("directTargetURL: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("probe URL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 // The upstream list is an external wire format, so its parser is pinned
 // directly: the refresh merges data[].id, ignores blanks and repeats, and
