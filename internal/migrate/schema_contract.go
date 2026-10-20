@@ -183,12 +183,16 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			},
 		},
 		{
+			// provider_id and upstream_model still exist as nullable columns:
+			// 0002 indexes the first and 0003 reads both during a bootstrap
+			// replay, so dropping them would break the replay of a database
+			// already at this schema. They are retired from every read and
+			// write path and deliberately absent from this contract.
 			Name: "gateway_model",
 			Columns: []contractColumn{
 				{"id", "uuid", true},
 				{"alias", "character varying", true},
-				{"provider_id", "uuid", true},
-				{"upstream_model", "character varying", true},
+				{"display_name", "character varying", true},
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -318,7 +322,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 
 	fks = []contractFK{
 		{"gateway_api_key", "tenant_id", "gateway_tenant", "id", "a"},
-		{"gateway_model", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
@@ -331,14 +334,17 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		// A model quota belongs to its tenant: CASCADE, since a deleted tenant
 		// has no usage left to account for.
 		{"gateway_model_quota", "tenant_id", "gateway_tenant", "id", "c"},
+		// A quota names a catalog entry, not an arbitrary string. RESTRICT keeps
+		// a model from disappearing while a cap still points at it.
+		{"gateway_model_quota", "model_alias", "gateway_model", "alias", "r"},
 	}
 
 	indexes = []contractIndex{
 		{"gateway_api_key", "idx_gateway_api_key_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_api_key_tenant ON gateway_api_key(tenant_id)`},
 		{"gateway_request_log", "idx_request_log_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_request_log_created ON gateway_request_log(created_at DESC)`},
 		{"gateway_request_attempt", "idx_request_attempt_request", false, []string{"request_id"}, `CREATE INDEX idx_request_attempt_request ON gateway_request_attempt(request_id)`},
-		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_provider", "idx_gateway_provider_status", false, []string{"status"}, `CREATE INDEX idx_gateway_provider_status ON gateway_provider(status)`},
+		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_model", "idx_gateway_model_status", false, []string{"status"}, `CREATE INDEX idx_gateway_model_status ON gateway_model(status)`},
 		{"gateway_model_route", "uq_gateway_model_route_binding", true, []string{"model_id", "provider_id", "upstream_model"}, `CREATE UNIQUE INDEX uq_gateway_model_route_binding ON gateway_model_route(model_id, provider_id, upstream_model)`},
 		{"gateway_model_route", "idx_gateway_model_route_model", false, []string{"model_id", "priority", "status"}, `CREATE INDEX idx_gateway_model_route_model ON gateway_model_route(model_id, priority, status)`},
@@ -395,7 +401,7 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
 		"gateway_request_attempt.error_kind": 32,
 		"gateway_provider.name":              128, "gateway_provider.protocol": 32, "gateway_provider.credential_env": 128,
-		"gateway_model.alias": 128, "gateway_model.upstream_model": 128,
+		"gateway_model.alias": 128, "gateway_model.display_name": 128,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
 		"gateway_admin_audit_log.resource": 256, "gateway_admin_audit_log.client_ip": 64,
@@ -441,7 +447,8 @@ func finalColumnDefaults() map[string]string {
 		"gateway_provider.id": "gen_random_uuid()", "gateway_provider.protocol": "'openai-chat'::character varying",
 		"gateway_provider.status": "1", "gateway_provider.created_at": "now()", "gateway_provider.updated_at": "now()",
 		"gateway_model.id": "gen_random_uuid()", "gateway_model.status": "1",
-		"gateway_model.created_at": "now()", "gateway_model.updated_at": "now()",
+		"gateway_model.display_name": "''::character varying",
+		"gateway_model.created_at":   "now()", "gateway_model.updated_at": "now()",
 
 		"gateway_model_route.id": "gen_random_uuid()", "gateway_model_route.priority": "1",
 		"gateway_model_route.weight": "100", "gateway_model_route.timeout_ms": "60000",

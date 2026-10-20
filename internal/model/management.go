@@ -13,15 +13,16 @@ type Provider struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// ModelConfig is the public model catalog entry. It deliberately carries no
+// provider or upstream name: those belong to gateway_model_route, and keeping a
+// copy here is what used to make "edit the model" silently rewrite a route.
 type ModelConfig struct {
-	ID            string    `json:"id"`
-	Alias         string    `json:"alias"`
-	ProviderID    string    `json:"provider_id"`
-	ProviderName  string    `json:"provider_name"`
-	UpstreamModel string    `json:"upstream_model"`
-	Status        int       `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Alias       string    `json:"alias"`
+	DisplayName string    `json:"display_name"`
+	Status      int       `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type ModelRoute struct {

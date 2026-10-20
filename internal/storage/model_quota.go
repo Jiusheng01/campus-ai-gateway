@@ -82,6 +82,18 @@ ORDER BY (q.tenant_id IS NULL) DESC, COALESCE(t.path, ''), q.model_alias
 	return out, rows.Err()
 }
 
+// ModelAliasExists reports whether the catalog contains this public model name.
+// A quota row is keyed by alias, so a typo would otherwise create a cap that no
+// request can ever match.
+func (p *Postgres) ModelAliasExists(ctx context.Context, alias string) (bool, error) {
+	var exists bool
+	if err := p.Pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM gateway_model WHERE alias = $1)`, alias).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check model alias: %w", err)
+	}
+	return exists, nil
+}
+
 // UpsertModelQuota writes one (subject, model) pair.
 //
 // The update and the insert are separate statements rather than one ON CONFLICT
@@ -430,6 +442,104 @@ WHERE q.tenant_id IS NULL OR q.tenant_id = ANY($1::uuid[])
 			SetBy:             setBy,
 			Own:               sourceTenant != "" && sourceTenant == leafID,
 		})
+	}
+	return out, nil
+}
+
+// EffectiveModelQuotasForTenants resolves several subjects for one admin page.
+//
+// It deliberately reuses EffectiveModelQuotas rather than reimplementing the
+// tightest-positive rule: two copies of that rule is how the console and the
+// limiter drifted apart once already. The cost is one quota query per distinct
+// subject, bounded by the configured rows on screen rather than by request
+// volume, and the tenant paths are read only for the subjects asked for.
+func (p *Postgres) EffectiveModelQuotasForTenants(ctx context.Context, tenantIDs []string) (map[string][]model.EffectiveModelQuota, error) {
+	out := make(map[string][]model.EffectiveModelQuota, len(tenantIDs))
+
+	ids := make([]string, 0, len(tenantIDs))
+	seen := make(map[string]struct{}, len(tenantIDs))
+	for _, id := range tenantIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	paths := make(map[string]string, len(ids))
+	ancestors := make(map[string]struct{}, len(ids))
+	rows, err := p.Pool.Query(ctx, `
+SELECT id::text, path
+FROM gateway_tenant
+WHERE id = ANY($1::uuid[])
+`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load tenant paths for effective model quotas: %w", err)
+	}
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan tenant path: %w", err)
+		}
+		paths[id] = path
+		for _, ancestor := range ParseTenantPath(path) {
+			ancestors[ancestor] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	all := make([]string, 0, len(ancestors))
+	for id := range ancestors {
+		all = append(all, id)
+	}
+	names := make(map[string]string, len(all))
+	nameRows, err := p.Pool.Query(ctx, `
+SELECT id::text, name
+FROM gateway_tenant
+WHERE id = ANY($1::uuid[])
+`, all)
+	if err != nil {
+		return nil, fmt.Errorf("load tenant names for effective model quotas: %w", err)
+	}
+	for nameRows.Next() {
+		var id, name string
+		if err := nameRows.Scan(&id, &name); err != nil {
+			nameRows.Close()
+			return nil, fmt.Errorf("scan tenant name: %w", err)
+		}
+		names[id] = name
+	}
+	if err := nameRows.Err(); err != nil {
+		nameRows.Close()
+		return nil, err
+	}
+	nameRows.Close()
+
+	for _, id := range ids {
+		path, ok := paths[id]
+		if !ok {
+			continue
+		}
+		chain := make([]model.TenantQuota, 0, len(ParseTenantPath(path)))
+		for _, ancestor := range ParseTenantPath(path) {
+			chain = append(chain, model.TenantQuota{TenantID: ancestor, Name: names[ancestor]})
+		}
+		effective, err := p.EffectiveModelQuotas(ctx, chain)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = effective
 	}
 	return out, nil
 }

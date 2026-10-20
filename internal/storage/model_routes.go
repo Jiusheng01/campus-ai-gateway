@@ -2,15 +2,9 @@ package storage
 
 import (
 	"context"
-	"errors"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
-)
-
-var (
-	ErrLastModelRoute        = errors.New("cannot delete the last model route")
-	ErrLastEnabledModelRoute = errors.New("cannot disable or delete the last enabled model route")
 )
 
 func (p *Postgres) ListModelRoutes(ctx context.Context, modelID string) ([]model.ModelRoute, error) {
@@ -44,6 +38,40 @@ ORDER BY r.priority ASC, r.weight DESC, r.created_at ASC
 	if err != nil {
 		return nil, err
 	}
+	return scanModelRoutes(rows)
+}
+
+// ListAllModelRoutes loads the whole route set in one query. The data plane used
+// to issue one query per model on every cache rebuild; the join carries the
+// model alias and provider name, so the table can be assembled without N+1
+// round trips.
+func (p *Postgres) ListAllModelRoutes(ctx context.Context) ([]model.ModelRoute, error) {
+	rows, err := p.Pool.Query(ctx, `
+SELECT
+	r.id::text,
+	r.model_id::text,
+	m.alias,
+	r.provider_id::text,
+	p.name,
+	r.upstream_model,
+	r.priority,
+	r.weight,
+	r.timeout_ms,
+	r.status,
+	r.created_at,
+	r.updated_at
+FROM gateway_model_route r
+JOIN gateway_model m ON m.id=r.model_id
+JOIN gateway_provider p ON p.id=r.provider_id
+ORDER BY r.model_id, r.priority ASC, r.weight DESC, r.created_at ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	return scanModelRoutes(rows)
+}
+
+func scanModelRoutes(rows pgx.Rows) ([]model.ModelRoute, error) {
 	defer rows.Close()
 
 	var out []model.ModelRoute
@@ -94,9 +122,6 @@ RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority,
 	if err != nil {
 		return v, err
 	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
-		return v, err
-	}
 	if err := loadModelRouteNames(ctx, tx, &v); err != nil {
 		return v, err
 	}
@@ -125,30 +150,6 @@ WHERE id=$1::uuid
 		return v, err
 	}
 
-	var oldStatus int
-	if err := tx.QueryRow(ctx, `
-SELECT status
-FROM gateway_model_route
-WHERE id=$1::uuid
-FOR UPDATE
-`, routeID).Scan(&oldStatus); err != nil {
-		return v, err
-	}
-
-	if oldStatus == 1 && v.Status == 2 {
-		var enabledOthers int
-		if err := tx.QueryRow(ctx, `
-SELECT COUNT(*)
-FROM gateway_model_route
-WHERE model_id=$1::uuid AND id<>$2::uuid AND status=1
-`, modelID, routeID).Scan(&enabledOthers); err != nil {
-			return v, err
-		}
-		if enabledOthers == 0 {
-			return v, ErrLastEnabledModelRoute
-		}
-	}
-
 	err = tx.QueryRow(ctx, `
 UPDATE gateway_model_route
 SET provider_id=$2::uuid,
@@ -167,9 +168,6 @@ RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority,
 		&v.Priority, &v.Weight, &v.TimeoutMS, &v.Status, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
-		return v, err
-	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
 		return v, err
 	}
 	if err := loadModelRouteNames(ctx, tx, &v); err != nil {
@@ -200,35 +198,7 @@ WHERE id=$1::uuid
 		return err
 	}
 
-	var status int
-	if err := tx.QueryRow(ctx, `
-SELECT status
-FROM gateway_model_route
-WHERE id=$1::uuid
-FOR UPDATE
-`, routeID).Scan(&status); err != nil {
-		return err
-	}
-
-	var total, enabled int
-	if err := tx.QueryRow(ctx, `
-SELECT COUNT(*), COUNT(*) FILTER (WHERE status=1)
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-`, modelID).Scan(&total, &enabled); err != nil {
-		return err
-	}
-	if total <= 1 {
-		return ErrLastModelRoute
-	}
-	if status == 1 && enabled <= 1 {
-		return ErrLastEnabledModelRoute
-	}
-
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway_model_route WHERE id=$1::uuid`, routeID); err != nil {
-		return err
-	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -242,26 +212,6 @@ FROM gateway_model
 WHERE id=$1::uuid
 FOR UPDATE
 `, modelID).Scan(&id)
-}
-
-func syncLegacyModelRoute(ctx context.Context, tx pgx.Tx, modelID string) error {
-	var providerID, upstreamModel string
-	err := tx.QueryRow(ctx, `
-SELECT provider_id::text, upstream_model
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
-LIMIT 1
-`, modelID).Scan(&providerID, &upstreamModel)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `
-UPDATE gateway_model
-SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
-WHERE id=$1::uuid
-`, modelID, providerID, upstreamModel)
-	return err
 }
 
 func loadModelRouteNames(ctx context.Context, tx pgx.Tx, v *model.ModelRoute) error {
