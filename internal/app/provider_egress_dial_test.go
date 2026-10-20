@@ -114,13 +114,13 @@ func TestStrictServerDeniesALoopbackProviderBeforeConnecting(t *testing.T) {
 	t.Setenv("TEST_EGRESS_KEY", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_EGRESS_KEY", Priority: 1},
 		},
 	}})
 	s.egress = strictEgressPolicy()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -158,14 +158,14 @@ func TestServeDirectDeniesAStoredHTTPProviderOutsideTheAllowlist(t *testing.T) {
 	t.Setenv("TEST_EGRESS_STORED_HTTP_KEY", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_EGRESS_STORED_HTTP_KEY", Priority: 1},
 		},
 	}})
 	// The stored row predates this deployment's allowlist: 127.0.0.1 is not in it.
 	s.cfg.ProviderHTTPAllowlist = []string{"10.0.0.0/8"}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -200,13 +200,13 @@ func TestServeDirectAllowsAnAllowlistedStoredHTTPProvider(t *testing.T) {
 	t.Setenv("TEST_EGRESS_STORED_HTTP_ALLOWED_KEY", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_EGRESS_STORED_HTTP_ALLOWED_KEY", Priority: 1},
 		},
 	}})
 	s.cfg.ProviderHTTPAllowlist = []string{"127.0.0.1"}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -232,7 +232,7 @@ func TestEgressDenialRecordsASecurityEvent(t *testing.T) {
 	t.Setenv("TEST_EGRESS_EVENT_KEY", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_EGRESS_EVENT_KEY", Priority: 1},
 		},
 	}})
@@ -240,7 +240,7 @@ func TestEgressDenialRecordsASecurityEvent(t *testing.T) {
 	s.egress = strictEgressPolicy()
 
 	const reqID = "req_egress_denied_event"
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("X-Request-Id", reqID)
 	req.Header.Set("Content-Type", "application/json")
 	s.serveDirect(httptest.NewRecorder(), req)

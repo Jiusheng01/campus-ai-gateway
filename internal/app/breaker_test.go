@@ -179,7 +179,7 @@ func TestServeDirectSkipsAnOpenChannelAndRecordsIt(t *testing.T) {
 	t.Setenv("TEST_BREAKER_KEY_B", "k")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "a", BaseURL: dead.URL, UpstreamModel: "a", CredentialEnv: "TEST_BREAKER_KEY_A", Priority: 1, Weight: 1, TimeoutMS: 5000},
 			{Provider: "b", BaseURL: good.URL, UpstreamModel: "b", CredentialEnv: "TEST_BREAKER_KEY_B", Priority: 1, Weight: 1, TimeoutMS: 5000},
 		},
@@ -191,7 +191,7 @@ func TestServeDirectSkipsAnOpenChannelAndRecordsIt(t *testing.T) {
 	}
 
 	rec := newAttemptRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req = req.WithContext(withAttemptRecorder(req.Context(), rec))
 	w := httptest.NewRecorder()
 	s.serveDirect(w, req)
@@ -228,7 +228,7 @@ func TestServeDirectRefusesWhenEveryChannelIsOpen(t *testing.T) {
 	t.Setenv("TEST_BREAKER_KEY_C", "k")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "c", BaseURL: up.URL, UpstreamModel: "c", CredentialEnv: "TEST_BREAKER_KEY_C", Priority: 1, Weight: 1, TimeoutMS: 5000},
 		},
 	}})
@@ -237,7 +237,7 @@ func TestServeDirectRefusesWhenEveryChannelIsOpen(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	s.serveDirect(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {

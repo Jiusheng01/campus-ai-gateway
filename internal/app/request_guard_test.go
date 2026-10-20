@@ -40,15 +40,15 @@ func TestRequiresModelFailsClosed(t *testing.T) {
 // of the wildcard is that this case can no longer be read as "unrestricted".
 func TestIdentityAllowsModelTreatsEmptyAsDeny(t *testing.T) {
 	restrictedToNothing := model.Identity{AllowedModels: map[string]struct{}{}}
-	if restrictedToNothing.AllowsModel("campus-smart") {
+	if restrictedToNothing.AllowsModel("demo-model") {
 		t.Fatal("an empty allow-list must deny every model")
 	}
 
-	one := model.Identity{AllowedModels: map[string]struct{}{"campus-smart": {}}}
-	if !one.AllowsModel("campus-smart") {
+	one := model.Identity{AllowedModels: map[string]struct{}{"demo-model": {}}}
+	if !one.AllowsModel("demo-model") {
 		t.Fatal("a listed model must be allowed")
 	}
-	if one.AllowsModel("campus-smart-2") {
+	if one.AllowsModel("demo-model-2") {
 		t.Fatal("an unlisted model must be denied")
 	}
 
@@ -80,7 +80,7 @@ func TestNormalizeAllowedModels(t *testing.T) {
 	})
 
 	t.Run("wildcard plus names is ambiguous", func(t *testing.T) {
-		list := []string{model.AllModelsWildcard, "campus-smart"}
+		list := []string{model.AllModelsWildcard, "demo-model"}
 		if reason := normalizeAllowedModels(&list); reason == "" {
 			t.Fatal("a list that says both everything and one model has no single reading")
 		}
@@ -98,7 +98,7 @@ func TestNormalizeAllowedModels(t *testing.T) {
 	})
 
 	t.Run("an empty entry is a mistake, not an omission", func(t *testing.T) {
-		list := []string{"campus-smart", "  "}
+		list := []string{"demo-model", "  "}
 		if reason := normalizeAllowedModels(&list); reason == "" {
 			t.Fatal("a blank model name must be refused")
 		}

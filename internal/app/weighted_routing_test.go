@@ -86,7 +86,7 @@ func TestServeDirectSpreadsStartingChannelsByWeight(t *testing.T) {
 	t.Setenv("TEST_WEIGHT_KEY_B", "k")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "a", BaseURL: a.URL, UpstreamModel: "a", CredentialEnv: "TEST_WEIGHT_KEY_A", Priority: 1, Weight: 3, TimeoutMS: 5000},
 			{Provider: "b", BaseURL: b.URL, UpstreamModel: "b", CredentialEnv: "TEST_WEIGHT_KEY_B", Priority: 1, Weight: 1, TimeoutMS: 5000},
 		},
@@ -95,7 +95,7 @@ func TestServeDirectSpreadsStartingChannelsByWeight(t *testing.T) {
 	var starts []string
 	for i := 0; i < 4; i++ {
 		rec := newAttemptRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 		req = req.WithContext(withAttemptRecorder(req.Context(), rec))
 		s.serveDirect(httptest.NewRecorder(), req)
 

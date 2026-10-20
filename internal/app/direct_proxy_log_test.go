@@ -50,12 +50,12 @@ func TestServeDirectDoesNotLogTheUpstreamErrorBody(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_LOG", credential)
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_LOG", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-Id", "req_r4_body")
 	rec := httptest.NewRecorder()
@@ -71,7 +71,7 @@ func TestServeDirectDoesNotLogTheUpstreamErrorBody(t *testing.T) {
 	// Dropping the body must not turn the line into a useless one. The request
 	// id, model, status and channel are what an operator needs to locate the
 	// failing route.
-	for _, want := range []string{"req_r4_body", `"campus-smart"`, "503", "qwen"} {
+	for _, want := range []string{"req_r4_body", `"demo-model"`, "503", "qwen"} {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("the server log lost %q, which the operator needs: %s", want, logged)
 		}
@@ -92,12 +92,12 @@ func TestServeDirectDoesNotLogACredentialFromTheChannelTarget(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_BADURL", "sk-channel")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: base, UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_BADURL", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-Id", "req_r4_url")
 	rec := httptest.NewRecorder()
@@ -110,7 +110,7 @@ func TestServeDirectDoesNotLogACredentialFromTheChannelTarget(t *testing.T) {
 	if strings.Contains(logged, password) {
 		t.Fatalf("the server log recorded the base_url password: %s", logged)
 	}
-	for _, want := range []string{"req_r4_url", `"campus-smart"`, "qwen"} {
+	for _, want := range []string{"req_r4_url", `"demo-model"`, "qwen"} {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("the server log lost %q, which the operator needs: %s", want, logged)
 		}
@@ -128,12 +128,12 @@ func TestServeDirectLogsTheMissingCredentialVariable(t *testing.T) {
 	defer upstream.Close()
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_UNSET_LOG", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-Id", "req_r4_missing")
 	rec := httptest.NewRecorder()

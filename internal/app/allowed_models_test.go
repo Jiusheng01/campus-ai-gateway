@@ -27,12 +27,12 @@ func TestAllowedModelsWritePathRejectsAmbiguousLists(t *testing.T) {
 	}{
 		{
 			name:    "wildcard mixed with a named model",
-			body:    `{"name":"k","tenant_id":"t","allowed_models":["*","campus-smart"]}`,
+			body:    `{"name":"k","tenant_id":"t","allowed_models":["*","demo-model"]}`,
 			wantMsg: "wildcard",
 		},
 		{
 			name:    "a blank entry is a mistake, not an omission",
-			body:    `{"name":"k","tenant_id":"t","allowed_models":["campus-smart","  "]}`,
+			body:    `{"name":"k","tenant_id":"t","allowed_models":["demo-model","  "]}`,
 			wantMsg: "empty entry",
 		},
 	}
@@ -90,7 +90,7 @@ func TestAllowedModelsPersistAsAnExplicitEmptyList(t *testing.T) {
 // key has just been refused — and a key allowed nothing must advertise nothing.
 func TestWriteAllowedModelsListsExactlyTheAllowedSet(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeAllowedModels(rec, map[string]struct{}{"campus-vision": {}, "campus-smart": {}})
+	writeAllowedModels(rec, map[string]struct{}{"demo-vision": {}, "demo-model": {}})
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -107,8 +107,8 @@ func TestWriteAllowedModelsListsExactlyTheAllowedSet(t *testing.T) {
 	if out.Object != "list" {
 		t.Fatalf("object = %q, want list", out.Object)
 	}
-	if len(out.Data) != 2 || out.Data[0].ID != "campus-smart" || out.Data[1].ID != "campus-vision" {
-		t.Fatalf("models = %+v, want campus-smart then campus-vision", out.Data)
+	if len(out.Data) != 2 || out.Data[0].ID != "demo-model" || out.Data[1].ID != "demo-vision" {
+		t.Fatalf("models = %+v, want demo-model then demo-vision", out.Data)
 	}
 
 	rec = httptest.NewRecorder()

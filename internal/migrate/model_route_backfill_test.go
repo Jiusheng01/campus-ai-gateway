@@ -64,7 +64,7 @@ RETURNING id::text`).Scan(&providerID); err != nil {
 	var modelID string
 	if err := conn.QueryRow(ctx, `
 INSERT INTO gateway_model(alias, provider_id, upstream_model, status)
-VALUES ('campus-smart', $1::uuid, 'qwen-max', 1)
+VALUES ('demo-model', $1::uuid, 'qwen-max', 1)
 RETURNING id::text`, providerID).Scan(&modelID); err != nil {
 		t.Fatal(err)
 	}

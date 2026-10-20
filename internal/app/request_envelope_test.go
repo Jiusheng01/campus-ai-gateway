@@ -7,11 +7,11 @@ import (
 )
 
 func TestParseRequestEnvelopeJSON(t *testing.T) {
-	got, err := parseRequestEnvelope([]byte(`{"model":"campus-smart","stream":true}`), "application/json")
+	got, err := parseRequestEnvelope([]byte(`{"model":"demo-model","stream":true}`), "application/json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Model != "campus-smart" || !got.Stream {
+	if got.Model != "demo-model" || !got.Stream {
 		t.Fatalf("unexpected envelope: %+v", got)
 	}
 }

@@ -51,7 +51,7 @@ func TestAssembleRouteTableSkipsUnroutableEntries(t *testing.T) {
 		{ID: "p-nourl", Name: "nourl", BaseURL: "   ", CredentialEnv: "KEY_NOURL", Status: 1},
 	}
 	models := []model.ModelConfig{
-		{ID: "m-ok", Alias: "campus-smart", UpstreamModel: "qwen-plus", Status: 1},
+		{ID: "m-ok", Alias: "demo-model", UpstreamModel: "qwen-plus", Status: 1},
 		{ID: "m-off", Alias: "campus-off", UpstreamModel: "qwen-plus", Status: 2},
 	}
 	routesByModel := map[string][]model.ModelRoute{
@@ -73,7 +73,7 @@ func TestAssembleRouteTableSkipsUnroutableEntries(t *testing.T) {
 	if _, ok := table.models["campus-off"]; ok {
 		t.Fatalf("a disabled model must not appear in the routing table")
 	}
-	routes := table.models["campus-smart"]
+	routes := table.models["demo-model"]
 	if len(routes) != 1 {
 		t.Fatalf("expected exactly one routable line, got %d: %+v", len(routes), routes)
 	}
@@ -91,7 +91,7 @@ func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 		{ID: "p2", Name: "backup-a", BaseURL: "https://b.test/v1", CredentialEnv: "K2", Status: 1},
 		{ID: "p3", Name: "backup-b", BaseURL: "https://c.test/v1", CredentialEnv: "K3", Status: 1},
 	}
-	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", Status: 1}}
+	models := []model.ModelConfig{{ID: "m1", Alias: "demo-model", Status: 1}}
 	// Deliberately declared out of order, and with the lighter line first. The
 	// weight must NOT reorder the band any more: it is the smooth weighted round
 	// robin's input (orderRoutes), not a sort key. Only priority moves lines.
@@ -103,7 +103,7 @@ func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 		},
 	}
 
-	routes := assembleRouteTable(providers, models, routesByModel).models["campus-smart"]
+	routes := assembleRouteTable(providers, models, routesByModel).models["demo-model"]
 	got := make([]string, len(routes))
 	for i, r := range routes {
 		got[i] = r.Provider
@@ -122,13 +122,13 @@ func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 func TestAssembleRouteTableSkipsARouteWithNoUpstreamModel(t *testing.T) {
 	providers := []model.Provider{{ID: "p1", Name: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K1", Status: 1}}
 	// UpstreamModel on the model is the retired field; it must have no effect.
-	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", UpstreamModel: "qwen-plus", Status: 1}}
+	models := []model.ModelConfig{{ID: "m1", Alias: "demo-model", UpstreamModel: "qwen-plus", Status: 1}}
 	routesByModel := map[string][]model.ModelRoute{
 		"m1": {{ModelID: "m1", ProviderID: "p1", UpstreamModel: "", Priority: 1, Status: 1}},
 	}
 
 	table := assembleRouteTable(providers, models, routesByModel)
-	if routes, ok := table.models["campus-smart"]; ok {
+	if routes, ok := table.models["demo-model"]; ok {
 		t.Fatalf("a Route without an upstream model must not be routable, got %+v", routes)
 	}
 }
@@ -169,7 +169,7 @@ func TestDirectTargetURL(t *testing.T) {
 }
 
 func TestRewriteJSONModel(t *testing.T) {
-	out, ok := rewriteJSONModel([]byte(`{"model":"campus-smart","messages":[{"role":"user","content":"hi"}],"temperature":0.2}`), "qwen-plus")
+	out, ok := rewriteJSONModel([]byte(`{"model":"demo-model","messages":[{"role":"user","content":"hi"}],"temperature":0.2}`), "qwen-plus")
 	if !ok {
 		t.Fatal("expected the body to be rewritten")
 	}
@@ -236,14 +236,14 @@ func TestServeDirectFailsOverToTheSecondChannel(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_BACKUP", "sk-backup")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "primary", BaseURL: first.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_PRIMARY", Priority: 1},
 			{Provider: "backup", BaseURL: second.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_BACKUP", Priority: 2},
 		},
 	}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"campus-smart","messages":[{"role":"user","content":"hi"}]}`))
+		strings.NewReader(`{"model":"demo-model","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -268,7 +268,7 @@ func TestServeDirectFailsOverToTheSecondChannel(t *testing.T) {
 	if !strings.Contains(secondBody, `"model":"qwen-plus"`) {
 		t.Fatalf("the upstream model was not substituted: %s", secondBody)
 	}
-	if strings.Contains(secondBody, "campus-smart") {
+	if strings.Contains(secondBody, "demo-model") {
 		t.Fatalf("the campus alias leaked upstream: %s", secondBody)
 	}
 }
@@ -290,13 +290,13 @@ func TestServeDirectDoesNotFailOverOnABadRequest(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_B", "sk-b")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "primary", BaseURL: first.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_A", Priority: 1},
 			{Provider: "backup", BaseURL: backup.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_B", Priority: 2},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -321,12 +321,12 @@ func TestServeDirectReportsAMissingCredential(t *testing.T) {
 	defer upstream.Close()
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_UNSET", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -345,7 +345,7 @@ func TestServeDirectReportsAMissingCredential(t *testing.T) {
 
 func TestServeDirectRejectsAnUnknownModel(t *testing.T) {
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
+		"demo-model": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
 	}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-unknown"}`))
@@ -364,8 +364,8 @@ func TestServeDirectRejectsAnUnknownModel(t *testing.T) {
 
 func TestServeDirectModelsListsWhatCanBeRouted(t *testing.T) {
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-vision": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
-		"campus-smart":  {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
+		"demo-vision": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
+		"demo-model":  {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
 	}})
 
 	rec := httptest.NewRecorder()
@@ -386,8 +386,8 @@ func TestServeDirectModelsListsWhatCanBeRouted(t *testing.T) {
 	if out.Object != "list" {
 		t.Fatalf("object = %q, want list", out.Object)
 	}
-	if len(out.Data) != 2 || out.Data[0].ID != "campus-smart" || out.Data[1].ID != "campus-vision" {
-		t.Fatalf("model list = %+v, want campus-smart then campus-vision", out.Data)
+	if len(out.Data) != 2 || out.Data[0].ID != "demo-model" || out.Data[1].ID != "demo-vision" {
+		t.Fatalf("model list = %+v, want demo-model then demo-vision", out.Data)
 	}
 }
 
@@ -401,15 +401,15 @@ func TestServeModelTestDirectReportsTheServingChannel(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_TEST", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_TEST", Priority: 1},
 		},
 	}})
 
-	payload := []byte(`{"model":"campus-smart","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
-	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "campus-smart", Prompt: "ping"}, payload, "req_test")
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model", Prompt: "ping"}, payload, "req_test")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -442,13 +442,13 @@ func TestServeDirectRecordsAttemptsWhenEveryLineFails(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_FAIL_B", "sk-b")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "a", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_FAIL_A", Priority: 1},
 			{Provider: "b", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_FAIL_B", Priority: 2},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -478,14 +478,14 @@ func TestServeDirectRecordsAttemptsWhenEveryLineFails(t *testing.T) {
 
 func TestRouteTableCacheDoesNotRebuildWhileFresh(t *testing.T) {
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
+		"demo-model": {{Provider: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K", Priority: 1}},
 	}})
 	// s.pg is nil: any attempt to rebuild would panic rather than pass.
 	table, err := s.routeTableCached(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(table.models["campus-smart"]) != 1 {
+	if len(table.models["demo-model"]) != 1 {
 		t.Fatalf("the seeded table was not returned: %+v", table.models)
 	}
 }

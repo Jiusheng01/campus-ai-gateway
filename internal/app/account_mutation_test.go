@@ -511,10 +511,10 @@ func TestGatewayAdminCannotPromoteItself(t *testing.T) {
 func TestModelTestOptionViewDropsEverythingElse(t *testing.T) {
 	full := model.ModelConfig{
 		ID:            "36d2e51c-b6b7-4409-a871-a088616cd9cd",
-		Alias:         "campus-smart",
+		Alias:         "demo-model",
 		ProviderID:    "49cd2afd-b8e4-4187-a3fe-de698874186e",
-		ProviderName:  "qwen",
-		UpstreamModel: "qwen3.7-flash-2026-07-15",
+		ProviderName:  "demo-provider",
+		UpstreamModel: "example-upstream-v1",
 		Status:        1,
 	}
 	view := modelTestOptionView{ID: full.ID, Alias: full.Alias, Status: full.Status}
