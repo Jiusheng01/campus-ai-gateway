@@ -12,7 +12,7 @@ import (
 )
 
 // This file is the storage half of the per-model quota axis. Read the header of
-// migrations/0014_model_quota.sql first: the three states of a limit column
+// migrations/0016_model_quota.sql first: the three states of a limit column
 // (NULL = inherit, 0 = unlimited, >0 = cap) and the meaning of a NULL tenant_id
 // (the system-wide pool) are defined there and relied on everywhere below.
 

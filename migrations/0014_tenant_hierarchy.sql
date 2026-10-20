@@ -1,4 +1,4 @@
--- 0013_tenant_hierarchy.sql
+-- 0014_tenant_hierarchy.sql
 -- M3.1: multi-level tenant hierarchy (school -> dept -> teacher -> student).
 --
 -- The Glossary defines the Tenant as the single access-control, rate-limit,

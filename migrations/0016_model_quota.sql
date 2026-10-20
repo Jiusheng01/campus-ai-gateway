@@ -1,4 +1,4 @@
--- 0015_model_quota.sql
+-- 0016_model_quota.sql
 -- Per-model token quota: a second quota axis next to the tenant one.
 --
 -- A tenant currently holds exactly one token budget. A request consumes the
@@ -23,7 +23,7 @@
 --                            per model, shared by the whole campus" requirement.
 --   tenant_id IS NOT NULL -> that tenant's own holding of the model.
 --
--- The limit columns follow the convention 0013_tenant_hierarchy.sql establishes
+-- The limit columns follow the convention 0014_tenant_hierarchy.sql establishes
 -- for the tenant quota columns, so operators only have to learn it once:
 --   NULL -> inherit from the nearest ancestor (or from the system pool)
 --      0 -> explicitly unlimited

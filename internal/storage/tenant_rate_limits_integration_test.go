@@ -7,7 +7,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// Rate limits live on the Tenant (ADR-0015) and are three-state since 0013.
+// Rate limits live on the Tenant (ADR-0015) and are three-state since 0014.
 // This pins the storage contract: nil (inherit), 0 (unlimited) and a positive
 // cap all round-trip through create, update and list without collapsing into
 // each other.

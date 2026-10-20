@@ -6,7 +6,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// The rate limits are the tenant's, and since 0013 they are three-state:
+// The rate limits are the tenant's, and since 0014 they are three-state:
 //
 //	nil -> inherit from the nearest ancestor that declares a value
 //	  0 -> explicitly unlimited

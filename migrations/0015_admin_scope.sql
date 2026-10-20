@@ -1,4 +1,4 @@
--- 0014_admin_scope.sql
+-- 0015_admin_scope.sql
 -- Confines a tenant administrator to one subtree of the tenant hierarchy.
 --
 -- admin_auth.go currently grants tenant_admin nothing at all, and says why:

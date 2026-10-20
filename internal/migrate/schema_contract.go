@@ -88,7 +88,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
-				// The six enforced limits are three-state since 0013: NULL means
+				// The six enforced limits are three-state since 0014: NULL means
 				// "inherit from the nearest ancestor", 0 means "explicitly
 				// unlimited". They are therefore nullable by contract -- a
 				// NOT NULL here would reject the inheritance state.
@@ -102,7 +102,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				// two-state convention it was created with: converting it would
 				// add a distinction nothing reads.
 				{"monthly_budget_micros", "bigint", true},
-				// The hierarchy (0013). path is mandatory: every write sets it.
+				// The hierarchy (0014). path is mandatory: every write sets it.
 				{"parent_id", "uuid", false},
 				{"path", "text", true},
 				{"depth", "integer", true},
@@ -250,7 +250,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
 				// NULL means global reach. A non-NULL value confines the account
-				// to the strict descendants of that tenant (0014).
+				// to the strict descendants of that tenant (0015).
 				{"scope_tenant_id", "uuid", false},
 			},
 		},
@@ -282,7 +282,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				// NULL = the system-wide pool for this model.
 				{"tenant_id", "uuid", false},
 				{"model_alias", "character varying", true},
-				// NULL = inherit / 0 = unlimited / >0 = cap (0015).
+				// NULL = inherit / 0 = unlimited / >0 = cap (0016).
 				{"daily_token_limit", "bigint", false},
 				{"monthly_token_limit", "bigint", false},
 				{"created_at", "timestamp with time zone", true},
@@ -355,13 +355,13 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_admin_user", "idx_gateway_admin_user_status", false, []string{"status"}, `CREATE INDEX idx_gateway_admin_user_status ON gateway_admin_user(status)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_user", false, []string{"user_id", "created_at DESC"}, `CREATE INDEX idx_gateway_admin_session_user ON gateway_admin_session(user_id, created_at DESC)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_expires", false, []string{"expires_at"}, `CREATE INDEX idx_gateway_admin_session_expires ON gateway_admin_session(expires_at)`},
-		// The hierarchy's two access paths (0013): walking up via parent_id, and
+		// The hierarchy's two access paths (0014): walking up via parent_id, and
 		// matching a subtree with a LIKE 'prefix%' scan. The index is declared
 		// with text_pattern_ops, but pg_get_indexdef() reports only the column,
 		// so the opclass is not part of what this contract can assert.
 		{"gateway_tenant", "idx_gateway_tenant_parent", false, []string{"parent_id"}, `CREATE INDEX idx_gateway_tenant_parent ON gateway_tenant(parent_id)`},
 		{"gateway_tenant", "idx_gateway_tenant_path", false, []string{"path"}, `CREATE INDEX idx_gateway_tenant_path ON gateway_tenant(path text_pattern_ops)`},
-		// Resolving an administrator's reach on every request (0014).
+		// Resolving an administrator's reach on every request (0015).
 		{"gateway_admin_user", "idx_gateway_admin_user_scope", false, []string{"scope_tenant_id"}, `CREATE INDEX idx_gateway_admin_user_scope ON gateway_admin_user(scope_tenant_id)`},
 		// One quota per (subject, model). This is a unique index rather than a
 		// UNIQUE constraint because NULLS NOT DISTINCT is only expressible on an
@@ -417,11 +417,11 @@ func finalColumnDefaults() map[string]string {
 	return map[string]string{
 		"gateway_tenant.id": "gen_random_uuid()", "gateway_tenant.status": "1",
 		"gateway_tenant.created_at": "now()", "gateway_tenant.updated_at": "now()",
-		// The six enforced limits deliberately have NO default since 0013: an
+		// The six enforced limits deliberately have NO default since 0014: an
 		// INSERT that omits them must land on NULL (inherit), not on 0
 		// (unlimited). Only the two-state budget column keeps its 0.
 		"gateway_tenant.monthly_budget_micros": "0",
-		// Hierarchy defaults (0013). path has no default -- it is derived from
+		// Hierarchy defaults (0014). path has no default -- it is derived from
 		// the parent's path and the new row's id, which a column default cannot
 		// know, so the write path always supplies it.
 		"gateway_tenant.depth": "0", "gateway_tenant.kind": "'tenant'::text",

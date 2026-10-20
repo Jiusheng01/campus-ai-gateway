@@ -45,14 +45,14 @@ type Tenant struct {
 	Name   string `json:"name"`
 	Status int    `json:"status"`
 
-	// Hierarchy (0013). ParentID is nil for a root; Path is the materialized
+	// Hierarchy (0014). ParentID is nil for a root; Path is the materialized
 	// path "/<root>/.../<self>/" that makes a subtree a prefix compare.
 	ParentID *string `json:"parent_id"`
 	Path     string  `json:"path"`
 	Depth    int     `json:"depth"`
 	Kind     string  `json:"kind"`
 
-	// The six enforced limits are three-state since 0013:
+	// The six enforced limits are three-state since 0014:
 	//
 	//	nil -> inherit from the nearest ancestor that declares a value
 	//	  0 -> explicitly unlimited
