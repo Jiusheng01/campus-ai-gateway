@@ -122,7 +122,7 @@ type TenantAllocation struct {
 	MonthlyRequestLimit *int64   `json:"monthly_request_limit"`
 	MonthlyBudgetMicros *int64   `json:"monthly_budget_micros"`
 	RPMLimit            *int64   `json:"rpm_limit"`
-	TPMLimit            *int64   `json:"tp_limit"`
+	TPMLimit            *int64   `json:"tpm_limit"`
 	MaxConcurrency      *int64   `json:"max_concurrency"`
 	AllowedModels       []string `json:"allowed_models"`
 }

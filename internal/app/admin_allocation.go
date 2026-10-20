@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,6 +142,10 @@ func (s *Server) handleTenantAllocation(w http.ResponseWriter, r *http.Request) 
 			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found", reqID)
 			return
 		}
+		// The client gets a generic message, but the operator needs the reason:
+		// a rejected constraint and an unreachable database look identical from
+		// outside, and only one of them is worth retrying.
+		log.Printf("tenant allocation: %s failed: %v", id, err)
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Allocation could not be written", reqID)
 		return
 	}

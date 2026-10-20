@@ -585,13 +585,19 @@ func (p *Postgres) EffectiveTenantLimits(ctx context.Context, tenantID string) (
 // Only the allocation columns are written: identity (code, name, kind, parent)
 // and the rate limits are left alone, so allocating a budget cannot accidentally
 // reparent a tenant or reset its name.
+//
+// monthly_budget_micros is the one limit that is NOT three-state: the column is
+// NOT NULL, because the third state ("inherit") was never given an enforcement
+// path and a nullable column nobody reads is worse than an honest zero. An
+// omitted value therefore means 0 rather than NULL, which COALESCE expresses
+// without making the caller know the column's nullability.
 func (p *Postgres) AllocateTenantQuota(ctx context.Context, id string, a model.TenantAllocation) (model.Tenant, error) {
 	row := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
 SET daily_token_limit     = $2,
     monthly_token_limit   = $3,
     monthly_request_limit = $4,
-    monthly_budget_micros = $5,
+    monthly_budget_micros = COALESCE($5, 0),
     rpm_limit             = $6,
     tpm_limit             = $7,
     max_concurrency       = $8,

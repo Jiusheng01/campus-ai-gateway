@@ -239,6 +239,13 @@ func (p adminPrincipal) can(r *http.Request) bool {
 	// the database — this branch decides which endpoints are addressable, the
 	// handler decides which rows.
 	//
+	// /admin/status is deliberately not here even though it is read-only. Its
+	// payload is the whole deployment's numbers — requests, tokens, errors
+	// across every tenant — and it carries no scope to narrow, so granting it
+	// would hand a department administrator the campus totals the subtree
+	// exists to hide. The three surfaces below are the ones whose handlers can
+	// answer "what is inside your subtree" and refuse everything else.
+	//
 	// A tenant_admin without a scope grants nothing. Validation refuses to
 	// create one, so this is defence in depth rather than an expected state:
 	// an unscoped tenant_admin is the unbounded global grant the role used to
@@ -250,8 +257,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			path == "/admin/api-keys",
 			strings.HasPrefix(path, "/admin/api-keys/"),
 			path == "/admin/model-quotas",
-			strings.HasPrefix(path, "/admin/model-quotas/"),
-			path == "/admin/status":
+			strings.HasPrefix(path, "/admin/model-quotas/"):
 			return true
 		}
 	}
