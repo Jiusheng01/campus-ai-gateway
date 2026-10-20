@@ -52,10 +52,13 @@ jobs:
           node-version: "22.x"
 
       - name: Install Admin UI dependencies
-        run: npm --prefix web/admin install --no-audit --no-fund
+        run: npm --prefix web/admin ci --no-audit --no-fund
 
       - name: Check Admin UI
         run: npm --prefix web/admin run check
+
+      - name: Test Admin UI
+        run: npm --prefix web/admin run test
 
       - name: Build Admin UI
         run: npm --prefix web/admin run build

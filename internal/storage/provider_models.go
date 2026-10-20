@@ -19,19 +19,15 @@ const providerModelColumns = `id::text, provider_id::text, upstream_model, sourc
 // the whole list — currently the Provider Model list and its upstream refresh.
 func (p *Postgres) ProviderByID(ctx context.Context, id string) (model.Provider, error) {
 	var v model.Provider
-	err := p.Pool.QueryRow(ctx, `
+	row := p.Pool.QueryRow(ctx, `
 SELECT `+providerColumns+`
 FROM gateway_provider p
 JOIN gateway_credential c ON c.id = p.credential_id
 WHERE p.id=$1::uuid
-`, id).Scan(
-		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-		&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext,
-	)
-	if err != nil {
+`, id)
+	if err := scanProviderRow(row, &v); err != nil {
 		return model.Provider{}, err
 	}
-	v.CredentialEnv = v.CredentialSecretRef
 	return v, nil
 }
 

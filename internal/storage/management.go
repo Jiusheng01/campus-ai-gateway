@@ -15,9 +15,55 @@ import (
 
 // providerColumns is the provider projection every read and write shares. The
 // Credential is joined rather than stored on the provider: its source and secret
-// are one row, so a provider edit cannot leave the two disagreeing.
-const providerColumns = `p.id::text, p.name, p.base_url, p.protocol, p.status, p.created_at, p.updated_at,
-	c.id::text, c.source_type, COALESCE(c.secret_ref,''), COALESCE(c.ciphertext,'')`
+// are one row, so a provider edit cannot leave the two disagreeing. The
+// management counts are correlated subqueries rather than extra round trips.
+const providerColumns = `p.id::text, p.name, p.base_url, p.protocol,
+	p.provider_type, p.description, p.status, p.created_at, p.updated_at,
+	p.last_test_at, p.last_test_ok, p.last_test_status_code, p.last_test_latency_ms,
+	COALESCE(p.last_test_upstream_model,''), COALESCE(p.last_test_error_kind,''),
+	c.id::text, c.source_type, COALESCE(c.secret_ref,''), COALESCE(c.ciphertext,''),
+	(SELECT COUNT(*)::int FROM gateway_provider_model pm WHERE pm.provider_id=p.id),
+	(SELECT COUNT(*)::int FROM gateway_model_route r WHERE r.provider_id=p.id),
+	(SELECT COUNT(DISTINCT r.model_id)::int FROM gateway_model_route r WHERE r.provider_id=p.id)`
+
+type providerScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanProviderRow reads the shared provider projection. Last-test columns are
+// nullable; they become nil when no test has run.
+func scanProviderRow(row providerScanner, v *model.Provider) error {
+	var lastAt *time.Time
+	var lastOK *bool
+	var lastStatus *int
+	var lastLatency *int64
+	var lastUpstream, lastError string
+	if err := row.Scan(
+		&v.ID, &v.Name, &v.BaseURL, &v.Protocol,
+		&v.ProviderType, &v.Description, &v.Status, &v.CreatedAt, &v.UpdatedAt,
+		&lastAt, &lastOK, &lastStatus, &lastLatency,
+		&lastUpstream, &lastError,
+		&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext,
+		&v.CandidateModelCount, &v.ReferencedRouteCount, &v.ReferencedModelCount,
+	); err != nil {
+		return err
+	}
+	if lastAt != nil {
+		result := &model.ProviderTestResult{At: *lastAt, UpstreamModel: lastUpstream, ErrorKind: lastError}
+		if lastOK != nil {
+			result.OK = *lastOK
+		}
+		if lastStatus != nil {
+			result.StatusCode = *lastStatus
+		}
+		if lastLatency != nil {
+			result.LatencyMS = *lastLatency
+		}
+		v.LastTest = result
+	}
+	v.CredentialEnv = v.CredentialSecretRef
+	return nil
+}
 
 func (p *Postgres) ListProviders(ctx context.Context) ([]model.Provider, error) {
 	rows, err := p.Pool.Query(ctx, `
@@ -34,11 +80,9 @@ ORDER BY p.created_at DESC
 	var out []model.Provider
 	for rows.Next() {
 		var v model.Provider
-		if err := rows.Scan(&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-			&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext); err != nil {
+		if err := scanProviderRow(rows, &v); err != nil {
 			return nil, err
 		}
-		v.CredentialEnv = v.CredentialSecretRef
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -71,13 +115,11 @@ WITH new_credential AS (
 	VALUES ('channel:' || gen_random_uuid()::text, $1, NULLIF($2,''), NULLIF($3,''))
 	RETURNING id
 )
-INSERT INTO gateway_provider (name, base_url, protocol, credential_id, status)
-SELECT $4, $5, $6, new_credential.id, $7 FROM new_credential
-RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, credential_id::text
+INSERT INTO gateway_provider (name, base_url, protocol, provider_type, description, credential_id, status)
+SELECT $4, $5, $6, $7, $8, new_credential.id, $9 FROM new_credential
+RETURNING id::text
 `, v.CredentialSource, v.CredentialSecretRef, v.CredentialCiphertext,
-		v.Name, v.BaseURL, v.Protocol, v.Status).Scan(
-		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.CredentialID,
-	)
+		v.Name, v.BaseURL, v.Protocol, v.ProviderType, v.Description, v.Status).Scan(&v.ID)
 	if err != nil {
 		return v, err
 	}
@@ -87,8 +129,7 @@ RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, cr
 	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
-	v.CredentialEnv = v.CredentialSecretRef
-	return v, nil
+	return p.ProviderByID(ctx, v.ID)
 }
 
 // DeleteProvider hard-deletes a channel and everything that only existed for
@@ -306,11 +347,11 @@ func (p *Postgres) UpdateProvider(ctx context.Context, id string, v model.Provid
 
 	err = tx.QueryRow(ctx, `
 UPDATE gateway_provider
-SET name=$2, base_url=$3, protocol=$4, status=$5, updated_at=NOW()
+SET name=$2, base_url=$3, protocol=$4, provider_type=$5, description=$6, status=$7, updated_at=NOW()
 WHERE id=$1::uuid
-RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, credential_id::text
-`, id, v.Name, v.BaseURL, v.Protocol, v.Status).Scan(
-		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.CredentialID,
+RETURNING id::text, credential_id::text
+`, id, v.Name, v.BaseURL, v.Protocol, v.ProviderType, v.Description, v.Status).Scan(
+		&v.ID, &v.CredentialID,
 	)
 	if err != nil {
 		return v, err
@@ -346,8 +387,7 @@ WHERE id=$1::uuid`, v.CredentialID).Scan(
 	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
-	v.CredentialEnv = v.CredentialSecretRef
-	return v, nil
+	return p.ProviderByID(ctx, id)
 }
 
 // normaliseNewProviderCredential turns the write fields into exactly one source.
@@ -413,13 +453,68 @@ func normaliseUpdatedProviderCredential(v *model.Provider) error {
 // shares. A model is only its client-facing identity and lifecycle state: the
 // channel and upstream model belong to its Routes (ADR-0005), so there is no
 // routing column here to fall out of step with them.
-const modelColumns = `id::text, alias, status, created_at, updated_at`
+const modelColumns = `m.id::text, m.alias, COALESCE(m.display_name,''), COALESCE(m.description,''), m.status,
+	m.config_version, m.created_at, m.updated_at`
+
+// modelReturningColumns is the unprefixed form used by INSERT/UPDATE ... RETURNING.
+const modelReturningColumns = `id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
+	config_version, created_at, updated_at`
+
+// modelReadQuery is the management read shape: the model plus the route-set
+// projections the console needs. The lateral aggregate is a view over
+// gateway_model_route, not a second authority.
+const modelReadQuery = `
+SELECT ` + modelColumns + `,
+	COALESCE(r.route_count,0)::int,
+	COALESCE(r.enabled_route_count,0)::int,
+	COALESCE(r.statically_routable,false),
+	COALESCE(r.credential_configured,false),
+	COALESCE(r.routing_mode_summary,'')
+FROM gateway_model m
+LEFT JOIN LATERAL (
+	SELECT
+		COUNT(*)::int AS route_count,
+		COUNT(*) FILTER (
+			WHERE rt.status=1 AND p.status=1
+			  AND COALESCE(rt.upstream_model,'')<>''
+			  AND COALESCE(p.base_url,'')<>''
+		)::int AS enabled_route_count,
+		(m.status=1 AND COUNT(*) FILTER (
+			WHERE rt.status=1 AND p.status=1
+			  AND COALESCE(rt.upstream_model,'')<>''
+			  AND COALESCE(p.base_url,'')<>''
+		) > 0) AS statically_routable,
+		COALESCE(BOOL_OR(
+			rt.status=1 AND p.status=1
+			AND ((c.source_type='inline' AND COALESCE(c.ciphertext,'')<>'')
+			  OR (c.source_type='env' AND COALESCE(c.secret_ref,'')<>''))
+		), false) AS credential_configured,
+		COUNT(DISTINCT rt.priority) FILTER (WHERE rt.status=1)::int AS priority_count,
+		CASE
+			WHEN COUNT(*) FILTER (WHERE rt.status=1) = 0 THEN '未配置'
+			WHEN COUNT(DISTINCT rt.priority) FILTER (WHERE rt.status=1) = 1
+			  AND COUNT(*) FILTER (WHERE rt.status=1) > 1
+			  THEN '加权分流 ' || COUNT(*) FILTER (WHERE rt.status=1) || ' 条同层'
+			WHEN COUNT(DISTINCT rt.priority) FILTER (WHERE rt.status=1) > 1
+			  THEN '主备 ' || COUNT(DISTINCT rt.priority) FILTER (WHERE rt.status=1) || ' 层'
+			ELSE '单线路'
+		END AS routing_mode_summary
+	FROM gateway_model_route rt
+	JOIN gateway_provider p ON p.id = rt.provider_id
+	JOIN gateway_credential c ON c.id = p.credential_id
+	WHERE rt.model_id = m.id
+) r ON true`
+
+func scanModelRow(row providerScanner, v *model.ModelConfig) error {
+	return row.Scan(&v.ID, &v.Alias, &v.DisplayName, &v.Description, &v.Status,
+		&v.ConfigVersion, &v.CreatedAt, &v.UpdatedAt,
+		&v.RouteCount, &v.EnabledRouteCount, &v.StaticallyRoutable,
+		&v.CredentialConfigured, &v.RoutingModeSummary)
+}
 
 func (p *Postgres) ListModels(ctx context.Context) ([]model.ModelConfig, error) {
-	rows, err := p.Pool.Query(ctx, `
-SELECT `+modelColumns+`
-FROM gateway_model
-ORDER BY created_at DESC
+	rows, err := p.Pool.Query(ctx, modelReadQuery+`
+ORDER BY m.created_at DESC
 `)
 	if err != nil {
 		return nil, err
@@ -429,12 +524,21 @@ ORDER BY created_at DESC
 	var out []model.ModelConfig
 	for rows.Next() {
 		var v model.ModelConfig
-		if err := rows.Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := scanModelRow(rows, &v); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// ModelByID returns one model with the same management projections as the list.
+func (p *Postgres) ModelByID(ctx context.Context, id string) (model.ModelConfig, error) {
+	var v model.ModelConfig
+	if err := scanModelRow(p.Pool.QueryRow(ctx, modelReadQuery+` WHERE m.id=$1::uuid`, id), &v); err != nil {
+		return model.ModelConfig{}, err
+	}
+	return v, nil
 }
 
 // CreateModel creates the model and writes its first Route in one transaction.
@@ -450,10 +554,13 @@ func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-INSERT INTO gateway_model(alias, status)
-VALUES ($1, $2)
-RETURNING `+modelColumns+`
-`, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+INSERT INTO gateway_model(alias, display_name, description, status)
+VALUES ($1, $2, $3, $4)
+RETURNING `+modelReturningColumns+`
+`, v.Alias, v.DisplayName, v.Description, v.Status).Scan(
+		&v.ID, &v.Alias, &v.DisplayName, &v.Description, &v.Status,
+		&v.ConfigVersion, &v.CreatedAt, &v.UpdatedAt,
+	)
 	if err != nil {
 		return v, err
 	}
@@ -483,10 +590,14 @@ VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
 	err := p.Pool.QueryRow(ctx, `
 UPDATE gateway_model
-SET alias=$2, status=$3, updated_at=NOW()
+SET alias=$2, display_name=$3, description=$4, status=$5,
+	config_version=config_version+1, updated_at=NOW()
 WHERE id=$1::uuid
-RETURNING `+modelColumns+`
-`, id, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+RETURNING `+modelReturningColumns+`
+`, id, v.Alias, v.DisplayName, v.Description, v.Status).Scan(
+		&v.ID, &v.Alias, &v.DisplayName, &v.Description, &v.Status,
+		&v.ConfigVersion, &v.CreatedAt, &v.UpdatedAt,
+	)
 	if err != nil {
 		return v, err
 	}

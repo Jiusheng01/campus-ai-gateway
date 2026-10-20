@@ -24,9 +24,9 @@ import {SetupPage} from '../auth/SetupPage'
 import {DashboardPage} from '../pages/DashboardPage'
 import {AnalyticsPage} from '../pages/AnalyticsPage'
 import {ProvidersPage} from '../pages/ProvidersPage'
-import {ModelsPage} from '../pages/ModelsPage'
-import {TenantsPage} from '../pages/TenantsPage'
-import {ApiKeysPage} from '../pages/ApiKeysPage'
+import {PublishedModelsPage} from '../pages/PublishedModelsPage'
+import {RoutesPage} from '../pages/RoutesPage'
+import {CallsPage} from '../pages/CallsPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
 import {SecurityPage} from '../pages/SecurityPage'
@@ -253,9 +253,10 @@ function Console() {
       {page === 'dashboard' && <DashboardPage roles={roles} />}
       {page === 'analytics' && <AnalyticsPage />}
       {page === 'providers' && <ProvidersPage />}
-      {page === 'models' && <ModelsPage />}
-      {page === 'tenants' && <TenantsPage />}
-      {page === 'keys' && <ApiKeysPage />}
+      {page === 'models' && <PublishedModelsPage />}
+      {page === 'routes' && <RoutesPage />}
+      {(page === 'calls' || page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}
+      {page === 'tenants' && <CallsPage key="calls-tenants" initialTab="tenants" />}
       {page === 'logs' && <RequestLogsPage />}
       {page === 'audit' && <AuditPage />}
       {page === 'security' && <SecurityPage />}

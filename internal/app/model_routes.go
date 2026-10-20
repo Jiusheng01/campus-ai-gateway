@@ -13,6 +13,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// handleAllModelRoutes serves the aggregate route policy read. It is a
+// management projection over gateway_model_route, not another routing source.
+func (s *Server) handleAllModelRoutes(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	items, err := s.pg.ListRouteViews(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list routes", reqID)
+		return
+	}
+	if items == nil {
+		items = []model.RouteView{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
 func (s *Server) handleModelRoutes(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	modelID, ok := modelIDFromRoutesPath(r.URL.Path)

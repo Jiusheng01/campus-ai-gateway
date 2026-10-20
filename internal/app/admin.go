@@ -124,6 +124,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleOpenCatalogModel(w, r)
 	case r.URL.Path == "/admin/model-catalog":
 		s.handleModelCatalog(w, r)
+	case r.URL.Path == "/admin/routes":
+		s.handleAllModelRoutes(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):
@@ -372,14 +374,19 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", "PUT")
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	id := strings.TrimPrefix(r.URL.Path, "/admin/models/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/admin/models/")
-	if id == "" {
-		http.NotFound(w, r)
+	switch r.Method {
+	case http.MethodGet:
+		s.getModelDetail(w, r, id, reqID)
+		return
+	case http.MethodPut:
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
 	var in model.ModelConfig
@@ -391,12 +398,47 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 		return
 	}
+	existing, err := s.pg.ModelByID(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
+	if strings.TrimSpace(in.Alias) != "" && strings.TrimSpace(in.Alias) != existing.Alias {
+		httpx.Error(w, http.StatusBadRequest, "alias_immutable",
+			"A published model alias is immutable; publish a new alias instead", reqID)
+		return
+	}
+	in.Alias = existing.Alias
 	out, err := s.pg.UpdateModel(r.Context(), id, in)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found or could not be updated", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// getModelDetail is the aggregate read behind the model detail page: identity,
+// all routes and the current configuration version. It performs no upstream
+// call and makes no health claim.
+func (s *Server) getModelDetail(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	m, err := s.pg.ModelByID(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
+	routes, err := s.pg.ListModelRoutes(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load model routes", reqID)
+		return
+	}
+	if routes == nil {
+		routes = []model.ModelRoute{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model":   m,
+		"routes":  routes,
+		"version": m.ConfigVersion,
+	})
 }
 
 func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
@@ -1104,10 +1146,18 @@ func validateProviderInput(v *model.Provider, requireCredential bool, allowlist 
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
+	v.ProviderType = strings.TrimSpace(v.ProviderType)
+	v.Description = strings.TrimSpace(v.Description)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
 	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
 	if v.Name == "" {
 		return "name is required"
+	}
+	if len([]rune(v.ProviderType)) > 32 {
+		return "provider_type must be at most 32 characters"
+	}
+	if len([]rune(v.Description)) > 512 {
+		return "description must be at most 512 characters"
 	}
 	if v.BaseURL == "" {
 		return "base_url is required"
@@ -1237,10 +1287,21 @@ func credentialLast4(value string) string {
 // keeps the API from accepting a field it would silently ignore.
 func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	v.Alias = strings.TrimSpace(v.Alias)
+	v.DisplayName = strings.TrimSpace(v.DisplayName)
+	v.Description = strings.TrimSpace(v.Description)
 	v.ProviderID = strings.TrimSpace(v.ProviderID)
 	v.UpstreamModel = strings.TrimSpace(v.UpstreamModel)
 	if v.Alias == "" {
 		return "alias is required"
+	}
+	if len([]rune(v.Alias)) > 128 {
+		return "alias must be at most 128 characters"
+	}
+	if len([]rune(v.DisplayName)) > 128 {
+		return "display_name must be at most 128 characters"
+	}
+	if len([]rune(v.Description)) > 1024 {
+		return "description must be at most 1024 characters"
 	}
 	if requireBinding {
 		if v.ProviderID == "" || v.UpstreamModel == "" {

@@ -111,18 +111,22 @@ FOR UPDATE OF pm
 INSERT INTO gateway_model(alias, status)
 VALUES ($1, 1)
 ON CONFLICT (alias) DO NOTHING
-RETURNING id::text, alias, status, created_at, updated_at
-`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.Status, &out.Model.CreatedAt, &out.Model.UpdatedAt)
+RETURNING id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
+	config_version, created_at, updated_at
+`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
+		&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt)
 	switch {
 	case err == nil:
 		out.Created = true
 	case errors.Is(err, pgx.ErrNoRows):
 		if err := tx.QueryRow(ctx, `
-SELECT id::text, alias, status, created_at, updated_at
+SELECT id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
+	config_version, created_at, updated_at
 FROM gateway_model
 WHERE alias=$1
 FOR UPDATE
-`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.Status, &out.Model.CreatedAt, &out.Model.UpdatedAt); err != nil {
+`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
+			&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt); err != nil {
 			return out, err
 		}
 	default:

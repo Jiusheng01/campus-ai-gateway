@@ -38,11 +38,27 @@ type CredentialSummary struct {
 	Last4      string `json:"last4"`
 }
 
+// ProviderTestResult is the compact, non-content summary of the last channel
+// diagnostic test. It is management metadata only: no prompt, answer, key or
+// upstream body is stored here.
+type ProviderTestResult struct {
+	At            time.Time `json:"at"`
+	OK            bool      `json:"ok"`
+	StatusCode    int       `json:"status_code"`
+	LatencyMS     int64     `json:"latency_ms"`
+	UpstreamModel string    `json:"upstream_model"`
+	ErrorKind     string    `json:"error_kind,omitempty"`
+}
+
 type Provider struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`
 	Protocol string `json:"protocol"`
+	// ProviderType is management metadata (for example "qwen" or "deepseek").
+	// It is not a runtime protocol and is not read by the data plane.
+	ProviderType string `json:"provider_type"`
+	Description  string `json:"description"`
 	// CredentialEnv is the environment-variable name for an env-sourced
 	// Credential. It is a NAME, not a secret, so it is returned to the console;
 	// it is empty for an inline Credential. It remains the write field for the
@@ -58,6 +74,16 @@ type Provider struct {
 	Status     int                `json:"status"`
 	CreatedAt  time.Time          `json:"created_at"`
 	UpdatedAt  time.Time          `json:"updated_at"`
+
+	// LastTest is the compact result of the last channel diagnostic test, when
+	// one has run. It never carries answer content.
+	LastTest *ProviderTestResult `json:"last_test,omitempty"`
+
+	// List-only management counts. They are computed by the database and are
+	// not part of the Provider's stored identity.
+	CandidateModelCount  int `json:"candidate_model_count,omitempty"`
+	ReferencedRouteCount int `json:"referenced_route_count,omitempty"`
+	ReferencedModelCount int `json:"referenced_model_count,omitempty"`
 
 	// The resolution data the data plane needs. These fields are deliberately
 	// never serialized: Ciphertext is the sealed secret, and SecretRef is carried
@@ -91,11 +117,25 @@ type ProviderDeleteResult struct {
 // second source of truth. ProviderName is never written by a client and is
 // cleared on every acknowledgement.
 type ModelConfig struct {
-	ID        string    `json:"id"`
-	Alias     string    `json:"alias"`
-	Status    int       `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Alias       string `json:"alias"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Status      int    `json:"status"`
+	// ConfigVersion is the aggregate concurrency token for this model's
+	// configuration. It starts at 1 and is advanced by every write that changes
+	// the model or its route set.
+	ConfigVersion int64     `json:"config_version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+
+	// Management read projections. They are derived from the route set and
+	// provider/credential state, never stored on the model.
+	RouteCount           int    `json:"route_count,omitempty"`
+	EnabledRouteCount    int    `json:"enabled_route_count,omitempty"`
+	StaticallyRoutable   bool   `json:"statically_routable,omitempty"`
+	CredentialConfigured bool   `json:"credential_configured,omitempty"`
+	RoutingModeSummary   string `json:"routing_mode_summary,omitempty"`
 
 	ProviderID    string `json:"provider_id,omitempty"`
 	ProviderName  string `json:"provider_name,omitempty"`
@@ -115,6 +155,17 @@ type ModelRoute struct {
 	Status        int       `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// RouteView is a management-plane route projection that adds the model and
+// provider context the aggregate route page needs. It is not a second routing
+// authority: every field is derived from gateway_model_route and its joins.
+type RouteView struct {
+	ModelRoute
+	ModelDisplayName      string `json:"model_display_name"`
+	ConfigVersion        int64  `json:"config_version"`
+	ProviderStatus       int    `json:"provider_status"`
+	CredentialConfigured bool   `json:"credential_configured"`
 }
 
 type Tenant struct {

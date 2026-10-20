@@ -5,6 +5,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Network,
+  Route,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -23,6 +24,8 @@ export type Page =
   | 'security'
   | 'providers'
   | 'models'
+  | 'routes'
+  | 'calls'
   | 'users'
   | 'tenants'
   | 'settings'
@@ -53,40 +56,37 @@ const MANAGEMENT = ['super_admin', 'gateway_admin', 'auditor', 'operator']
 // Anyone signed in has a profile and can manage their own password and devices.
 const EVERYONE = [...MANAGEMENT, 'member']
 
-// Entries are grouped by what the operator is trying to do. A group disappears
-// when none of its items survive filtering, so a member does not end up staring
-// at an empty heading.
-//
-// The order is the order the work happens in: read the state, read the trend,
-// then the records behind both, then the configuration that produced them.
+// Entries are grouped by the business area the operator is working in. The old
+// page ids (`keys`, `tenants`, `logs`, etc.) remain valid aliases in App.tsx so
+// an existing bookmark or in-app link still lands somewhere real.
 export const navGroups: NavGroup[] = [
   {
-    id: 'overview',
-    label: '概览',
+    id: 'model-service',
+    label: '模型服务',
     items: [
-      {id: 'dashboard', label: '总览', icon: LayoutDashboard, roles: MANAGEMENT},
+      {id: 'dashboard', label: '服务概览', icon: LayoutDashboard, roles: MANAGEMENT},
+      {id: 'providers', label: '上游渠道', icon: Network, roles: ['super_admin', 'gateway_admin']},
+      {id: 'models', label: '对外模型', icon: Boxes, roles: ['super_admin', 'gateway_admin']},
+      {id: 'routes', label: '路由策略', icon: Route, roles: ['super_admin', 'gateway_admin']},
+      {id: 'calls', label: '调用管理', icon: KeyRound, roles: ['super_admin']},
+      // Raw logs stay restricted: gateway_admin uses the scoped runtime summary
+      // on the channel/model pages instead.
+      {id: 'logs', label: '调用日志', icon: FileClock, roles: ['super_admin', 'auditor']},
+    ],
+  },
+  {
+    id: 'governance',
+    label: '治理与审计',
+    items: [
       {id: 'analytics', label: '数据看板', icon: BarChart3, roles: MANAGEMENT},
-      {id: 'keys', label: 'API 密钥', icon: KeyRound, roles: ['super_admin']},
-      {id: 'logs', label: '使用日志', icon: FileClock, roles: ['super_admin', 'auditor']},
       {id: 'audit', label: '审计日志', icon: ScrollText, roles: ['super_admin', 'auditor']},
       {id: 'security', label: '安全事件', icon: ShieldAlert, roles: ['super_admin', 'auditor']},
     ],
   },
   {
-    id: 'models',
-    label: '模型服务',
-    items: [
-      {id: 'providers', label: '渠道', icon: Network, roles: ['super_admin', 'gateway_admin']},
-      {id: 'models', label: '模型', icon: Boxes, roles: ['super_admin', 'gateway_admin']},
-    ],
-  },
-  {
     id: 'people',
     label: '用户与租户',
-    items: [
-      {id: 'users', label: '用户', icon: UserRound, roles: ['super_admin']},
-      {id: 'tenants', label: '租户', icon: Users, roles: ['super_admin']},
-    ],
+    items: [{id: 'users', label: '用户', icon: UserRound, roles: ['super_admin']}],
   },
   {
     id: 'system',
@@ -105,16 +105,18 @@ export const navGroups: NavGroup[] = [
 
 /** Title and one-line context for the topbar. */
 export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
-  dashboard: {title: '总览', subtitle: '校园 AI 基础设施运行状态'},
+  dashboard: {title: '服务概览', subtitle: '模型服务的运行状态与配置概况'},
   analytics: {title: '数据看板', subtitle: '请求量、Tokens 与延迟的时间分布'},
-  keys: {title: 'API 密钥', subtitle: '管理业务系统调用凭证'},
-  logs: {title: '使用日志', subtitle: '检索与排查业务请求'},
+  keys: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
+  logs: {title: '调用日志', subtitle: '检索与排查业务请求'},
   audit: {title: '审计日志', subtitle: '管理员对控制面的操作记录'},
   security: {title: '安全事件', subtitle: '鉴权、权限与配额拒绝事件'},
-  providers: {title: '渠道', subtitle: '管理模型渠道的接入与凭据来源'},
-  models: {title: '模型', subtitle: '查看各渠道提供的模型，一键开放给业务系统'},
+  providers: {title: '上游渠道', subtitle: '管理上游渠道的接入、凭据与候选模型'},
+  models: {title: '对外模型', subtitle: '管理业务系统调用的模型名称与线路配置'},
+  routes: {title: '路由策略', subtitle: '查看和编辑所有对外模型的线路'},
+  calls: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
   users: {title: '用户', subtitle: '管理注册用户和管理员角色'},
-  tenants: {title: '租户', subtitle: '管理租户与配额边界'},
+  tenants: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
   settings: {title: '系统设置', subtitle: '认证方式与运行参数'},
   profile: {title: '个人资料', subtitle: '账号身份与权限范围'},
   access: {title: '安全与访问', subtitle: '密码与登录设备'},
@@ -124,7 +126,12 @@ export const allNavItems: NavItem[] = navGroups.flatMap(g => g.items)
 
 /** Pages the account may enter, in navigation order. */
 export function allowedPages(roles: string[]): Page[] {
-  return allNavItems.filter(item => roleGranted(item.roles, roles)).map(item => item.id)
+  const pages = allNavItems.filter(item => roleGranted(item.roles, roles)).map(item => item.id)
+  // `keys` and `tenants` are legacy page ids that now land on 调用管理. They
+  // are not separate navigation entries, but an existing link must not be
+  // redirected away by the role guard.
+  if (pages.includes('calls')) pages.push('keys', 'tenants')
+  return pages
 }
 
 /** Where an account lands after signing in: the dashboard if it may see it, else the first page it may. */

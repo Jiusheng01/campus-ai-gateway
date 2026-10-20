@@ -70,6 +70,44 @@ ORDER BY r.priority ASC, r.weight DESC, r.created_at ASC
 	return out, rows.Err()
 }
 
+// ListRouteViews is the aggregate route policy read. It adds model display
+// name/version and provider/credential context, but every routing value still
+// comes from gateway_model_route.
+func (p *Postgres) ListRouteViews(ctx context.Context) ([]model.RouteView, error) {
+	rows, err := p.Pool.Query(ctx, `
+SELECT
+	r.id::text, r.model_id::text, m.alias, r.provider_id::text, p.name,
+	r.upstream_model, r.priority, r.weight, r.timeout_ms, r.status, r.created_at, r.updated_at,
+	COALESCE(m.display_name,''), m.config_version, p.status,
+	((c.source_type='inline' AND COALESCE(c.ciphertext,'')<>'')
+	  OR (c.source_type='env' AND COALESCE(c.secret_ref,'')<>''))
+FROM gateway_model_route r
+JOIN gateway_model m ON m.id=r.model_id
+JOIN gateway_provider p ON p.id=r.provider_id
+JOIN gateway_credential c ON c.id=p.credential_id
+ORDER BY m.alias ASC, r.priority ASC, r.weight DESC, r.created_at ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.RouteView
+	for rows.Next() {
+		var v model.RouteView
+		if err := rows.Scan(
+			&v.ID, &v.ModelID, &v.ModelAlias, &v.ProviderID, &v.ProviderName,
+			&v.UpstreamModel, &v.Priority, &v.Weight, &v.TimeoutMS, &v.Status,
+			&v.CreatedAt, &v.UpdatedAt,
+			&v.ModelDisplayName, &v.ConfigVersion, &v.ProviderStatus, &v.CredentialConfigured,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) CreateModelRoute(ctx context.Context, modelID string, v model.ModelRoute) (model.ModelRoute, error) {
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

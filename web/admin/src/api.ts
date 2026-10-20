@@ -1,12 +1,16 @@
 export type CredentialSummary={source_type:string;configured:boolean;last4:string}
-export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;credential?:CredentialSummary;credential_secret?:string;status:number}
+export type ProviderTestResult={at:string;ok:boolean;status_code:number;latency_ms:number;upstream_model:string;error_kind?:string}
+export type Provider={id:string;name:string;base_url:string;protocol:string;provider_type:string;description:string;credential_env:string;credential?:CredentialSummary;credential_secret?:string;status:number;last_test?:ProviderTestResult;candidate_model_count?:number;referenced_route_count?:number;referenced_model_count?:number}
 /** What one channel delete actually removed; the counts are the confirmation, not a preview. */
 export type ProviderDeleteResult={deleted_routes:number;deleted_virtual_models:number;deleted_provider_models:number}
-export type ModelConfig={id:string;alias:string;status:number}
+export type ModelConfig={id:string;alias:string;display_name:string;description:string;status:number;config_version:number;route_count?:number;enabled_route_count?:number;statically_routable?:boolean;credential_configured?:boolean;routing_mode_summary?:string}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
+export type RouteView=ModelRoute&{model_display_name:string;config_version:number;provider_status:number;credential_configured:boolean}
+export type ModelDetail={model:ModelConfig;routes:ModelRoute[];version:number}
 
 /** ProviderModel is one entry in a channel's own list of upstream names. */
-export type ProviderModel={id:string;provider_id:string;upstream_model:string;source:'preset'|'fetched'|'manual';status:number}
+export type ProviderModelLink={route_id:string;model_id:string;alias:string;route_status:number}
+export type ProviderModel={id:string;provider_id:string;upstream_model:string;source:'preset'|'fetched'|'manual';status:number;links?:ProviderModelLink[]}
 
 /**
  * CatalogProvider is one channel offering an upstream model.
