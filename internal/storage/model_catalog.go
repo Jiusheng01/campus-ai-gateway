@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -71,19 +72,46 @@ ORDER BY pm.upstream_model ASC, p.name ASC, pm.id ASC
 	return out, rows.Err()
 }
 
-// OpenProviderModel makes one channel's Provider Model callable to clients.
-//
-// If no Virtual Model has this alias, the model and its first Route are created
-// together; if one exists, only the Route is appended. Either way the route
-// carries the (model, provider, upstream) binding that the unique index
-// enforces, so opening the same model again is a no-op rather than a duplicate
-// line.
-//
-// An appended Route goes into the next priority band, so opening a second
-// channel for the same name produces the cross-vendor failover the gateway
-// exists for instead of silently splitting traffic between the two.
+// ErrAliasExists means the requested external alias already exists with a
+// different provider/upstream binding. Appending is a deliberate operation, not
+// a retry: the caller must say append_to_existing explicitly.
+var ErrAliasExists = errors.New("model alias already exists with a different binding")
+
+// PublishResult is the shared outcome of publishing a Provider Model under an
+// external alias. Catalog open is the same operation with alias = upstream and
+// append allowed.
+type PublishResult struct {
+	Model        model.ModelConfig `json:"model"`
+	Route        model.ModelRoute  `json:"route"`
+	Created      bool              `json:"created"`
+	RouteCreated bool              `json:"route_created"`
+	Version      int64             `json:"version"`
+}
+
+const publishedModelColumns = `id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
+	config_version, created_at, updated_at`
+
+// OpenProviderModel makes one channel's Provider Model callable to clients
+// using the upstream name as the external alias. It is the compatibility entry
+// point over the shared publish service.
 func (p *Postgres) OpenProviderModel(ctx context.Context, providerModelID string) (model.CatalogOpenResult, error) {
-	var out model.CatalogOpenResult
+	res, err := p.PublishProviderModel(ctx, providerModelID, "", "", "", true)
+	if err != nil {
+		return model.CatalogOpenResult{}, err
+	}
+	return model.CatalogOpenResult{
+		Model: res.Model, Route: res.Route, Created: res.Created, RouteCreated: res.RouteCreated,
+	}, nil
+}
+
+// PublishProviderModel creates or appends one external binding atomically.
+//
+// A new alias creates the model and its first route together. An existing
+// alias with the same binding is an idempotent no-op. An existing alias with a
+// different binding is refused unless append is explicit; then the new route
+// joins the next priority band and the model version advances.
+func (p *Postgres) PublishProviderModel(ctx context.Context, providerModelID, alias, displayName, description string, appendExisting bool) (PublishResult, error) {
+	var out PublishResult
 
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -101,81 +129,108 @@ FOR UPDATE OF pm
 `, providerModelID).Scan(&providerID, &providerName, &upstream); err != nil {
 		return out, err
 	}
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		alias = upstream
+	}
+	displayName = strings.TrimSpace(displayName)
+	description = strings.TrimSpace(description)
 
-	// Create the Virtual Model unless the alias is taken. ON CONFLICT DO NOTHING
-	// makes two concurrent opens of different channels agree on one model: the
-	// loser blocks until the winner commits, then reads the row it did not
-	// create. Locking the existing row serialises the Route priority decision
-	// that follows.
+	// INSERT ... ON CONFLICT makes concurrent first-publishes agree on one model.
 	err = tx.QueryRow(ctx, `
-INSERT INTO gateway_model(alias, status)
-VALUES ($1, 1)
+INSERT INTO gateway_model(alias, display_name, description, status)
+VALUES ($1, $2, $3, 1)
 ON CONFLICT (alias) DO NOTHING
-RETURNING id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
-	config_version, created_at, updated_at
-`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
-		&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt)
+RETURNING `+publishedModelColumns+`
+`, alias, displayName, description).Scan(
+		&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
+		&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt,
+	)
 	switch {
 	case err == nil:
 		out.Created = true
 	case errors.Is(err, pgx.ErrNoRows):
 		if err := tx.QueryRow(ctx, `
-SELECT id::text, alias, COALESCE(display_name,''), COALESCE(description,''), status,
-	config_version, created_at, updated_at
+SELECT `+publishedModelColumns+`
 FROM gateway_model
 WHERE alias=$1
 FOR UPDATE
-`, upstream).Scan(&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
-			&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt); err != nil {
-			return out, err
-		}
-	default:
-		return out, err
-	}
-
-	// The first Route of a model is the primary line (priority 1). Every route
-	// opened afterwards is a backup. Computing the band inside the transaction
-	// is what keeps two concurrent appends from both claiming priority 2.
-	var priority int
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(MAX(priority), 0) + 1
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-`, out.Model.ID).Scan(&priority); err != nil {
-		return out, err
-	}
-
-	err = tx.QueryRow(ctx, `
-INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
-VALUES ($1::uuid, $2::uuid, $3, $4, 100, 60000, 1)
-ON CONFLICT (model_id, provider_id, upstream_model) DO NOTHING
-RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority, weight, timeout_ms, status, created_at, updated_at
-`, out.Model.ID, providerID, upstream, priority).Scan(
-		&out.Route.ID, &out.Route.ModelID, &out.Route.ProviderID, &out.Route.UpstreamModel,
-		&out.Route.Priority, &out.Route.Weight, &out.Route.TimeoutMS, &out.Route.Status,
-		&out.Route.CreatedAt, &out.Route.UpdatedAt,
-	)
-	switch {
-	case err == nil:
-		out.RouteCreated = true
-	case errors.Is(err, pgx.ErrNoRows):
-		if err := tx.QueryRow(ctx, `
-SELECT id::text, model_id::text, provider_id::text, upstream_model, priority, weight, timeout_ms, status, created_at, updated_at
-FROM gateway_model_route
-WHERE model_id=$1::uuid AND provider_id=$2::uuid AND upstream_model=$3
-`, out.Model.ID, providerID, upstream).Scan(
-			&out.Route.ID, &out.Route.ModelID, &out.Route.ProviderID, &out.Route.UpstreamModel,
-			&out.Route.Priority, &out.Route.Weight, &out.Route.TimeoutMS, &out.Route.Status,
-			&out.Route.CreatedAt, &out.Route.UpdatedAt,
+`, alias).Scan(
+			&out.Model.ID, &out.Model.Alias, &out.Model.DisplayName, &out.Model.Description,
+			&out.Model.Status, &out.Model.ConfigVersion, &out.Model.CreatedAt, &out.Model.UpdatedAt,
 		); err != nil {
 			return out, err
 		}
 	default:
 		return out, err
 	}
+
+	// The binding may already exist. It is the unique index that makes an exact
+	// repeat a no-op, not a pre-check.
+	var existing model.ModelRoute
+	err = tx.QueryRow(ctx, `
+SELECT id::text, model_id::text, provider_id::text, upstream_model, priority, weight, timeout_ms, status, created_at, updated_at
+FROM gateway_model_route
+WHERE model_id=$1::uuid AND provider_id=$2::uuid AND upstream_model=$3
+`, out.Model.ID, providerID, upstream).Scan(
+		&existing.ID, &existing.ModelID, &existing.ProviderID, &existing.UpstreamModel,
+		&existing.Priority, &existing.Weight, &existing.TimeoutMS, &existing.Status,
+		&existing.CreatedAt, &existing.UpdatedAt,
+	)
+	switch {
+	case err == nil:
+		existing.ModelAlias = out.Model.Alias
+		existing.ProviderName = providerName
+		out.Route = existing
+		out.Version = out.Model.ConfigVersion
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return out, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		if !out.Created && !appendExisting {
+			return out, ErrAliasExists
+		}
+	default:
+		return out, err
+	}
+
+	var priority int
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(MAX(priority), 0) + 1 FROM gateway_model_route WHERE model_id=$1::uuid
+`, out.Model.ID).Scan(&priority); err != nil {
+		return out, err
+	}
+	if out.Created {
+		priority = 1
+	}
+	err = tx.QueryRow(ctx, `
+INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
+VALUES ($1::uuid, $2::uuid, $3, $4, 100, 60000, 1)
+RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority, weight, timeout_ms, status, created_at, updated_at
+`, out.Model.ID, providerID, upstream, priority).Scan(
+		&out.Route.ID, &out.Route.ModelID, &out.Route.ProviderID, &out.Route.UpstreamModel,
+		&out.Route.Priority, &out.Route.Weight, &out.Route.TimeoutMS, &out.Route.Status,
+		&out.Route.CreatedAt, &out.Route.UpdatedAt,
+	)
+	if err != nil {
+		return out, err
+	}
+	out.RouteCreated = true
 	out.Route.ModelAlias = out.Model.Alias
 	out.Route.ProviderName = providerName
 
+	if !out.Created {
+		if err := tx.QueryRow(ctx, `
+UPDATE gateway_model
+SET config_version=config_version+1, updated_at=NOW()
+WHERE id=$1::uuid
+RETURNING config_version
+`, out.Model.ID).Scan(&out.Model.ConfigVersion); err != nil {
+			return out, err
+		}
+	}
+	out.Version = out.Model.ConfigVersion
 	if err := tx.Commit(ctx); err != nil {
 		return out, err
 	}

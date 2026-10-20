@@ -10,6 +10,7 @@ import {Field, Notice} from '../ui/Field'
 import {useConfirm} from '../ui/ConfirmDialog'
 import {useToast} from '../ui/Toast'
 import {useResource} from '../../lib/useResource'
+import {PublishModelModal} from './PublishModelModal'
 
 const sourceLabel: Record<string, string> = {
   preset: '模板预置',
@@ -27,6 +28,7 @@ export function ProviderModelsPanel({providerID, onChanged}: {providerID: string
   const confirm = useConfirm()
   const [name, setName] = useState('')
   const [busy, setBusy] = useState('')
+  const [publishing, setPublishing] = useState<ProviderModel | null>(null)
   const loader = useCallback(async () => {
     const d = await api<{data: ProviderModel[]}>(`/admin/providers/${providerID}/models`)
     return d.data || []
@@ -136,7 +138,11 @@ export function ProviderModelsPanel({providerID, onChanged}: {providerID: string
                     ))
                   : <span className="muted">尚未发布</span>}
               </td>
-              <td>
+              <td className="rowActions">
+                <button className="link" disabled={!!busy} onClick={() => setPublishing(m)}>
+                  <Plus aria-hidden />
+                  发布为对外模型
+                </button>
                 <button className="link dangerText" disabled={!!busy} onClick={() => void remove(m)}>
                   <Trash2 aria-hidden />
                   移除候选
@@ -150,6 +156,17 @@ export function ProviderModelsPanel({providerID, onChanged}: {providerID: string
           icon={<Boxes />}
           title="暂无候选模型"
           description="从上游刷新，或手动添加渠道实际提供的模型 ID。"
+        />
+      )}
+
+      {publishing && (
+        <PublishModelModal
+          candidate={publishing}
+          onClose={() => setPublishing(null)}
+          onPublished={() => {
+            reload()
+            onChanged?.()
+          }}
         />
       )}
     </div>

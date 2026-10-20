@@ -7,6 +7,7 @@ export type ModelConfig={id:string;alias:string;display_name:string;description:
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
 export type RouteView=ModelRoute&{model_display_name:string;config_version:number;provider_status:number;credential_configured:boolean}
 export type ModelDetail={model:ModelConfig;routes:ModelRoute[];version:number}
+export type PublishResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean;version:number}
 
 /** ProviderModel is one entry in a channel's own list of upstream names. */
 export type ProviderModelLink={route_id:string;model_id:string;alias:string;route_status:number}
