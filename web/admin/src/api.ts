@@ -1,5 +1,5 @@
 export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;status:number}
-export type ModelConfig={id:string;alias:string;provider_id:string;provider_name:string;upstream_model:string;status:number}
+export type ModelConfig={id:string;alias:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
 export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}

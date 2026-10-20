@@ -54,12 +54,17 @@ RETURNING id::text, name, base_url, protocol, credential_env, status, created_at
 	return v, err
 }
 
+// modelColumns is the projection every model read and write acknowledgement
+// shares. A model is only its client-facing identity and lifecycle state: the
+// channel and upstream model belong to its Routes (ADR-0005), so there is no
+// routing column here to fall out of step with them.
+const modelColumns = `id::text, alias, status, created_at, updated_at`
+
 func (p *Postgres) ListModels(ctx context.Context) ([]model.ModelConfig, error) {
 	rows, err := p.Pool.Query(ctx, `
-SELECT m.id::text, m.alias, m.provider_id::text, p.name, m.upstream_model, m.status, m.created_at, m.updated_at
-FROM gateway_model m
-JOIN gateway_provider p ON p.id=m.provider_id
-ORDER BY m.created_at DESC
+SELECT `+modelColumns+`
+FROM gateway_model
+ORDER BY created_at DESC
 `)
 	if err != nil {
 		return nil, err
@@ -69,7 +74,7 @@ ORDER BY m.created_at DESC
 	var out []model.ModelConfig
 	for rows.Next() {
 		var v model.ModelConfig
-		if err := rows.Scan(&v.ID, &v.Alias, &v.ProviderID, &v.ProviderName, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -77,6 +82,11 @@ ORDER BY m.created_at DESC
 	return out, rows.Err()
 }
 
+// CreateModel creates the model and writes its first Route in one transaction.
+//
+// The caller supplies the channel and upstream model for that first line; there
+// is no routing column on the model to write them to. A model without a Route
+// cannot serve traffic, so the two are always created together.
 func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.ModelConfig, error) {
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -85,12 +95,10 @@ func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-INSERT INTO gateway_model(alias, provider_id, upstream_model, status)
-VALUES ($1, $2::uuid, $3, $4)
-RETURNING id::text, alias, provider_id::text, upstream_model, status, created_at, updated_at
-`, v.Alias, v.ProviderID, v.UpstreamModel, v.Status).Scan(
-		&v.ID, &v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-	)
+INSERT INTO gateway_model(alias, status)
+VALUES ($1, $2)
+RETURNING `+modelColumns+`
+`, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
@@ -100,15 +108,25 @@ VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 `, v.ID, v.ProviderID, v.UpstreamModel); err != nil {
 		return v, err
 	}
-	if err := tx.QueryRow(ctx, "SELECT name FROM gateway_provider WHERE id=$1::uuid", v.ProviderID).Scan(&v.ProviderName); err != nil {
-		return v, err
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
+	// The routing fields on the input describe the Route that was just written,
+	// not anything stored on the model, so the acknowledgement does not repeat
+	// them back as model state.
+	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""
 	return v, nil
 }
 
+// UpdateModel updates the model's identity and lifecycle state, and — only when
+// the caller supplies a binding — rewrites its FIRST Route.
+//
+// "First" means the Route created with the model, ordered by creation time. The
+// previous implementation picked the best *enabled* Route (highest priority,
+// then weight) and overwrote it, so disabling the primary and then editing the
+// model silently re-pointed the backup line. The first Route is stable across
+// status and priority changes, which is what an edit of the model should target;
+// the backup lines are edited through the Route API, one Route at a time.
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -116,34 +134,36 @@ func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConf
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
+	err = tx.QueryRow(ctx, `
 UPDATE gateway_model
 SET alias=$2, status=$3, updated_at=NOW()
 WHERE id=$1::uuid
-`, id, v.Alias, v.Status); err != nil {
+RETURNING `+modelColumns+`
+`, id, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+	if err != nil {
 		return v, err
 	}
 
-	var routeID string
-	err = tx.QueryRow(ctx, `
+	if v.ProviderID != "" && v.UpstreamModel != "" {
+		var routeID string
+		err = tx.QueryRow(ctx, `
 SELECT id::text
 FROM gateway_model_route
 WHERE model_id=$1::uuid
-ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
+ORDER BY created_at ASC, id ASC
 LIMIT 1
 FOR UPDATE
 `, id).Scan(&routeID)
-	if err == pgx.ErrNoRows {
-		if _, err := tx.Exec(ctx, `
+		if err == pgx.ErrNoRows {
+			if _, err := tx.Exec(ctx, `
 INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
 VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 `, id, v.ProviderID, v.UpstreamModel); err != nil {
+				return v, err
+			}
+		} else if err != nil {
 			return v, err
-		}
-	} else if err != nil {
-		return v, err
-	} else {
-		if _, err := tx.Exec(ctx, `
+		} else if _, err := tx.Exec(ctx, `
 UPDATE gateway_model_route
 SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
 WHERE id=$1::uuid
@@ -152,23 +172,10 @@ WHERE id=$1::uuid
 		}
 	}
 
-	if err := syncLegacyModelRoute(ctx, tx, id); err != nil {
-		return v, err
-	}
-	err = tx.QueryRow(ctx, `
-SELECT m.id::text, m.alias, m.provider_id::text, p.name, m.upstream_model, m.status, m.created_at, m.updated_at
-FROM gateway_model m
-JOIN gateway_provider p ON p.id=m.provider_id
-WHERE m.id=$1::uuid
-`, id).Scan(
-		&v.ID, &v.Alias, &v.ProviderID, &v.ProviderName, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-	)
-	if err != nil {
-		return v, err
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
+	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""
 	return v, nil
 }
 

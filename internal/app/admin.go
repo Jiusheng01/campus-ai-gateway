@@ -293,7 +293,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateModel(&in); err != "" {
+		if err := validateModel(&in, true); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 			return
 		}
@@ -326,7 +326,7 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateModel(&in); err != "" {
+	if err := validateModel(&in, false); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 		return
 	}
@@ -1036,12 +1036,24 @@ func validateProvider(v *model.Provider) string {
 	return ""
 }
 
-func validateModel(v *model.ModelConfig) string {
+// validateModel checks a model write. requireBinding is true for a create,
+// where the channel and upstream model name the model's first Route and a model
+// without one could never serve traffic. On an update the binding is optional:
+// leaving it out edits only the identity and lifecycle state, which is how a
+// model edit avoids touching any Route at all. When it is supplied, both halves
+// must be, because half a binding would write a Route with an empty side.
+func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	v.Alias = strings.TrimSpace(v.Alias)
 	v.ProviderID = strings.TrimSpace(v.ProviderID)
 	v.UpstreamModel = strings.TrimSpace(v.UpstreamModel)
-	if v.Alias == "" || v.ProviderID == "" || v.UpstreamModel == "" {
-		return "alias, provider_id and upstream_model are required"
+	if v.Alias == "" {
+		return "alias is required"
+	}
+	if requireBinding && (v.ProviderID == "" || v.UpstreamModel == "") {
+		return "provider_id and upstream_model are required to create the model's first route"
+	}
+	if (v.ProviderID == "") != (v.UpstreamModel == "") {
+		return "provider_id and upstream_model must be supplied together"
 	}
 	if v.Status == 0 {
 		v.Status = 1

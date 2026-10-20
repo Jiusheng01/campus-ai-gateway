@@ -173,8 +173,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			Columns: []contractColumn{
 				{"id", "uuid", true},
 				{"alias", "character varying", true},
-				{"provider_id", "uuid", true},
-				{"upstream_model", "character varying", true},
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -286,7 +284,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 
 	fks = []contractFK{
 		{"gateway_api_key", "tenant_id", "gateway_tenant", "id", "a"},
-		{"gateway_model", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
@@ -296,7 +293,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_api_key", "idx_gateway_api_key_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_api_key_tenant ON gateway_api_key(tenant_id)`},
 		{"gateway_request_log", "idx_request_log_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_request_log_created ON gateway_request_log(created_at DESC)`},
 		{"gateway_request_attempt", "idx_request_attempt_request", false, []string{"request_id"}, `CREATE INDEX idx_request_attempt_request ON gateway_request_attempt(request_id)`},
-		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_provider", "idx_gateway_provider_status", false, []string{"status"}, `CREATE INDEX idx_gateway_provider_status ON gateway_provider(status)`},
 		{"gateway_model", "idx_gateway_model_status", false, []string{"status"}, `CREATE INDEX idx_gateway_model_status ON gateway_model(status)`},
 		{"gateway_model_route", "uq_gateway_model_route_binding", true, []string{"model_id", "provider_id", "upstream_model"}, `CREATE UNIQUE INDEX uq_gateway_model_route_binding ON gateway_model_route(model_id, provider_id, upstream_model)`},
@@ -339,7 +335,7 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
 		"gateway_request_attempt.error_kind": 32,
 		"gateway_provider.name":              128, "gateway_provider.protocol": 32, "gateway_provider.credential_env": 128,
-		"gateway_model.alias": 128, "gateway_model.upstream_model": 128,
+		"gateway_model.alias":                128,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
 		"gateway_admin_audit_log.resource": 256, "gateway_admin_audit_log.client_ip": 64,
@@ -443,6 +439,10 @@ var droppedColumns = []droppedColumnRef{
 	{"gateway_api_key", "rpm_limit"},
 	{"gateway_api_key", "tpm_limit"},
 	{"gateway_api_key", "max_concurrency"},
+	// Retired by 0014: the single-binding routing columns that gateway_model_route
+	// replaced, so Route is the only routing authority (ADR-0005).
+	{"gateway_model", "provider_id"},
+	{"gateway_model", "upstream_model"},
 }
 
 // verifyFinalSchema checks the connected database against the contract. It

@@ -94,9 +94,6 @@ RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority,
 	if err != nil {
 		return v, err
 	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
-		return v, err
-	}
 	if err := loadModelRouteNames(ctx, tx, &v); err != nil {
 		return v, err
 	}
@@ -169,9 +166,6 @@ RETURNING id::text, model_id::text, provider_id::text, upstream_model, priority,
 	if err != nil {
 		return v, err
 	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
-		return v, err
-	}
 	if err := loadModelRouteNames(ctx, tx, &v); err != nil {
 		return v, err
 	}
@@ -228,9 +222,6 @@ WHERE model_id=$1::uuid
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway_model_route WHERE id=$1::uuid`, routeID); err != nil {
 		return err
 	}
-	if err := syncLegacyModelRoute(ctx, tx, modelID); err != nil {
-		return err
-	}
 	return tx.Commit(ctx)
 }
 
@@ -242,26 +233,6 @@ FROM gateway_model
 WHERE id=$1::uuid
 FOR UPDATE
 `, modelID).Scan(&id)
-}
-
-func syncLegacyModelRoute(ctx context.Context, tx pgx.Tx, modelID string) error {
-	var providerID, upstreamModel string
-	err := tx.QueryRow(ctx, `
-SELECT provider_id::text, upstream_model
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
-LIMIT 1
-`, modelID).Scan(&providerID, &upstreamModel)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `
-UPDATE gateway_model
-SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
-WHERE id=$1::uuid
-`, modelID, providerID, upstreamModel)
-	return err
 }
 
 func loadModelRouteNames(ctx context.Context, tx pgx.Tx, v *model.ModelRoute) error {

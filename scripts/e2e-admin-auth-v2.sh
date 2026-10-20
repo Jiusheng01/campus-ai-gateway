@@ -44,22 +44,26 @@ if [ -z "$PG_C" ] || [ -z "$RD_C" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Migrations are applied by the runner, not by replaying each file with psql.
+# Replay-safe history means every statement still no-ops — but only a statement
+# that names objects that still exist can no-op. 0014 retires columns that 0002
+# indexes (ADR-0005), so a raw replay of the whole set can no longer succeed
+# against a current database. The runner applies what the bookkeeping says is
+# pending, and its own contract check is the gate; that is the idempotency the
+# deployment relies on, and it is what dev.ps1 and CI run.
+DB_URL="postgres://campus:campus@127.0.0.1:5432/campus_gateway?sslmode=disable"
 title "应用数据库迁移"
-for f in migrations/*.sql; do
-  if ! docker exec -i "$PG_C" psql -U campus -d campus_gateway -q -v ON_ERROR_STOP=1 < "$f" >/dev/null 2>&1; then
-    bad "迁移失败：$f"
-    exit 1
-  fi
-done
+if ! go run ./cmd/migrate -database-url "$DB_URL" -migrations ./migrations >/dev/null 2>&1; then
+  bad "迁移失败"
+  exit 1
+fi
 ok "migrations 已应用（幂等，可重复执行）"
-# Re-running the whole set must be a no-op, which is what makes the script
-# safe to run against an existing database.
-for f in migrations/*.sql; do
-  if ! docker exec -i "$PG_C" psql -U campus -d campus_gateway -q -v ON_ERROR_STOP=1 < "$f" >/dev/null 2>&1; then
-    bad "迁移不幂等：$f"
-    exit 1
-  fi
-done
+# Re-running the runner must be a no-op, which is what makes the script safe to
+# run against an existing database.
+if ! go run ./cmd/migrate -database-url "$DB_URL" -migrations ./migrations >/dev/null 2>&1; then
+  bad "迁移不幂等：runner 第二次运行失败"
+  exit 1
+fi
 ok "migrations 重复执行通过（幂等）"
 
 title "构建网关二进制"

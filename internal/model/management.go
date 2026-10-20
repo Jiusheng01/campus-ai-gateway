@@ -13,15 +13,27 @@ type Provider struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// ModelConfig is a Virtual Model: its client-facing identity and lifecycle
+// state. Channel and upstream model are not model state — they belong to the
+// model's Routes (ADR-0005).
+//
+// ProviderID and UpstreamModel survive on this type only as the *write* binding
+// for a create or update: they name the channel and upstream model of the first
+// Route to write. Reads never populate them, and they are omitted from the JSON
+// when empty, so a model response carries no routing field to mistake for a
+// second source of truth. ProviderName is never written by a client; it is
+// retained only because the in-process route table still accepts it as a
+// fallback upstream for a Route that has none.
 type ModelConfig struct {
 	ID            string    `json:"id"`
 	Alias         string    `json:"alias"`
-	ProviderID    string    `json:"provider_id"`
-	ProviderName  string    `json:"provider_name"`
-	UpstreamModel string    `json:"upstream_model"`
 	Status        int       `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	ProviderID    string `json:"provider_id,omitempty"`
+	ProviderName  string `json:"provider_name,omitempty"`
+	UpstreamModel string `json:"upstream_model,omitempty"`
 }
 
 type ModelRoute struct {
