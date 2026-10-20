@@ -46,7 +46,8 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
  */
 export type DataPlane='direct'
 
-export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
+export type CircuitView={provider:string;state:'closed'|'open'|'half-open';failures:number;retry_in_ms:number}
+export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[];circuits?:CircuitView[]}
 export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
 
 /**

@@ -32,20 +32,22 @@ type providerScanner interface {
 
 // scanProviderRow reads the shared provider projection. Last-test columns are
 // nullable; they become nil when no test has run.
-func scanProviderRow(row providerScanner, v *model.Provider) error {
+func scanProviderRow(row providerScanner, v *model.Provider, extra ...any) error {
 	var lastAt *time.Time
 	var lastOK *bool
 	var lastStatus *int
 	var lastLatency *int64
 	var lastUpstream, lastError string
-	if err := row.Scan(
+	dest := []any{
 		&v.ID, &v.Name, &v.BaseURL, &v.Protocol,
 		&v.ProviderType, &v.Description, &v.Status, &v.CreatedAt, &v.UpdatedAt,
 		&lastAt, &lastOK, &lastStatus, &lastLatency,
 		&lastUpstream, &lastError,
 		&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext,
 		&v.CandidateModelCount, &v.ReferencedRouteCount, &v.ReferencedModelCount,
-	); err != nil {
+	}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return err
 	}
 	if lastAt != nil {
@@ -86,6 +88,105 @@ ORDER BY p.created_at DESC
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// ProviderFilter is the server-side channel list query. An empty field means
+// "any"; Status 0 means "any" because stored status is 1 or 2.
+type ProviderFilter struct {
+	Name         string
+	ProviderType string
+	Protocol     string
+	Status       int
+	Limit        int
+	Offset       int
+}
+
+// ListProvidersPage applies the filter and returns the total matching rows.
+// The page size is bounded by the caller; storage only refuses a negative
+// offset.
+func (p *Postgres) ListProvidersPage(ctx context.Context, f ProviderFilter) ([]model.Provider, int, error) {
+	where := []string{"TRUE"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if name := strings.TrimSpace(f.Name); name != "" {
+		add("p.name ILIKE '%%' || $%d || '%%'", name)
+	}
+	if providerType := strings.TrimSpace(f.ProviderType); providerType != "" {
+		add("p.provider_type = $%d", providerType)
+	}
+	if protocol := strings.TrimSpace(f.Protocol); protocol != "" {
+		add("p.protocol = $%d", protocol)
+	}
+	if f.Status == 1 || f.Status == 2 {
+		add("p.status = $%d", f.Status)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	args = append(args, limit, offset)
+	query := `
+SELECT ` + providerColumns + `, COUNT(*) OVER()::int AS total
+FROM gateway_provider p
+JOIN gateway_credential c ON c.id = p.credential_id
+WHERE ` + strings.Join(where, " AND ") + `
+ORDER BY p.created_at DESC
+LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
+	rows, err := p.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var out []model.Provider
+	total := 0
+	for rows.Next() {
+		var v model.Provider
+		if err := scanProviderRow(rows, &v, &total); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, v)
+	}
+	return out, total, rows.Err()
+}
+
+// UpdateProviderStatus is the bounded batch enable/disable write. It touches
+// only status, so a stale list cannot overwrite a concurrent name/URL/credential
+// edit.
+func (p *Postgres) UpdateProviderStatus(ctx context.Context, id string, status int) (model.Provider, error) {
+	tag, err := p.Pool.Exec(ctx, `
+UPDATE gateway_provider SET status=$2, updated_at=NOW() WHERE id=$1::uuid
+`, id, status)
+	if err != nil {
+		return model.Provider{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return model.Provider{}, pgx.ErrNoRows
+	}
+	return p.ProviderByID(ctx, id)
+}
+
+// RecordProviderTest stores only the compact last-test summary. Content is
+// deliberately not a parameter.
+func (p *Postgres) RecordProviderTest(ctx context.Context, providerID string, result model.ProviderTestResult) error {
+	_, err := p.Pool.Exec(ctx, `
+UPDATE gateway_provider
+SET last_test_at=$2, last_test_ok=$3, last_test_status_code=$4,
+	last_test_latency_ms=$5, last_test_upstream_model=NULLIF($6,''),
+	last_test_error_kind=NULLIF($7,''), updated_at=NOW()
+WHERE id=$1::uuid
+`, providerID, result.At, result.OK, result.StatusCode, result.LatencyMS, result.UpstreamModel, result.ErrorKind)
+	return err
 }
 
 func (p *Postgres) CreateProvider(ctx context.Context, v model.Provider) (model.Provider, error) {

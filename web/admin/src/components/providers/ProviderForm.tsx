@@ -97,6 +97,10 @@ export function ProviderForm({
         <input value={v.name || ''} onChange={e => setV({...v, name: e.target.value})} />
       </Field>
 
+      <Field label="供应商类型" hint="用于筛选和展示的模板分类，例如 qwen、deepseek、doubao；不参与运行时协议判断。">
+        <input className="mono" value={v.provider_type || ''} onChange={e => setV({...v, provider_type: e.target.value})} />
+      </Field>
+
       <Field label="接口协议" hint="网关只支持 OpenAI Compatible 协议；其他协议的渠道会在保存时被拒绝。">
         <select value={v.protocol || 'openai-chat'} onChange={e => setV({...v, protocol: e.target.value})}>
           {PROTOCOLS.map(p => (
@@ -109,6 +113,10 @@ export function ProviderForm({
 
       <Field label="Base URL">
         <input className="mono" value={v.base_url || ''} onChange={e => setV({...v, base_url: e.target.value})} />
+      </Field>
+
+      <Field label="描述（可选）" hint="给管理员看的说明，不影响运行时行为。">
+        <input value={v.description || ''} onChange={e => setV({...v, description: e.target.value})} />
       </Field>
 
       {mode === 'inline' ? (

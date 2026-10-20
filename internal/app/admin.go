@@ -72,7 +72,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
 
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 			aw := &adminAuditResponseWriter{ResponseWriter: w}
 			next.ServeHTTP(aw, r)
 			status := aw.status
@@ -108,6 +108,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/test"):
+		s.handleProviderTest(w, r)
 	// A channel's model list is addressed under the channel. Keep these before
 	// the single-channel match below so /models is not read as a provider id.
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/models/refresh"):
@@ -237,7 +239,30 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListProviders(r.Context())
+		q := r.URL.Query()
+		filtered := q.Get("name") != "" || q.Get("provider_type") != "" || q.Get("protocol") != "" ||
+			q.Get("status") != "" || q.Get("limit") != "" || q.Get("offset") != ""
+		var (
+			items []model.Provider
+			total int
+			err   error
+		)
+		if filtered {
+			status, _ := strconv.Atoi(q.Get("status"))
+			limit, _ := strconv.Atoi(q.Get("limit"))
+			offset, _ := strconv.Atoi(q.Get("offset"))
+			items, total, err = s.pg.ListProvidersPage(r.Context(), storage.ProviderFilter{
+				Name:         q.Get("name"),
+				ProviderType: q.Get("provider_type"),
+				Protocol:     q.Get("protocol"),
+				Status:       status,
+				Limit:        limit,
+				Offset:       offset,
+			})
+		} else {
+			items, err = s.pg.ListProviders(r.Context())
+			total = len(items)
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list providers", reqID)
 			return
@@ -246,7 +271,12 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		for i := range items {
 			views[i] = s.providerView(items[i])
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": views})
+		out := map[string]any{"data": views, "total": total}
+		if filtered {
+			out["limit"] = q.Get("limit")
+			out["offset"] = q.Get("offset")
+		}
+		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in model.Provider
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -287,9 +317,12 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.deleteProvider(w, r, id, reqID)
 		return
+	case http.MethodPatch:
+		s.updateProviderStatus(w, r, id, reqID)
+		return
 	case http.MethodPut:
 	default:
-		w.Header().Set("Allow", "PUT, DELETE")
+		w.Header().Set("Allow", "PUT, PATCH, DELETE")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
@@ -310,6 +343,35 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	out, err := s.pg.UpdateProvider(r.Context(), id, in)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found or could not be updated", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.providerView(out))
+}
+
+// updateProviderStatus is the status-only write behind the bounded batch
+// enable/disable action. It deliberately accepts no other field, so a stale
+// list cannot overwrite a concurrent URL or credential edit.
+func (s *Server) updateProviderStatus(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	var in struct {
+		Status int `json:"status"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must contain only status", reqID)
+		return
+	}
+	if in.Status != 1 && in.Status != 2 {
+		httpx.Error(w, http.StatusBadRequest, "invalid_provider", "status must be 1 (enabled) or 2 (disabled)", reqID)
+		return
+	}
+	out, err := s.pg.UpdateProviderStatus(r.Context(), id, in.Status)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.providerView(out))

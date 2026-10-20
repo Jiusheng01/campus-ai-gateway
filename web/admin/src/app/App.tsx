@@ -252,7 +252,7 @@ function Console() {
     >
       {page === 'dashboard' && <DashboardPage roles={roles} />}
       {page === 'analytics' && <AnalyticsPage />}
-      {page === 'providers' && <ProvidersPage />}
+      {page === 'providers' && <ProvidersPage canPreviewContent={roles.includes('super_admin')} />}
       {page === 'models' && <PublishedModelsPage />}
       {page === 'routes' && <RoutesPage />}
       {(page === 'calls' || page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}

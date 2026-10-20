@@ -76,6 +76,10 @@ type Server struct {
 	// switch on purpose: the only way to relax it is the test helper's direct
 	// injection, so production cannot be talked out of it by configuration.
 	egress egressPolicy
+
+	// providerTests bounds channel diagnostics per actor per process. It is
+	// management state, not shared runtime state.
+	providerTests *providerTestLimiter
 }
 
 type requestEnvelope struct {
@@ -165,6 +169,7 @@ func NewServer(cfg Config) (*Server, error) {
 		mux:           http.NewServeMux(),
 		httpAllowlist: httpAllowlist,
 		egress:        strictEgressPolicy(),
+		providerTests: newProviderTestLimiter(),
 	}
 	s.upstream = http.HandlerFunc(s.serveDirect)
 	log.Printf("data plane: direct — channels are dialled in-process")
