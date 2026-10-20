@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {Gauge, Plus, Trash2} from 'lucide-react'
-import {api, type ModelQuota, type Tenant} from '../api'
+import {api, type ModelConfig, type ModelQuota, type Tenant} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
@@ -54,13 +54,26 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
   const toast = useToast()
   const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(async () => {
-    const [q, t] = await Promise.all([api<{data: ModelQuota[]}>('/admin/model-quotas'), api<{data: Tenant[]}>('/admin/tenants')])
-    return {quotas: q.data || [], tenants: t.data || []}
+    const [q, t, m] = await Promise.all([
+      api<{data: ModelQuota[]}>('/admin/model-quotas'),
+      api<{data: Tenant[]}>('/admin/tenants'),
+      api<{data: ModelConfig[]}>('/admin/models'),
+    ])
+    return {quotas: q.data || [], tenants: t.data || [], models: m.data || []}
   })
   const [draft, setDraft] = useState<Draft | null>(null)
 
   const quotas = data?.quotas || []
   const tenants = data?.tenants || []
+  // The picker shows the catalog, so a quota can never be typed against an
+  // alias that does not exist. Rows created before this rule may still name a
+  // deleted model; those are listed but cannot be re-saved.
+  const models = (data?.models || []).slice().sort((a, b) => (a.display_name || a.alias).localeCompare(b.display_name || b.alias))
+  const modelAliases = new Set(models.map(m => m.alias))
+  const modelLabel = (alias: string) => {
+    const m = models.find(x => x.alias === alias)
+    return m && m.display_name ? `${m.display_name}（${alias}）` : alias
+  }
 
   // A scoped administrator may only write strict descendants. The campus pool
   // is global, and their own tenant's rows are the ceilings their parent set,
@@ -68,12 +81,21 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
   const writableTenants = scopeTenantID ? tenants.filter(t => t.id !== scopeTenantID) : tenants
   const writable = (q: ModelQuota) => (q.tenant_id ? q.tenant_id !== scopeTenantID : !scopeTenantID)
   const defaultSubject = scopeTenantID ? writableTenants[0]?.id ?? '' : ''
-  const canCreate = !scopeTenantID || writableTenants.length > 0
+  const canCreate = (!scopeTenantID || writableTenants.length > 0) && models.length > 0
   const noDescendantHint = '你只能为下级租户配置模型额度；当前没有下级租户'
+  const noModelHint = '请先在「模型与线路」中创建对外模型'
+  const createTitle = canCreate ? undefined : models.length === 0 ? noModelHint : noDescendantHint
+  const newDraft = (tenantID = ''): Draft => ({...emptyDraft(tenantID), model_alias: models[0]?.alias || ''})
 
   const save = async (d: Draft) => {
     if (!d.model_alias.trim()) {
-      toast.error('请填写模型别名')
+      toast.error('请选择模型')
+      return
+    }
+    // The server enforces this too; checking here saves a round trip and gives
+    // the operator the reason instead of a generic 400.
+    if (!modelAliases.has(d.model_alias.trim())) {
+      toast.error('该模型已不存在，请重新选择')
       return
     }
     // A row whose two limits are both "inherit" caps nothing. Saving it would
@@ -128,17 +150,18 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
       <Panel
         title="模型额度"
         sub={
-          scopeTenantID
+          (scopeTenantID
             ? '按「主体 + 模型」设定 Token 上限。你只能为下级租户配置；删除一行即恢复继承。'
-            : '按「主体 + 模型」设定 Token 上限。主体为全校共享池或某个租户；删除一行即恢复继承。'
+            : '按「主体 + 模型」设定 Token 上限。主体为全校共享池或某个租户；删除一行即恢复继承。') +
+          '「生效」按链上最紧的正数上限计算，与限流器一致。'
         }
         actions={
           <Button
             variant="primary"
             icon={<Plus />}
-            onClick={() => setDraft(emptyDraft(defaultSubject))}
+            onClick={() => setDraft(newDraft(defaultSubject))}
             disabled={!canCreate}
-            title={canCreate ? undefined : noDescendantHint}
+            title={createTitle}
           >
             新增额度
           </Button>
@@ -156,9 +179,28 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                   <b>{subject(q)}</b>
                   {!q.tenant_id && <span className="eyebrow kindTag">全校</span>}
                 </td>
-                <td className="mono">{q.model_alias}</td>
-                <td className={`numeric ${limitClass(q.daily_token_limit)}`}>{limitText(q.daily_token_limit)}</td>
-                <td className={`numeric ${limitClass(q.monthly_token_limit)}`}>{limitText(q.monthly_token_limit)}</td>
+                <td>
+                  <span className="mono">{q.model_alias}</span>
+                  {!modelAliases.has(q.model_alias) && (
+                    <span className="eyebrow kindTag" title="该模型已从目录中删除，额度不会再生效">
+                      模型不存在
+                    </span>
+                  )}
+                </td>
+                <td className="numeric">
+                  <LimitCell
+                    configured={q.daily_token_limit}
+                    effective={q.effective?.daily_token_limit}
+                    setBy={q.effective?.set_by}
+                  />
+                </td>
+                <td className="numeric">
+                  <LimitCell
+                    configured={q.monthly_token_limit}
+                    effective={q.effective?.monthly_token_limit}
+                    setBy={q.effective?.set_by}
+                  />
+                </td>
                 <td className="rowActions" title={writable(q) ? undefined : noDescendantHint}>
                   <button
                     className="link"
@@ -173,8 +215,11 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                     }
                     // The pool row and the scoped administrator's own tenant
                     // are read-only here: their values are the ceilings set
-                    // above them, not something they may raise.
-                    disabled={!writable(q)}
+                    // above them, not something they may raise. An orphan
+                    // alias is read-only too — the server refuses a write that
+                    // names a model the catalog no longer contains.
+                    disabled={!writable(q) || !modelAliases.has(q.model_alias)}
+                    title={!modelAliases.has(q.model_alias) ? '该模型已不存在，只能删除这条额度' : undefined}
                   >
                     编辑
                   </button>
@@ -203,9 +248,9 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
               <Button
                 variant="primary"
                 icon={<Plus />}
-                onClick={() => setDraft(emptyDraft(defaultSubject))}
+                onClick={() => setDraft(newDraft(defaultSubject))}
                 disabled={!canCreate}
-                title={canCreate ? undefined : noDescendantHint}
+                title={createTitle}
               >
                 新增额度
               </Button>
@@ -256,20 +301,29 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
             </Field>
 
             <Field
-              label="模型别名"
+              label="模型"
               hint={
                 draft.editing
-                  ? '别名不可修改：同一行改别名等于新增一行。要更正请删除后重建。'
-                  : '对外暴露的模型名，例如 campus-smart。'
+                  ? '模型不可修改：同一行改模型等于新增一行。要更正请删除后重建。'
+                  : '从模型目录中选择；额度按这个对外模型名生效。'
               }
             >
-              <input
-                className="mono"
-                value={draft.model_alias}
-                onChange={e => setDraft({...draft, model_alias: e.target.value})}
-                placeholder="campus-smart"
-                disabled={draft.editing}
-              />
+              {draft.editing ? (
+                <input className="mono" value={modelLabel(draft.model_alias)} disabled />
+              ) : (
+                <select
+                  value={draft.model_alias}
+                  onChange={e => setDraft({...draft, model_alias: e.target.value})}
+                  disabled={!models.length}
+                >
+                  {!models.length && <option value="">暂无可选模型</option>}
+                  {models.map(m => (
+                    <option key={m.id} value={m.alias}>
+                      {m.display_name ? `${m.display_name}（${m.alias}）` : m.alias}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
 
             <div className="formGrid">
@@ -291,5 +345,44 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
         </Drawer>
       )}
     </>
+  )
+}
+
+/**
+ * One limit cell: what this subject declares, and what the limiter will apply.
+ *
+ * The second line is omitted when it would only repeat the first (an own cap
+ * that no ancestor tightens). When a value is capped above this subject, the
+ * source is named -- that is the answer to "I set 300, why does it stop at 100?"
+ */
+function LimitCell({
+  configured,
+  effective,
+  setBy,
+}: {
+  configured: number | null
+  effective?: number
+  setBy?: string
+}) {
+  const redundant = configured !== null && configured > 0 && effective === configured
+  const uncapped = configured === 0 && effective === 0
+  let note = ''
+  if (effective !== undefined && !redundant && !uncapped && setBy) {
+    if (configured === null) {
+      note = `继承自 ${setBy}`
+    } else if (effective > 0 && (configured === 0 || effective < configured)) {
+      note = `受 ${setBy} 限制`
+    }
+  }
+  return (
+    <div className="quotaEffectiveCell">
+      <span className={limitClass(configured)}>{limitText(configured)}</span>
+      {!redundant && !uncapped && effective !== undefined && (
+        <small className="quotaEffective">
+          生效 {limitText(effective)}
+          {note && <span className="quotaSource">{note}</span>}
+        </small>
+      )}
+    </div>
   )
 }

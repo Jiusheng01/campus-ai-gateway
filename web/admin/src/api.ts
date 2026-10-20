@@ -1,5 +1,10 @@
 export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;status:number}
-export type ModelConfig={id:string;alias:string;provider_id:string;provider_name:string;upstream_model:string;status:number}
+/**
+ * A row in the public model catalog. This is only the business-facing identity:
+ * the alias callers send as `model`, the label the console shows, and whether
+ * the alias is routable at all. The upstream deployments live in ModelRoute.
+ */
+export type ModelConfig={id:string;alias:string;display_name:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
 /**
  * A tenant, as the admin API returns it.
@@ -57,6 +62,12 @@ export type ModelQuota={
   model_alias:string
   daily_token_limit:number|null
   monthly_token_limit:number|null
+  /**
+   * The value the limiter will actually apply, resolved from the campus pool and
+   * every ancestor. Absent when nothing on the chain caps this model (the row
+   * itself is then only a declaration that inherits).
+   */
+  effective?:EffectiveModelQuota
 }
 
 /** What one tenant actually gets for one model, and which level set it. */
@@ -110,6 +121,25 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
 export type DataPlane='direct'
 
 export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[]}
+
+/**
+ * One step of the dashboard's setup checklist.
+ *
+ * `done` is derived from the deployment state on every read, not from a stored
+ * "wizard completed" flag, so removing the last route reopens the route step.
+ * `action` names the page that completes it; the final verification step has
+ * none because its answer is a real request, not a form.
+ */
+export type OnboardingStep={id:string;label:string;description:string;done:boolean;count:number;action?:string}
+export type OnboardingGuide={steps:OnboardingStep[];complete:boolean;sample_model?:string}
+
+/**
+ * getOnboarding reads the role-aware setup checklist. It is only available to
+ * global administrators; a scoped tenant_admin lands on its subtree pages.
+ */
+export async function getOnboarding(){
+  return api<OnboardingGuide>('/admin/onboarding')
+}
 export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string;scope_tenant_id?:string|null}
 
 /**
@@ -477,6 +507,18 @@ export async function updateUser(id:string,patch:UserPatch){
  */
 export async function listModelTestOptions(){
   const d=await api<{data:ModelTestOption[]}>('/admin/model-test-options')
+  return d.data||[]
+}
+
+/**
+ * listProviderUpstreamModels asks one channel which deployments it offers.
+ *
+ * The answer is a suggestion list, not a catalog: some providers do not expose
+ * /models, and a gateway may expose a name it does not serve. The route form
+ * therefore keeps the field editable.
+ */
+export async function listProviderUpstreamModels(providerId:string){
+  const d=await api<{data:string[]}>(`/admin/providers/${encodeURIComponent(providerId)}/upstream-models`)
   return d.data||[]
 }
 

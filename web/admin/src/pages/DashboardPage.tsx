@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useEffect, useState} from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -6,12 +6,22 @@ import {
   CircleGauge,
   Database,
   FlaskConical,
+  ListChecks,
   RefreshCw,
   Route,
   ServerCog,
   Zap,
 } from 'lucide-react'
-import {api, listModelTestOptions, type DashboardStatus, type ModelTestOption, type RequestLog} from '../api'
+import {
+  api,
+  getOnboarding,
+  listModelTestOptions,
+  type DashboardStatus,
+  type ModelTestOption,
+  type OnboardingGuide,
+  type RequestLog,
+} from '../api'
+import type {Page} from '../app/navigation'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Table} from '../components/ui/Table'
@@ -19,6 +29,7 @@ import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
+import {SetupGuide} from '../components/onboarding/SetupGuide'
 import {useResource} from '../lib/useResource'
 import {ago, fmt, ms, num, ratio} from '../lib/format'
 
@@ -30,7 +41,7 @@ import {ago, fmt, ms, num, ratio} from '../lib/format'
  * putting them here pushed the two things an operator checks first — the
  * numbers and the four status lights — off the first screen.
  */
-export function DashboardPage({roles}: {roles: string[]}) {
+export function DashboardPage({roles, username, onNavigate}: {roles: string[]; username?: string; onNavigate: (page: Page) => void}) {
   const toast = useToast()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
@@ -38,6 +49,31 @@ export function DashboardPage({roles}: {roles: string[]}) {
   // Quick actions are gated by the same allow-list the gateway uses, so the
   // dashboard never offers a button whose only possible result is a 403.
   const canTestModel = roles.includes('super_admin') || roles.includes('gateway_admin') || roles.includes('operator')
+  // The checklist counts deployment-wide rows, so it is only fetched for the
+  // two roles the onboarding endpoint admits. A failed load is silently
+  // skipped: the guide is an aid, and an error box over it would push the
+  // actual health figures down for no actionable reason.
+  const canSetup = roles.includes('super_admin') || roles.includes('gateway_admin')
+  const guide = useResource<OnboardingGuide | null>(
+    () => (canSetup ? getOnboarding() : Promise.resolve(null)),
+    [canSetup],
+  )
+
+  // Dismissal is per account, not per browser: a second administrator sharing
+  // the workstation still gets the checklist on their own first sign-in.
+  const hideKey = `campus_setup_hidden:${username || 'unknown'}`
+  const [guideHidden, setGuideHidden] = useState(false)
+  useEffect(() => {
+    setGuideHidden(localStorage.getItem(hideKey) === '1')
+  }, [hideKey])
+  const hideGuide = () => {
+    localStorage.setItem(hideKey, '1')
+    setGuideHidden(true)
+  }
+  const showGuide = () => {
+    localStorage.removeItem(hideKey)
+    setGuideHidden(false)
+  }
   // The recent-requests strip reads the log endpoint, which is a narrower
   // permission than the dashboard itself. A gateway_admin may see this page but
   // not that endpoint, so the request is skipped rather than allowed to 403 and
@@ -80,11 +116,22 @@ export function DashboardPage({roles}: {roles: string[]}) {
 
   return (
     <div className="stack">
-      {canTestModel && (
+      {guide.data && !guideHidden && (
+        <SetupGuide guide={guide.data} onNavigate={onNavigate} onHide={hideGuide} />
+      )}
+
+      {(canTestModel || (canSetup && guide.data && guideHidden)) && (
         <div className="quickActions">
-          <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
-            模型连通测试
-          </Button>
+          {canSetup && guide.data && guideHidden && (
+            <Button icon={<ListChecks />} onClick={showGuide}>
+              接入指引
+            </Button>
+          )}
+          {canTestModel && (
+            <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
+              模型连通测试
+            </Button>
+          )}
         </div>
       )}
 

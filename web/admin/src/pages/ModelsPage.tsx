@@ -1,5 +1,5 @@
 import {useCallback, useState} from 'react'
-import {ChevronDown, FlaskConical, Pencil, Plus, Route, Trash2} from 'lucide-react'
+import {ChevronDown, FlaskConical, Pencil, Plus, Route, Scale, Trash2} from 'lucide-react'
 import {api, type ModelConfig, type ModelRoute, type Provider} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
@@ -22,6 +22,25 @@ type DrawerState =
   | {kind: 'route'; model: ModelConfig; draft: RouteDraft}
   | {kind: 'test'; model?: string}
   | null
+
+type RouteGroup = {priority: number; routes: ModelRoute[]}
+
+/**
+ * groupRoutes collapses the flat route list into the priority bands the data
+ * plane actually uses. Everything in one band is load-balanced; bands are tried
+ * in ascending order, so the first band is the preferred one and the rest are
+ * failover. Rendering them as a single numbered chain hid that distinction.
+ */
+function groupRoutes(routes: ModelRoute[]): RouteGroup[] {
+  const sorted = routes.slice().sort((a, b) => a.priority - b.priority || b.weight - a.weight)
+  const groups: RouteGroup[] = []
+  for (const r of sorted) {
+    const last = groups[groups.length - 1]
+    if (last && last.priority === r.priority) last.routes.push(r)
+    else groups.push({priority: r.priority, routes: [r]})
+  }
+  return groups
+}
 
 export function ModelsPage() {
   const toast = useToast()
@@ -51,7 +70,12 @@ export function ModelsPage() {
 
   const saveModel = async (v: ModelDraft) => {
     try {
-      await api(v.id ? `/admin/models/${v.id}` : '/admin/models', {method: v.id ? 'PUT' : 'POST', body: JSON.stringify(v)})
+      // The catalog write carries only the fields the form owns. The server
+      // rejects an alias change on update rather than treating it as a rename.
+      await api(v.id ? `/admin/models/${v.id}` : '/admin/models', {
+        method: v.id ? 'PUT' : 'POST',
+        body: JSON.stringify({alias: v.alias, display_name: v.display_name, status: v.status}),
+      })
       toast.success('模型已保存')
       setDrawer(null)
       reload()
@@ -76,8 +100,8 @@ export function ModelsPage() {
 
   const removeRoute = async (r: ModelRoute) => {
     const ok = await confirm({
-      title: '删除备用线路？',
-      description: `${r.provider_name} → ${r.upstream_model}。删除后该线路不再参与故障切换。`,
+      title: '删除线路？',
+      description: `${r.provider_name} → ${r.upstream_model}。删除后该线路不再参与分流或故障切换。`,
       confirmText: '删除线路',
       danger: true,
     })
@@ -93,6 +117,15 @@ export function ModelsPage() {
 
   const models = data?.models || []
   const providers = data?.providers || []
+  const canAddRoute = providers.length > 0
+
+  const addRoute = (model: ModelConfig, routes: ModelRoute[]) => {
+    // A new route starts as its own failover band. Sharing a band is a
+    // deliberate choice — it changes how traffic is split — so it is not the
+    // default the operator gets by accident.
+    const nextPriority = routes.reduce((max, r) => Math.max(max, r.priority), 0) + 1
+    setDrawer({kind: 'route', model, draft: {priority: nextPriority, weight: 100, timeout_ms: 60000, status: 1}})
+  }
 
   return (
     <div className="stack">
@@ -103,15 +136,10 @@ export function ModelsPage() {
       </div>
 
       <Panel
-        title="模型与路由"
-        sub="业务系统只使用统一的对外模型名称，实际渠道和上游模型可在这里配置并进行故障切换。"
+        title="模型与线路"
+        sub="业务系统只使用统一的对外模型名称。同优先级的线路按权重分流，整组失败后自动切换到下一优先级。"
         actions={
-          <Button
-            variant="primary"
-            icon={<Plus />}
-            disabled={!providers.length}
-            onClick={() => setDrawer({kind: 'model', draft: {status: 1}})}
-          >
+          <Button variant="primary" icon={<Plus />} onClick={() => setDrawer({kind: 'model', draft: {status: 1}})}>
             新增模型
           </Button>
         }
@@ -123,14 +151,15 @@ export function ModelsPage() {
         ) : models.length ? (
           <div className="modelCards">
             {models.map(m => {
-              const rs = (data?.routes[m.id] || []).slice().sort((a, b) => a.priority - b.priority || b.weight - a.weight)
-              const primaryIdx = rs.findIndex(r => r.status === 1)
+              const rs = data?.routes[m.id] || []
+              const groups = groupRoutes(rs)
+              let step = 0
               return (
                 <article className={`modelCard ${m.status === 1 ? '' : 'disabled'}`} key={m.id}>
                   <header className="modelHead">
                     <div className="modelIdentity">
                       <div className="modelAliasRow">
-                        <h3 className="modelAlias">{m.alias}</h3>
+                        <h3 className="modelAlias">{m.display_name || m.alias}</h3>
                         <StatusBadge status={m.status} />
                       </div>
                       <span className="modelKind">对外模型</span>
@@ -149,82 +178,101 @@ export function ModelsPage() {
                   </header>
 
                   <div className="routeChain">
-                    {rs.map((r, i) => {
-                      const isPrimary = i === primaryIdx
-                      const friendly = friendlyProviderName(r.provider_name)
+                    {groups.map((g, gi) => {
+                      const failover = gi > 0
                       return (
-                        <div className="routeChainItem" key={r.id}>
-                          {i > 0 && (
+                        <div className="routeGroup" key={g.priority}>
+                          {failover && (
                             <div className="routeConnector" aria-hidden>
                               <ChevronDown />
-                              <span>失败自动切换</span>
+                              <span>整组失败后切换</span>
                             </div>
                           )}
-                          <div className={`routeStep ${r.status === 1 ? '' : 'isDisabled'} ${isPrimary ? 'isPrimary' : ''}`}>
-                            <span className="routeIndex" aria-hidden>
-                              {i + 1}
+                          <div className="routeGroupHead">
+                            <span className="routeGroupTitle">
+                              优先级 {g.priority} · {failover ? '故障切换组' : '首选组'}
                             </span>
-                            <div className="routeBox">
-                              <div className="routeBoxHead">
-                                <b>{friendly || r.provider_name}</b>
-                                <span className="routeTags">
-                                  {isPrimary ? <Badge tone="info">主线路</Badge> : <Badge>备用线路</Badge>}
-                                  <StatusBadge status={r.status} />
-                                </span>
-                              </div>
-                              {friendly && <span className="routeProvider mono">{r.provider_name}</span>}
-                              <code className="routeModel mono">{r.upstream_model}</code>
-                              <div className="routeMeta">
-                                <span>
-                                  优先级 <b>{r.priority}</b>
-                                </span>
-                                <span>
-                                  流量权重 <b>{r.weight}</b>
-                                </span>
-                                <span>
-                                  超时 <b>{r.timeout_ms} ms</b>
-                                </span>
-                              </div>
-                              <div className="routeActions">
-                                <button
-                                  className="link"
-                                  onClick={() =>
-                                    setDrawer({
-                                      kind: 'route',
-                                      model: m,
-                                      draft: r,
-                                    })
-                                  }
-                                >
-                                  编辑
-                                </button>
-                                <button className="link dangerText" onClick={() => void removeRoute(r)}>
-                                  <Trash2 aria-hidden />
-                                  删除
-                                </button>
-                              </div>
-                            </div>
+                            {g.routes.length > 1 ? (
+                              <Badge tone="info">
+                                <Scale aria-hidden />
+                                组内加权分流
+                              </Badge>
+                            ) : (
+                              <Badge>单线路</Badge>
+                            )}
+                          </div>
+                          <div className="routeGroupBody">
+                            {g.routes.map(r => {
+                              step += 1
+                              const friendly = friendlyProviderName(r.provider_name)
+                              return (
+                                <div className={`routeStep ${r.status === 1 ? '' : 'isDisabled'}`} key={r.id}>
+                                  <span className="routeIndex" aria-hidden>
+                                    {step}
+                                  </span>
+                                  <div className="routeBox">
+                                    <div className="routeBoxHead">
+                                      <b>{friendly || r.provider_name}</b>
+                                      <span className="routeTags">
+                                        <StatusBadge status={r.status} />
+                                      </span>
+                                    </div>
+                                    {friendly && <span className="routeProvider mono">{r.provider_name}</span>}
+                                    <code className="routeModel mono">{r.upstream_model}</code>
+                                    <div className="routeMeta">
+                                      <span>
+                                        流量权重 <b>{r.weight}</b>
+                                      </span>
+                                      <span>
+                                        超时 <b>{r.timeout_ms} ms</b>
+                                      </span>
+                                    </div>
+                                    <div className="routeActions">
+                                      <button
+                                        className="link"
+                                        onClick={() =>
+                                          setDrawer({
+                                            kind: 'route',
+                                            model: m,
+                                            draft: r,
+                                          })
+                                        }
+                                      >
+                                        编辑
+                                      </button>
+                                      <button className="link dangerText" onClick={() => void removeRoute(r)}>
+                                        <Trash2 aria-hidden />
+                                        删除
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            })}
                           </div>
                         </div>
                       )
                     })}
                     {!rs.length && (
-                      <EmptyState title="该模型尚未配置线路" description="添加一条线路后，业务请求才能被路由到渠道。" />
+                      <EmptyState
+                        title="该模型尚未配置线路"
+                        description={
+                          canAddRoute
+                            ? '添加至少一条线路后，业务请求才能被路由到这个模型。'
+                            : '请先在渠道页添加渠道，再回来配置线路。'
+                        }
+                      />
                     )}
                   </div>
 
                   <button
                     className="addRoute"
-                    onClick={() =>
-                      setDrawer({
-                        kind: 'route',
-                        model: m,
-                        draft: {priority: rs.length + 1, weight: 100, timeout_ms: 60000, status: 1},
-                      })
-                    }
+                    onClick={() => addRoute(m, rs)}
+                    disabled={!canAddRoute}
+                    title={canAddRoute ? undefined : '请先添加渠道'}
                   >
                     <Plus aria-hidden />
-                    添加备用线路
+                    添加线路
                   </button>
                 </article>
               )
@@ -234,13 +282,11 @@ export function ModelsPage() {
           <EmptyState
             icon={<Route />}
             title="暂无对外模型"
-            description={providers.length ? '创建第一个对外模型，业务系统即可开始调用。' : '请先添加渠道，再创建对外模型。'}
+            description="先创建对外模型，再为它添加线路。模型没有线路时不会接收请求。"
             action={
-              providers.length ? (
-                <Button variant="primary" icon={<Plus />} onClick={() => setDrawer({kind: 'model', draft: {status: 1}})}>
-                  新增模型
-                </Button>
-              ) : undefined
+              <Button variant="primary" icon={<Plus />} onClick={() => setDrawer({kind: 'model', draft: {status: 1}})}>
+                新增模型
+              </Button>
             }
           />
         )}
@@ -249,16 +295,16 @@ export function ModelsPage() {
       {drawer?.kind === 'model' && (
         <Drawer
           title={drawer.draft.id ? '编辑对外模型' : '新增对外模型'}
-          subtitle="对外模型名称是业务系统的唯一入口，上游模型由线路决定。"
+          subtitle="这里只登记对外的模型名；渠道与上游模型在线路中配置。"
           onClose={() => setDrawer(null)}
         >
-          <ModelForm value={drawer.draft} providers={providers} onSave={v => void saveModel(v)} onCancel={() => setDrawer(null)} />
+          <ModelForm value={drawer.draft} onSave={v => void saveModel(v)} onCancel={() => setDrawer(null)} />
         </Drawer>
       )}
 
       {drawer?.kind === 'route' && (
         <Drawer
-          title={drawer.draft.id ? '编辑线路' : '新增备用线路'}
+          title={drawer.draft.id ? '编辑线路' : '新增线路'}
           subtitle={`对外模型 ${drawer.model.alias}`}
           onClose={() => setDrawer(null)}
         >

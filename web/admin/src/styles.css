@@ -545,6 +545,56 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 
 .quickActions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
+/* --- setup guide ---------------------------------------------------------- */
+
+.setupProgress { display: flex; align-items: center; gap: 10px; padding: 2px 0 14px; }
+.setupProgressText { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.setupProgressBar { flex: 1; height: 6px; border-radius: 999px; background: var(--surface-subtle); overflow: hidden; }
+.setupProgressBar span { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width 0.25s ease; }
+.setupProgressPct { font-size: 12px; font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+.setupComplete {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--success) 26%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.setupComplete svg { width: 16px; height: 16px; flex: none; color: var(--success); }
+.setupComplete span { flex: 1; min-width: 0; }
+
+.setupSteps { list-style: none; margin: 0; padding: 0; }
+.setupStep { display: flex; align-items: flex-start; gap: 12px; padding: 13px 0; border-top: 1px solid var(--border); }
+.setupStepMark { display: inline-flex; flex: none; margin-top: 1px; color: var(--text-faint); }
+.setupStepMark svg { width: 17px; height: 17px; }
+.setupStep.done .setupStepMark { color: var(--success); }
+.setupStepBody { flex: 1; min-width: 0; }
+.setupStepHead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.setupStepHead b { font-size: 13px; }
+.setupStepCount {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.setupStepDone { color: var(--success); font-size: 11.5px; font-weight: 600; }
+.setupStepBody p { margin: 4px 0 0; color: var(--text-faint); font-size: 12px; line-height: 1.55; }
+
+.setupCurl { margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-subtle); overflow: hidden; }
+.setupCurlHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--border); }
+.setupCurlHead span { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.setupCurl pre { margin: 0; padding: 11px 12px; overflow-x: auto; font-size: 11.5px; line-height: 1.6; }
+.setupCurl small { display: block; padding: 0 12px 10px; color: var(--text-faint); font-size: 11.5px; }
+
+
 /* --- infrastructure status ------------------------------------------------ */
 
 /* Four components read as one row of facts, not as four objects. Boxing each
@@ -616,14 +666,33 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .modelActions { display: flex; gap: 8px; flex: none; }
 
 .routeChain { margin-top: 15px; display: flex; flex-direction: column; }
-.routeChainItem { display: flex; flex-direction: column; }
+/* One priority band: a label, then every route that shares the band. Routes
+   inside a band are peers (weighted load balancing), so they are stacked
+   without the failover connector that separates the bands. */
+.routeGroup { display: flex; flex-direction: column; }
+.routeGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 8px 32px;
+}
+.routeGroupTitle {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.routeGroupBody { display: flex; flex-direction: column; gap: 10px; }
+.routeGroupHead .badge svg { width: 12px; height: 12px; }
 .routeConnector {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--text-faint);
   font-size: 11.5px;
-  padding: 5px 0 5px 14px;
+  padding: 8px 0 8px 14px;
 }
 .routeConnector svg { width: 14px; height: 14px; }
 .routeStep { display: flex; align-items: flex-start; gap: 10px; }
@@ -649,12 +718,11 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   padding: 12px 14px;
   transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
-/* The primary line is marked by the step number taking the accent colour,
-   rather than by a thick stripe down one edge. A coloured side border is the
-   most recognisable shorthand for a generated interface, and it also pushed
-   that one box's text off the grid every other box sits on. */
-.routeStep.isPrimary .routeBox { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
-.routeStep.isPrimary .routeIndex { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+/* The first band's number takes the accent colour rather than a thick stripe
+   down one edge. A coloured side border is the most recognisable shorthand for
+   a generated interface, and it also pushed that box's text off the grid every
+   other box sits on. */
+.routeGroup:first-child .routeIndex { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .routeBoxHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .routeBoxHead b { font-size: 13.5px; }
 .routeTags { display: inline-flex; align-items: center; gap: 2px; }
@@ -680,6 +748,8 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   gap: 6px;
 }
 .addRoute:hover { background: var(--primary-soft); border-color: var(--primary); }
+.addRoute:disabled { opacity: 0.55; cursor: not-allowed; }
+.addRoute:disabled:hover { background: transparent; border-color: var(--border-strong); }
 
 /* --- mini cards (mobile lists) -------------------------------------------- */
 
@@ -982,6 +1052,10 @@ input:focus, select:focus, textarea:focus {
 .field { display: flex; flex-direction: column; gap: 6px; }
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
+.fieldHint.error { color: var(--danger); }
+.inputWithAction { display: flex; gap: 8px; align-items: center; }
+.inputWithAction input { flex: 1; min-width: 0; }
+.inputWithAction .btn { white-space: nowrap; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .formActions {
   display: flex;
@@ -1530,3 +1604,10 @@ input:focus, select:focus, textarea:focus {
 .limitInherit{color:var(--text-faint);font-style:italic}
 .limitUnlimited{color:var(--text-muted)}
 .limitSet{font-weight:600}
+
+/* Configured versus effective. The second line only appears when it carries
+   information; repeating an own cap as "effective" would train operators to
+   ignore the line that matters when an ancestor is the one doing the capping. */
+.quotaEffectiveCell{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.quotaEffective{display:block;font-size:11.5px;font-weight:500;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.quotaSource{margin-left:6px;color:var(--warning);font-weight:600}
