@@ -33,6 +33,9 @@ func providerModelTestServer(t *testing.T, pg *storage.Postgres) *Server {
 		cfg:                  Config{ProviderHTTPAllowlist: []string{"127.0.0.1"}},
 		credentialSealingKey: bytes.Repeat([]byte{0x44}, security.CredentialKeySize),
 		transport:            &transportPool{},
+		// The same test-only injection as newDirectTestServer: these tests
+		// dial httptest upstreams on 127.0.0.1, which the strict policy refuses.
+		egress: permissiveEgressPolicy(),
 	}
 }
 

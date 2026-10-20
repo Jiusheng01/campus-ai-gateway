@@ -246,6 +246,14 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 
 	resp, err := s.attemptDirect(probe, nil, requestEnvelope{}, route)
 	if err != nil {
+		// A denied target is a policy decision with its own reason; surfacing
+		// it as a credential failure would send the operator to the wrong fix.
+		var denied *egressDeniedError
+		if errors.As(err, &denied) {
+			log.Printf("provider models refresh: request %s channel %s: %s", reqID, oneLine(provider.Name), denied.Reason)
+			httpx.Error(w, http.StatusBadGateway, "provider_egress_denied", denied.Error(), reqID)
+			return
+		}
 		// A missing credential is the operator's fix and names the variable,
 		// never its value. Transport errors can carry the dialled target, so
 		// only a fixed phrase leaves the gateway.

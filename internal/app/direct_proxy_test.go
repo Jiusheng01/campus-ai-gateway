@@ -31,6 +31,9 @@ func newDirectTestServer(t *testing.T, table routeTable) *Server {
 		transport:  &transportPool{},
 		selector:   newRouteSelector(),
 		breaker:    newCircuitBreaker(),
+		// httptest upstreams listen on 127.0.0.1. The permissive policy is the
+		// test-only injection; NewServer still constructs the strict one.
+		egress: permissiveEgressPolicy(),
 	}
 }
 

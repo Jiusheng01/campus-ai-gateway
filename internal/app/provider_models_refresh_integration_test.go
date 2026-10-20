@@ -241,6 +241,33 @@ func TestRefreshDoesNotFollowUpstreamRedirects(t *testing.T) {
 	}
 }
 
+// Refresh reuses the data plane's dialer, so a target the egress policy denies
+// is a clear, channel-named failure rather than a generic unreachable one.
+func TestRefreshReportsAnEgressDenialWithTheChannelAndReason(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	s := providerModelTestServer(t, pg)
+	s.egress = strictEgressPolicy()
+
+	// The loopback host is allowlisted for http:// at write time, so the target
+	// reaches the dialer; the strict address policy is what refuses it.
+	created := createChannelThroughAPI(t, s, "egress-blocked", "http://127.0.0.1:1/v1")
+
+	rec := httptest.NewRecorder()
+	s.handleAdmin(rec, httptest.NewRequest(http.MethodPost,
+		"/admin/providers/"+created.ID+"/models/refresh", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("refresh status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "provider_egress_denied") {
+		t.Fatalf("the failure must carry the egress denial code: %s", body)
+	}
+	if !strings.Contains(body, "egress-blocked") || !strings.Contains(body, "loopback") {
+		t.Fatalf("the failure must name the channel and the reason: %s", body)
+	}
+}
+
 func addManualModel(t *testing.T, s *Server, providerID, name string) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"upstream_model": name})

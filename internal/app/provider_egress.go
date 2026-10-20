@@ -5,7 +5,109 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"syscall"
 )
+
+// egressPolicy is the dial-time half of ADR-0012.
+//
+// It is applied from net.Dialer.Control, which runs after the resolver has
+// produced an address and before the connection is made. That position is the
+// point: every new connection is checked against the address it is actually
+// about to reach, so a name that resolves to a public address once and a
+// private one later (DNS rebinding) does not get a second, unexamined chance.
+//
+// The zero value is strict. NewServer constructs it explicitly, and tests that
+// need a local upstream inject the permissive value through their own helper.
+// There is deliberately no environment variable or Config field for this: a
+// switch that can weaken egress policy is the vulnerability, not the escape
+// hatch.
+type egressPolicy struct {
+	allowDangerous bool
+}
+
+// strictEgressPolicy denies every address ADR-0012 calls dangerous.
+func strictEgressPolicy() egressPolicy {
+	return egressPolicy{}
+}
+
+// permissiveEgressPolicy is the test-only injection. httptest upstreams listen
+// on 127.0.0.1, which the strict policy correctly refuses.
+func permissiveEgressPolicy() egressPolicy {
+	return egressPolicy{allowDangerous: true}
+}
+
+// control is the net.Dialer.Control hook. address is "ip:port": the resolver
+// has already run, so this sees the real target of this connection.
+func (p egressPolicy) control(_, address string, _ syscall.RawConn) error {
+	if p.allowDangerous {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return &egressDeniedError{Address: address, Reason: "the dial address is not a host:port"}
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return &egressDeniedError{Address: address, Reason: "the dial address is not an IP address"}
+	}
+	if reason := deniedAddressReason(ip); reason != "" {
+		return &egressDeniedError{Address: host, Reason: reason}
+	}
+	return nil
+}
+
+// cloudMetadataAddresses are the instance-metadata endpoints that hand out
+// credentials. Most are link-local and would be refused anyway; naming them
+// explicitly keeps the reason accurate and covers the ones that are not.
+var cloudMetadataAddresses = []net.IP{
+	net.ParseIP("169.254.169.254"), // AWS, GCP, Azure, OpenStack
+	net.ParseIP("fd00:ec2::254"),   // AWS IMDS over IPv6
+	net.ParseIP("100.100.100.200"), // Alibaba Cloud
+}
+
+// deniedAddressReason names the first rule an address violates, or "" when the
+// address is an acceptable egress target.
+func deniedAddressReason(ip net.IP) string {
+	for _, metadata := range cloudMetadataAddresses {
+		if ip.Equal(metadata) {
+			return "cloud metadata address"
+		}
+	}
+	switch {
+	case ip.IsLoopback():
+		return "loopback address"
+	case ip.IsLinkLocalUnicast():
+		return "link-local unicast address"
+	case ip.IsLinkLocalMulticast():
+		return "link-local multicast address"
+	case ip.IsMulticast():
+		return "multicast address"
+	case ip.IsUnspecified():
+		return "unspecified address"
+	}
+	return ""
+}
+
+// egressDeniedError is the recognisable refusal the dialer returns. The dial
+// hook fills Address and Reason; the data plane adds Channel once it knows
+// which Provider the connection was for, so the failure can name both without
+// the transport knowing about channels.
+type egressDeniedError struct {
+	Channel string
+	Address string
+	Reason  string
+}
+
+func (e *egressDeniedError) Error() string {
+	target := e.Address
+	if target == "" {
+		target = "the provider target"
+	}
+	if e.Channel != "" {
+		return fmt.Sprintf("channel %s: egress to %s is denied by policy: %s", e.Channel, target, e.Reason)
+	}
+	return fmt.Sprintf("egress to %s is denied by policy: %s", target, e.Reason)
+}
 
 // hostAllowlist is the parsed form of PROVIDER_HTTP_ALLOWLIST: exact hostnames
 // plus address ranges. It is the one predicate for "is this target allowed to
