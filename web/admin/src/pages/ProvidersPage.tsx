@@ -40,7 +40,7 @@ export function ProvidersPage() {
     <>
       <Panel
         title="渠道管理"
-        sub="配置模型渠道的接入地址与凭据来源。此处只保存凭据环境变量名，不保存真实厂商 API 密钥。"
+        sub="配置模型渠道的接入地址与凭据来源：可以直接粘贴厂商 API Key（加密保存、只写不读），也可以改为引用环境变量。"
         actions={
           <Button variant="primary" icon={<Plus />} onClick={() => setDraft({status: 1, protocol: 'openai-chat'})}>
             新增渠道
@@ -77,9 +77,13 @@ export function ProvidersPage() {
                       </dd>
                     </div>
                     <div className="providerRow">
-                      <dt>凭据环境变量</dt>
-                      <dd className="mono" title={p.credential_env}>
-                        {p.credential_env || '—'}
+                      <dt>凭据</dt>
+                      <dd className="mono" title={p.credential_env || undefined}>
+                        {p.credential?.source_type === 'env'
+                          ? `${p.credential_env || '—'}${p.credential.configured ? '' : '（未读取到值）'}`
+                          : p.credential?.source_type === 'inline'
+                            ? `内联密钥${p.credential.last4 ? ` · 尾号 ${p.credential.last4}` : ''}`
+                            : '—'}
                       </dd>
                     </div>
                   </dl>
@@ -110,7 +114,7 @@ export function ProvidersPage() {
       {draft && (
         <Drawer
           title={draft.id ? '编辑渠道' : '新增渠道'}
-          subtitle="凭据以环境变量名称引用，网关进程启动时读取。"
+          subtitle="密钥加密保存、只写不读；也可以改为引用环境变量。"
           onClose={() => setDraft(null)}
         >
           <ProviderForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />

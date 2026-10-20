@@ -44,14 +44,14 @@ Priority bands, smooth weighted round-robin inside a band, a per-provider circui
 
 ### 🔌 Add a provider, don't touch clients
 
-One OpenAI-compatible surface for every provider. Register a channel in the console and bind it to a virtual model; callers never learn it changed.
+One OpenAI-compatible surface for every provider. Register a channel in the console — paste the vendor API key (sealed and write-only) or reference an environment variable — and bind it to a virtual model; callers never learn it changed.
 
 </td>
 <td width="50%" valign="top">
 
 ### 🛡️ Fail-closed by default
 
-An empty model allowlist denies everything, a channel credential may not point at a gateway-owned variable, and enforcement state that cannot be read refuses the request rather than admitting it.
+An empty model allowlist denies everything; an inline channel key is sealed with AES-256-GCM and never read back; an environment-variable credential may not point at a gateway-owned variable; and enforcement state that cannot be read refuses the request rather than admitting it.
 
 </td>
 </tr>
@@ -121,7 +121,9 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 Then open <http://127.0.0.1:8080/admin-ui> and create the first administrator there. **There is no built-in account or default password.**
 
-> All configuration comes from **process environment variables**; no `.env` file is read. [`.env.example`](.env.example) is a reference list of names — see [Configuration](doc/configuration.md).
+The first hop stays in the console: add a channel, paste the vendor API key into the password field, and bind a virtual model to that channel. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.
+
+> All configuration comes from **process environment variables**; no `.env` file is read. Provider API keys are the exception: paste them into the channel form and the gateway seals them in PostgreSQL. [`.env.example`](.env.example) is a reference list of names — see [Configuration](doc/configuration.md).
 
 ## Call the API
 
@@ -156,3 +158,4 @@ Runnable and manageable today: Qwen has been exercised end to end and Volcengine
 ## License
 
 MIT — see [LICENSE](LICENSE).
+  
