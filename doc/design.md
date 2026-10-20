@@ -100,7 +100,10 @@ gateway_request_log
 
 > 标注 **🧊 冻结** 的条目不在当前迭代范围内（见 README 的 Status 一节）。
 
-- **Config Revision（ADR-0011）尚未实现**：Provider / Virtual Model / Route 没有 draft / 审批 / 原子激活，管理写入保存即生效。
+- **Config Revision（ADR-0011）尚未实现**：Provider / Virtual Model / Route 没有 draft / 审批 / 原子激活，管理写入保存即生效。MS1 在模型级提供 `config_version` 乐观并发和整组线路原子保存，但这不是完整 revision 平台。
+- **MS1 alias 服务端不可变**：`PUT /admin/models/{id}` 修改 alias 返回 `alias_immutable`；需要新名称时发布新 alias。MS1 不自动迁移调用方或 Key 白名单。
+- **MS1 迁移历史是 one-way door**：数据库记录 0017 后，pre-MS1 二进制会因迁移目录缺少该版本而拒绝启动。回退需使用上一版本应用 + MS1 migration 目录，或恢复升级前备份；见 [MS1 运维说明](ms1-operations.md)。
+- **`GET /v1/models` 已改为静态可路由 ∩ Key allowlist**：受限 Key 不再看到已禁用或不存在的 alias；这是 MS1 的明确兼容性变化。
 - **keyring 轮换（ADR-0008）尚未实现**：内联 Credential 的密文带 `v1:` 版本前缀，但当前只写不读，也没有多密钥轮换或旧密文重加密。
 - **迁移全量重放存在已知张力**：`0002` 为 `gateway_model.provider_id` 建了索引，而 `0014` 删除了该列，所以把整套迁移重放到一个已处于终态的数据库会在 `0002` 处失败。bootstrap 不要求每个历史文件都重放成功，而是先用 `verifyFinalSchema` 校验最终 schema 契约、通过后才写入 `schema_migrations`；这条容忍只在最终契约校验随每次新迁移同步更新时才成立。
 - **ADR-0012 尚未实现的条款**：私有 CA / 自定义 RootCAs、Provider 客户端证书（mTLS）、请求体限额与 `413`（chat 16 MiB / 30s、管理 1 MiB / 10s）、把 `/v1` 面收敛为 `GET /v1/models` + `POST /v1/chat/completions`，以及 Kubernetes egress 第二层控制。
@@ -151,6 +154,8 @@ gateway_request_log
 - [x] 响应头改名：`X-ThinkWatch-*` → `X-Gateway-*`（退役 ThinkWatch 后不再读取旧名）
 - [x] ThinkWatch 退役：数据面只剩直连，不再需要第二个进程与状态同步
 - [x] CI 为测试任务提供 PostgreSQL / Redis service，CI 绿与本地绿覆盖一致
+- [x] MS1 模型服务管理闭环：上游渠道、候选模型、对外模型发布、整组路由保存、模型级 Key 授权、`/v1/models` 交集、脱敏运行摘要、影响预览与缓存代次
+- [x] MS1 迁移 0017 + 升级/回退演练、Vitest 前端回归与 CI 测试步骤
 
 ### 下一阶段
 

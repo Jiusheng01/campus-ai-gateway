@@ -111,6 +111,47 @@ func TestDeletingAProviderRemovesItsModelList(t *testing.T) {
 	}
 }
 
+// A candidate's links come from gateway_model_route, and removing the
+// candidate must not remove the Route that is actually serving traffic.
+func TestProviderModelLinksComeFromRoutesAndRemovalKeepsTheRoute(t *testing.T) {
+	ctx := context.Background()
+	pg := testPostgres(t)
+	clearModelsAndProviders(t, pg)
+
+	provider := mustProvider(t, pg, "candidate-links")
+	if err := pg.SeedProviderModels(ctx, provider.ID, []string{"up-linked"}, model.ProviderModelSourcePreset); err != nil {
+		t.Fatalf("SeedProviderModels: %v", err)
+	}
+	created, err := pg.CreateModel(ctx, model.ModelConfig{
+		Alias: "linked-alias", Status: 1, ProviderID: provider.ID, UpstreamModel: "up-linked",
+	})
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
+	}
+	listed, err := pg.ListProviderModels(ctx, provider.ID)
+	if err != nil {
+		t.Fatalf("ListProviderModels: %v", err)
+	}
+	candidate, ok := providerModelByName(listed, "up-linked")
+	if !ok {
+		t.Fatal("candidate missing")
+	}
+	if len(candidate.Links) != 1 || candidate.Links[0].Alias != "linked-alias" || candidate.Links[0].ModelID != created.ID {
+		t.Fatalf("links = %+v", candidate.Links)
+	}
+
+	if err := pg.DeleteProviderModel(ctx, provider.ID, candidate.ID); err != nil {
+		t.Fatalf("DeleteProviderModel: %v", err)
+	}
+	routes, err := pg.ListModelRoutes(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("ListModelRoutes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("removing a candidate deleted the serving Route: %+v", routes)
+	}
+}
+
 func hasProviderModel(list []model.ProviderModel, name string) bool {
 	_, ok := providerModelByName(list, name)
 	return ok

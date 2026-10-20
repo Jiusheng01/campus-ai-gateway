@@ -1028,6 +1028,25 @@ input:focus, select:focus, textarea:focus {
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.inlineForm { display: flex; gap: 8px; align-items: center; }
+.inlineForm > input { flex: 1; min-width: 0; }
+.routeEditor { display: flex; flex-direction: column; gap: 10px; }
+.routeEditorRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+.routeEditorRow.primary { grid-template-columns: auto repeat(2, minmax(0, 1fr)); }
+.routeEditorRow .field { min-width: 0; }
+.routeOrder { display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 900px) {
+  .routeEditorRow { grid-template-columns: 1fr 1fr; }
+}
 /* Failover tuning (priority, weight, timeout) is collapsed by default: the
    defaults are what "add a line" means, and the controls are for the operator
    who has deliberately decided this line is not ordinary. */
@@ -1068,6 +1087,7 @@ input:focus, select:focus, textarea:focus {
   font-size: 12.5px;
   line-height: 1.6;
 }
+.notice > div { flex: 1; min-width: 0; }
 .notice svg { width: 15px; height: 15px; margin-top: 1px; color: var(--info); }
 .notice.warning {
   border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
@@ -1261,6 +1281,8 @@ input:focus, select:focus, textarea:focus {
 }
 .secretBox.success > svg { color: var(--success); }
 .responseText { white-space: pre-wrap; word-break: break-word; color: var(--text) !important; }
+/* The curl sample is copied by hand; wrapping mid-token would corrupt it. */
+.curlSample { overflow-x: auto; white-space: pre; word-break: normal; }
 
 .ackRow {
   display: flex;

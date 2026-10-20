@@ -25,6 +25,7 @@ SELECT tenant_id::text,
        COALESCE(SUM(COALESCE(total_tokens,0)),0)::bigint
 FROM gateway_request_log
 WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz
+  AND tenant_id IS NOT NULL
 GROUP BY tenant_id, day
 ORDER BY tenant_id, day
 `, from, to)

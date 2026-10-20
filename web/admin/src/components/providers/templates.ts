@@ -1,7 +1,7 @@
 export type ProviderTemplate = {
   id: string
   label: string
-  values: {name: string; base_url: string; protocol: string; credential_env: string}
+  values: {name: string; base_url: string; protocol: string; credential_env: string; provider_type?: string}
   /**
    * Additional stored identifiers this template should be recognised by when
    * labelling an existing supplier. The database keeps whatever name the
@@ -20,7 +20,7 @@ export const providerTemplates: ProviderTemplate[] = [
   {
     id: 'custom',
     label: '自定义 / OpenAI Compatible',
-    values: {name: '', base_url: '', protocol: 'openai-chat', credential_env: ''},
+    values: {name: '', base_url: '', protocol: 'openai-chat', credential_env: '', provider_type: ''},
   },
   {
     id: 'qwen',
@@ -30,17 +30,18 @@ export const providerTemplates: ProviderTemplate[] = [
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       protocol: 'openai-chat',
       credential_env: 'DASHSCOPE_API_KEY',
+      provider_type: 'qwen',
     },
   },
   {
     id: 'deepseek',
     label: 'DeepSeek',
-    values: {name: 'deepseek', base_url: 'https://api.deepseek.com/v1', protocol: 'openai-chat', credential_env: 'DEEPSEEK_API_KEY'},
+    values: {name: 'deepseek', base_url: 'https://api.deepseek.com/v1', protocol: 'openai-chat', credential_env: 'DEEPSEEK_API_KEY', provider_type: 'deepseek'},
   },
   {
     id: 'openai',
     label: 'OpenAI',
-    values: {name: 'openai', base_url: 'https://api.openai.com/v1', protocol: 'openai-chat', credential_env: 'OPENAI_API_KEY'},
+    values: {name: 'openai', base_url: 'https://api.openai.com/v1', protocol: 'openai-chat', credential_env: 'OPENAI_API_KEY', provider_type: 'openai'},
   },
   {
     id: 'glm',
@@ -50,12 +51,13 @@ export const providerTemplates: ProviderTemplate[] = [
       base_url: 'https://open.bigmodel.cn/api/paas/v4',
       protocol: 'openai-chat',
       credential_env: 'ZHIPU_API_KEY',
+      provider_type: 'glm',
     },
   },
   {
     id: 'kimi',
     label: 'Moonshot / Kimi',
-    values: {name: 'kimi', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai-chat', credential_env: 'MOONSHOT_API_KEY'},
+    values: {name: 'kimi', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai-chat', credential_env: 'MOONSHOT_API_KEY', provider_type: 'kimi'},
   },
   {
     id: 'doubao',
@@ -65,6 +67,7 @@ export const providerTemplates: ProviderTemplate[] = [
       base_url: 'https://ark.cn-beijing.volces.com/api/v3',
       protocol: 'openai-chat',
       credential_env: 'ARK_API_KEY',
+      provider_type: 'doubao',
     },
     aliases: ['volcengine-ark', 'ark'],
   },

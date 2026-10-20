@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -72,12 +73,15 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
 
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 			aw := &adminAuditResponseWriter{ResponseWriter: w}
 			next.ServeHTTP(aw, r)
 			status := aw.status
 			if status == 0 {
 				status = http.StatusOK
+			}
+			if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
+				s.invalidateRouteCache()
 			}
 			if s.pg == nil {
 				return
@@ -98,6 +102,23 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// routingWriteAffectsRoutes narrows cache invalidation to writes that can
+// change the routing table. A diagnostic test is a POST under a channel path
+// but does not change routing configuration.
+func routingWriteAffectsRoutes(method, path string) bool {
+	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
+		return false
+	}
+	if strings.HasSuffix(path, "/test") {
+		return false
+	}
+	return strings.HasPrefix(path, "/admin/providers") ||
+		path == "/admin/models" ||
+		strings.HasPrefix(path, "/admin/models/") ||
+		strings.HasPrefix(path, "/admin/model-routes/") ||
+		strings.HasPrefix(path, "/admin/model-catalog")
+}
+
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/admin/status":
@@ -108,6 +129,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/impact"):
+		s.handleProviderImpact(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
+		s.handleProviderRuntimeSummary(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/test"):
+		s.handleProviderTest(w, r)
 	// A channel's model list is addressed under the channel. Keep these before
 	// the single-channel match below so /models is not read as a provider id.
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/models/refresh"):
@@ -124,8 +151,18 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleOpenCatalogModel(w, r)
 	case r.URL.Path == "/admin/model-catalog":
 		s.handleModelCatalog(w, r)
+	case r.URL.Path == "/admin/routes":
+		s.handleAllModelRoutes(w, r)
+	case r.URL.Path == "/admin/models/publish":
+		s.handlePublishModel(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/impact"):
+		s.handleModelImpact(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
+		s.handleModelRuntimeSummary(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/authorizations"):
+		s.handleModelAuthorizations(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):
 		s.handleModelRoutes(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/model-routes/"):
@@ -211,6 +248,11 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load provider stats", reqID)
 		return
 	}
+	configCounts, err := s.pg.ConfigCounts(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load configuration counts", reqID)
+		return
+	}
 
 	// data_plane is authoritative and always present: it names the one data
 	// plane this gateway runs.
@@ -221,6 +263,8 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"data_plane":     s.cfg.DataPlaneMode(),
 		"stats":          stats,
 		"provider_stats": providerStats,
+		"config_counts":  configCounts,
+		"route_cache":    s.routeCacheState(),
 	}
 	// The per-provider circuits are only meaningful for the direct plane, which
 	// is the only one that breaks them. Exposing them lets an operator see why a
@@ -235,7 +279,30 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListProviders(r.Context())
+		q := r.URL.Query()
+		filtered := q.Get("name") != "" || q.Get("provider_type") != "" || q.Get("protocol") != "" ||
+			q.Get("status") != "" || q.Get("limit") != "" || q.Get("offset") != ""
+		var (
+			items []model.Provider
+			total int
+			err   error
+		)
+		if filtered {
+			status, _ := strconv.Atoi(q.Get("status"))
+			limit, _ := strconv.Atoi(q.Get("limit"))
+			offset, _ := strconv.Atoi(q.Get("offset"))
+			items, total, err = s.pg.ListProvidersPage(r.Context(), storage.ProviderFilter{
+				Name:         q.Get("name"),
+				ProviderType: q.Get("provider_type"),
+				Protocol:     q.Get("protocol"),
+				Status:       status,
+				Limit:        limit,
+				Offset:       offset,
+			})
+		} else {
+			items, err = s.pg.ListProviders(r.Context())
+			total = len(items)
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list providers", reqID)
 			return
@@ -244,7 +311,12 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		for i := range items {
 			views[i] = s.providerView(items[i])
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": views})
+		out := map[string]any{"data": views, "total": total}
+		if filtered {
+			out["limit"] = q.Get("limit")
+			out["offset"] = q.Get("offset")
+		}
+		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in model.Provider
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -285,9 +357,12 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.deleteProvider(w, r, id, reqID)
 		return
+	case http.MethodPatch:
+		s.updateProviderStatus(w, r, id, reqID)
+		return
 	case http.MethodPut:
 	default:
-		w.Header().Set("Allow", "PUT, DELETE")
+		w.Header().Set("Allow", "PUT, PATCH, DELETE")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
@@ -308,6 +383,39 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	out, err := s.pg.UpdateProvider(r.Context(), id, in)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found or could not be updated", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.providerView(out))
+}
+
+// updateProviderStatus is the status-only write behind the bounded batch
+// enable/disable action. It deliberately accepts no other field, so a stale
+// list cannot overwrite a concurrent URL or credential edit.
+func (s *Server) updateProviderStatus(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	var in struct {
+		Status int `json:"status"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must contain only status", reqID)
+		return
+	}
+	if in.Status != 1 && in.Status != 2 {
+		httpx.Error(w, http.StatusBadRequest, "invalid_provider", "status must be 1 (enabled) or 2 (disabled)", reqID)
+		return
+	}
+	out, err := s.pg.UpdateProviderStatus(r.Context(), id, in.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Provider status could not be updated", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.providerView(out))
@@ -358,12 +466,31 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 			return
 		}
-		out, err := s.pg.CreateModel(r.Context(), in)
+		// The legacy create is a publish by binding: record the candidate if
+		// needed, then use the same transaction/validation service as publish
+		// and catalog open. It does not silently append to an existing alias.
+		candidate, _, err := s.pg.AddProviderModel(r.Context(), in.ProviderID, in.UpstreamModel)
 		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "model_create_failed", "The channel does not accept this upstream model", reqID)
+			return
+		}
+		res, err := s.pg.PublishProviderModel(r.Context(), candidate.ID, in.Alias, in.DisplayName, in.Description, false)
+		switch {
+		case errors.Is(err, storage.ErrAliasExists):
+			httpx.Error(w, http.StatusConflict, "model_create_failed", "The alias already exists with a different binding", reqID)
+			return
+		case errors.Is(err, pgx.ErrNoRows):
+			httpx.Error(w, http.StatusNotFound, "provider_not_found", "The channel was not found or is not enabled", reqID)
+			return
+		case err != nil:
 			httpx.Error(w, http.StatusConflict, "model_create_failed", "Model could not be created", reqID)
 			return
 		}
-		writeJSON(w, http.StatusCreated, out)
+		status := http.StatusCreated
+		if !res.Created {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, res.Model)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
@@ -372,31 +499,103 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", "PUT")
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
-		return
-	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/models/")
-	if id == "" {
+	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	var in model.ModelConfig
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+	switch r.Method {
+	case http.MethodGet:
+		s.getModelDetail(w, r, id, reqID)
 		return
+	case http.MethodPut:
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	var body struct {
+		Alias           string `json:"alias"`
+		DisplayName     string `json:"display_name"`
+		Description     string `json:"description"`
+		Status          int    `json:"status"`
+		ConfigVersion   int64  `json:"config_version"`
+		ExpectedVersion *int64 `json:"expected_version"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON with alias, display_name, description, status and expected_version", reqID)
+		return
+	}
+	in := model.ModelConfig{
+		Alias: body.Alias, DisplayName: body.DisplayName, Description: body.Description, Status: body.Status,
 	}
 	if err := validateModel(&in, false); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 		return
 	}
-	out, err := s.pg.UpdateModel(r.Context(), id, in)
+	expectedVersion := body.ConfigVersion
+	if body.ExpectedVersion != nil {
+		expectedVersion = *body.ExpectedVersion
+	}
+	existing, err := s.pg.ModelByID(r.Context(), id)
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found or could not be updated", reqID)
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
+	if strings.TrimSpace(in.Alias) != "" && strings.TrimSpace(in.Alias) != existing.Alias {
+		httpx.Error(w, http.StatusBadRequest, "alias_immutable",
+			"A published model alias is immutable; publish a new alias instead", reqID)
+		return
+	}
+	in.Alias = existing.Alias
+	out, err := s.pg.UpdateModelExpected(r.Context(), id, in, expectedVersion)
+	if errors.Is(err, storage.ErrConfigVersionConflict) {
+		current, _ := s.pg.ModelByID(r.Context(), id)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": map[string]any{
+				"code":            "config_version_conflict",
+				"message":         "The model changed since it was loaded; current version is " + strconv.FormatInt(current.ConfigVersion, 10),
+				"request_id":      reqID,
+				"current_version": current.ConfigVersion,
+			},
+		})
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Model could not be updated", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// getModelDetail is the aggregate read behind the model detail page: identity,
+// all routes and the current configuration version. It performs no upstream
+// call and makes no health claim.
+func (s *Server) getModelDetail(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	m, err := s.pg.ModelByID(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
+	routes, err := s.pg.ListRouteViews(r.Context(), storage.RouteViewFilter{ModelID: id, Limit: 500})
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load model routes", reqID)
+		return
+	}
+	if routes == nil {
+		routes = []model.RouteView{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model":   m,
+		"routes":  routes,
+		"version": m.ConfigVersion,
+	})
 }
 
 func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
@@ -1104,10 +1303,18 @@ func validateProviderInput(v *model.Provider, requireCredential bool, allowlist 
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
+	v.ProviderType = strings.TrimSpace(v.ProviderType)
+	v.Description = strings.TrimSpace(v.Description)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
 	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
 	if v.Name == "" {
 		return "name is required"
+	}
+	if len([]rune(v.ProviderType)) > 32 {
+		return "provider_type must be at most 32 characters"
+	}
+	if len([]rune(v.Description)) > 512 {
+		return "description must be at most 512 characters"
 	}
 	if v.BaseURL == "" {
 		return "base_url is required"
@@ -1237,10 +1444,21 @@ func credentialLast4(value string) string {
 // keeps the API from accepting a field it would silently ignore.
 func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	v.Alias = strings.TrimSpace(v.Alias)
+	v.DisplayName = strings.TrimSpace(v.DisplayName)
+	v.Description = strings.TrimSpace(v.Description)
 	v.ProviderID = strings.TrimSpace(v.ProviderID)
 	v.UpstreamModel = strings.TrimSpace(v.UpstreamModel)
 	if v.Alias == "" {
 		return "alias is required"
+	}
+	if len([]rune(v.Alias)) > 128 {
+		return "alias must be at most 128 characters"
+	}
+	if len([]rune(v.DisplayName)) > 128 {
+		return "display_name must be at most 128 characters"
+	}
+	if len([]rune(v.Description)) > 1024 {
+		return "description must be at most 1024 characters"
 	}
 	if requireBinding {
 		if v.ProviderID == "" || v.UpstreamModel == "" {

@@ -23,6 +23,19 @@ func TestRouteSelectorSpreadsPicksByWeight(t *testing.T) {
 	}
 }
 
+// Equal weights must split the starting picks evenly over a window; 20 picks at
+// 50:50 is an exact algorithm check, not a statistical estimate.
+func TestRouteSelectorSplitsEqualWeightsEvenly(t *testing.T) {
+	s := newRouteSelector()
+	counts := []int{0, 0}
+	for i := 0; i < 20; i++ {
+		counts[s.start("m\x001", []int{50, 50})]++
+	}
+	if counts[0] != 10 || counts[1] != 10 {
+		t.Fatalf("50:50 picks = %v, want 10/10", counts)
+	}
+}
+
 // A zero (or negative) weight is neutral, not "never": a line with weight 0 is
 // indistinguishable from a misconfigured one, so it becomes 1 and still gets a
 // turn.

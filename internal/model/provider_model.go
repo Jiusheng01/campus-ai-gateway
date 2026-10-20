@@ -19,6 +19,19 @@ type ProviderModel struct {
 	Status        int       `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	// Links is the management read projection of the Routes bound to this
+	// (provider, upstream) pair. It is derived from gateway_model_route and is
+	// not a second binding source. A candidate may be linked under more than one
+	// external alias.
+	Links []ProviderModelLink `json:"links,omitempty"`
+}
+
+type ProviderModelLink struct {
+	RouteID     string `json:"route_id"`
+	ModelID     string `json:"model_id"`
+	Alias       string `json:"alias"`
+	RouteStatus int    `json:"route_status"`
 }
 
 // The three sources a Provider Model can have.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -36,6 +37,69 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		items = []model.CatalogModel{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+// handlePublishModel serves POST /admin/models/publish: a candidate becomes an
+// external alias with its first route, atomically and idempotently.
+func (s *Server) handlePublishModel(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	var in struct {
+		ProviderModelID string `json:"provider_model_id"`
+		Alias           string `json:"alias"`
+		DisplayName     string `json:"display_name"`
+		Description     string `json:"description"`
+		AppendToExisting bool  `json:"append_to_existing"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON with only provider_model_id, alias, display_name, description and append_to_existing", reqID)
+		return
+	}
+	in.ProviderModelID = strings.TrimSpace(in.ProviderModelID)
+	in.Alias = strings.TrimSpace(in.Alias)
+	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	in.Description = strings.TrimSpace(in.Description)
+	if in.ProviderModelID == "" {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "provider_model_id is required", reqID)
+		return
+	}
+	if _, err := uuid.Parse(in.ProviderModelID); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "provider_model_id must be a valid UUID", reqID)
+		return
+	}
+	if in.Alias == "" {
+		httpx.Error(w, http.StatusBadRequest, "invalid_model", "alias is required", reqID)
+		return
+	}
+	if len([]rune(in.Alias)) > 128 || len([]rune(in.DisplayName)) > 128 || len([]rune(in.Description)) > 1024 {
+		httpx.Error(w, http.StatusBadRequest, "invalid_model", "alias/display_name must be at most 128 characters and description at most 1024", reqID)
+		return
+	}
+
+	out, err := s.pg.PublishProviderModel(r.Context(), in.ProviderModelID, in.Alias, in.DisplayName, in.Description, in.AppendToExisting)
+	switch {
+	case errors.Is(err, storage.ErrAliasExists):
+		httpx.Error(w, http.StatusConflict, "alias_exists",
+			"The alias already exists with a different binding; confirm appending it as a backup line", reqID)
+		return
+	case errors.Is(err, pgx.ErrNoRows):
+		httpx.Error(w, http.StatusNotFound, "provider_model_not_found", "Provider model was not found or is not enabled", reqID)
+		return
+	case err != nil:
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to publish the model", reqID)
+		return
+	}
+	status := http.StatusOK
+	if out.Created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, out)
 }
 
 // handleOpenCatalogModel serves POST /admin/model-catalog/open.

@@ -38,11 +38,29 @@ type CredentialSummary struct {
 	Last4      string `json:"last4"`
 }
 
+// ProviderTestResult is the compact, non-content summary of the last channel
+// diagnostic test. It is management metadata only: no prompt, answer, key or
+// upstream body is stored here.
+type ProviderTestResult struct {
+	At            time.Time `json:"at"`
+	OK            bool      `json:"ok"`
+	StatusCode    int       `json:"status_code"`
+	LatencyMS     int64     `json:"latency_ms"`
+	UpstreamModel string    `json:"upstream_model"`
+	ErrorKind     string    `json:"error_kind,omitempty"`
+}
+
 type Provider struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`
 	Protocol string `json:"protocol"`
+	// ProviderType is a console template category (for example "qwen" or
+	// "deepseek"). It is not the Vendor identity and not a runtime protocol: one
+	// Vendor may be represented by several Providers, and the data plane never
+	// reads this field.
+	ProviderType string `json:"provider_type"`
+	Description  string `json:"description"`
 	// CredentialEnv is the environment-variable name for an env-sourced
 	// Credential. It is a NAME, not a secret, so it is returned to the console;
 	// it is empty for an inline Credential. It remains the write field for the
@@ -58,6 +76,16 @@ type Provider struct {
 	Status     int                `json:"status"`
 	CreatedAt  time.Time          `json:"created_at"`
 	UpdatedAt  time.Time          `json:"updated_at"`
+
+	// LastTest is the compact result of the last channel diagnostic test, when
+	// one has run. It never carries answer content.
+	LastTest *ProviderTestResult `json:"last_test"`
+
+	// List-only management counts. They are computed by the database and are
+	// not part of the Provider's stored identity.
+	CandidateModelCount  int `json:"candidate_model_count"`
+	ReferencedRouteCount int `json:"referenced_route_count"`
+	ReferencedModelCount int `json:"referenced_model_count"`
 
 	// The resolution data the data plane needs. These fields are deliberately
 	// never serialized: Ciphertext is the sealed secret, and SecretRef is carried
@@ -91,11 +119,25 @@ type ProviderDeleteResult struct {
 // second source of truth. ProviderName is never written by a client and is
 // cleared on every acknowledgement.
 type ModelConfig struct {
-	ID        string    `json:"id"`
-	Alias     string    `json:"alias"`
-	Status    int       `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Alias       string `json:"alias"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Status      int    `json:"status"`
+	// ConfigVersion is the aggregate concurrency token for this model's
+	// configuration. It starts at 1 and is advanced by every write that changes
+	// the model or its route set.
+	ConfigVersion int64     `json:"config_version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+
+	// Management read projections. They are derived from the route set and
+	// provider/credential state, never stored on the model.
+	RouteCount           int    `json:"route_count"`
+	EnabledRouteCount    int    `json:"enabled_route_count"`
+	StaticallyRoutable   bool   `json:"statically_routable"`
+	CredentialConfigured bool   `json:"credential_configured"`
+	RoutingModeSummary   string `json:"routing_mode_summary"`
 
 	ProviderID    string `json:"provider_id,omitempty"`
 	ProviderName  string `json:"provider_name,omitempty"`
@@ -115,6 +157,17 @@ type ModelRoute struct {
 	Status        int       `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// RouteView is a management-plane route projection that adds the model and
+// provider context the aggregate route page needs. It is not a second routing
+// authority: every field is derived from gateway_model_route and its joins.
+type RouteView struct {
+	ModelRoute
+	ModelDisplayName      string `json:"model_display_name"`
+	ConfigVersion        int64  `json:"config_version"`
+	ProviderStatus       int    `json:"provider_status"`
+	CredentialConfigured bool   `json:"credential_configured"`
 }
 
 type Tenant struct {
@@ -179,6 +232,106 @@ type APIKeyCreateResult struct {
 	APIKey string `json:"api_key"`
 }
 
+// ModelAuthorization is one Key's relationship to a model alias. Wildcard keys
+// are reported separately so the console never treats removing one name from
+// "*" as a valid restriction.
+type ModelAuthorization struct {
+	APIKeyID   string     `json:"api_key_id"`
+	Name       string     `json:"name"`
+	TenantID   string     `json:"tenant_id"`
+	TenantName string     `json:"tenant_name"`
+	Status     int        `json:"status"`
+	Wildcard   bool       `json:"wildcard"`
+	Allowed    bool       `json:"allowed"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+type AuthorizationResult struct {
+	APIKeyID string `json:"api_key_id"`
+	Outcome  string `json:"outcome"`
+}
+
+// RuntimeSummaryTotals is the redacted aggregate for one model or channel.
+// SuccessRate and P95LatencyMS are computed over the same filter; no tenant,
+// key or client-IP dimension is exposed here.
+type RuntimeSummaryTotals struct {
+	Requests     int64   `json:"requests"`
+	Errors       int64   `json:"errors"`
+	SuccessRate  float64 `json:"success_rate"`
+	P95LatencyMS float64 `json:"p95_latency_ms"`
+	Failover     int64   `json:"failover"`
+	Tokens       int64   `json:"tokens"`
+}
+
+// RuntimeRequest is a redacted recent request row. It deliberately has no
+// tenant id, API key id or client IP.
+type RuntimeRequest struct {
+	RequestID      string    `json:"request_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	RequestedModel string    `json:"requested_model"`
+	ActualModel    string    `json:"actual_model"`
+	Provider       string    `json:"provider"`
+	UpstreamModel  string    `json:"upstream_model"`
+	RoutePriority  int       `json:"route_priority"`
+	StatusCode     int       `json:"status_code"`
+	ErrorCode      string    `json:"error_code"`
+	Attempts       int       `json:"attempts"`
+	Failover       bool      `json:"failover"`
+	InputTokens    int64     `json:"input_tokens"`
+	OutputTokens   int64     `json:"output_tokens"`
+	TotalTokens    int64     `json:"total_tokens"`
+	LatencyMS      int64     `json:"latency_ms"`
+}
+
+type RuntimeAttemptOutcomes struct {
+	Served int64 `json:"served"`
+	Failed int64 `json:"failed"`
+	Skipped int64 `json:"skipped"`
+}
+
+type ModelRuntimeSummary struct {
+	Alias  string               `json:"alias"`
+	From   time.Time            `json:"from"`
+	To     time.Time            `json:"to"`
+	Totals RuntimeSummaryTotals `json:"totals"`
+	Recent []RuntimeRequest     `json:"recent"`
+}
+
+type ProviderRuntimeSummary struct {
+	Provider string                  `json:"provider"`
+	From     time.Time               `json:"from"`
+	To       time.Time               `json:"to"`
+	Totals   RuntimeSummaryTotals    `json:"totals"`
+	Attempts RuntimeAttemptOutcomes  `json:"attempts"`
+	Recent   []RuntimeRequest        `json:"recent"`
+}
+
+// ProviderImpact is a server-computed preview of a channel delete. It is not
+// the final authority: DELETE rechecks and returns what actually happened.
+type ProviderImpactModel struct {
+	ModelID          string `json:"model_id"`
+	Alias            string `json:"alias"`
+	RoutesToProvider int    `json:"routes_to_provider"`
+	RemainingRoutes  int    `json:"remaining_routes"`
+	Orphaned         bool   `json:"orphaned"`
+}
+
+type ProviderImpact struct {
+	Routes            int                   `json:"routes"`
+	ProviderModels    int                   `json:"provider_models"`
+	OrphanedModels    int                   `json:"orphaned_models"`
+	AffectedModels    []ProviderImpactModel `json:"affected_models"`
+}
+
+// ModelImpact is the disable preview: it never rewrites Keys.
+type ModelImpact struct {
+	Alias            string `json:"alias"`
+	EnabledRoutes    int    `json:"enabled_routes"`
+	EnabledProviders int    `json:"enabled_providers"`
+	ExplicitKeys     int    `json:"explicit_keys"`
+	WildcardKeys     int    `json:"wildcard_keys"`
+}
+
 // RequestAttempt is one Routing Attempt under a Request Record.
 //
 // It exists because the Request Record keeps only the winning channel and a
@@ -236,6 +389,13 @@ type DashboardStats struct {
 	AvgLatencyMS  float64 `json:"avg_latency_ms"`
 	P95LatencyMS  float64 `json:"p95_latency_ms"`
 	FailoverCount int64   `json:"failover_count"`
+}
+
+type DashboardConfigCounts struct {
+	Models           int64 `json:"models"`
+	EnabledModels    int64 `json:"enabled_models"`
+	Providers        int64 `json:"providers"`
+	EnabledProviders int64 `json:"enabled_providers"`
 }
 
 type ProviderStats struct {

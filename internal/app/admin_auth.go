@@ -173,6 +173,13 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		return true
 	}
 
+	// Model-scoped authorization is a super_admin capability. It sits under
+	// /admin/models, which gateway_admin may otherwise reach, so it must be
+	// excluded before that branch rather than relying on the UI to hide it.
+	if strings.HasSuffix(path, "/authorizations") {
+		return false
+	}
+
 	if p.Roles[RoleAuditor] && method == http.MethodGet {
 		switch {
 		case path == "/admin/status",
@@ -208,6 +215,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			strings.HasPrefix(path, "/admin/models"),
 			strings.HasPrefix(path, "/admin/model-catalog"),
 			strings.HasPrefix(path, "/admin/model-routes"),
+			path == "/admin/routes",
 			path == "/admin/model-test",
 			path == "/admin/model-test-options",
 			path == "/admin/status",

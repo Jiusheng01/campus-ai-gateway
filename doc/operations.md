@@ -106,6 +106,8 @@ go run ./cmd/migrate -database-url "postgres://campus:campus@127.0.0.1:5432/camp
   建立记录；并发执行由 advisory lock 串行化。
 - 迁移失败时命令非零退出，Compose 栈中的网关不会启动。
 
+MS1 的 0017 迁移、升级步骤、应用/数据库回退实操和管理员闭环见 [MS1 模型服务管理上线、迁移与回退](ms1-operations.md)。0017 记录后 pre-MS1 二进制不能直接启动，回退必须按该页的方案 A/B 执行，`git revert` 不是完整回退。
+
 ---
 
 ## Admin UI 构建

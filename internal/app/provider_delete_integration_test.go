@@ -146,8 +146,8 @@ func TestDeleteProviderEndpointRejectsOtherMethods(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d, want 405", rec.Code)
 	}
-	if allow := rec.Header().Get("Allow"); allow != "PUT, DELETE" {
-		t.Fatalf("Allow = %q, want \"PUT, DELETE\"", allow)
+	if allow := rec.Header().Get("Allow"); allow != "PUT, PATCH, DELETE" {
+		t.Fatalf("Allow = %q, want \"PUT, PATCH, DELETE\"", allow)
 	}
 }
 

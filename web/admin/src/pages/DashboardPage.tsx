@@ -20,7 +20,7 @@ import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {useResource} from '../lib/useResource'
-import {ago, fmt, ms, num, ratio} from '../lib/format'
+import {ago, fmt, ms, num, ratio, when} from '../lib/format'
 
 /**
  * The overview answers "is it working right now", and nothing else.
@@ -43,9 +43,11 @@ export function DashboardPage({roles}: {roles: string[]}) {
   // not that endpoint, so the request is skipped rather than allowed to 403 and
   // paint an error box onto an otherwise healthy overview.
   const canReadLogs = roles.includes('super_admin') || roles.includes('auditor')
+  // The endpoint answers `data: null` when there are no rows yet (a fresh
+  // deployment). Normalising here keeps the empty state from becoming a crash.
   const recent = useResource(() =>
     canReadLogs
-      ? api<{data: RequestLog[]}>('/admin/request-logs?limit=6')
+      ? api<{data: RequestLog[] | null}>('/admin/request-logs?limit=6').then(d => ({data: d.data || []}))
       : Promise.resolve({data: [] as RequestLog[]}),
   )
 
@@ -113,6 +115,14 @@ export function DashboardPage({roles}: {roles: string[]}) {
             )}
           </section>
 
+          <Panel title="配置概况" sub="对外模型与上游渠道的配置数量；与实时健康无关。">
+            <p className="hint">
+              对外模型 {data?.config_counts?.models ?? '未知'} 个（启用 {data?.config_counts?.enabled_models ?? '未知'}）；
+              上游渠道 {data?.config_counts?.providers ?? '未知'} 个（启用 {data?.config_counts?.enabled_providers ?? '未知'}）。
+            </p>
+            <p className="hint">统计窗口：今日（数据库会话时区）· 分母与来源：gateway_request_log。</p>
+          </Panel>
+
           <Panel
             title="基础设施状态"
             sub="Gateway、存储与数据面的实时可达性。"
@@ -145,6 +155,19 @@ export function DashboardPage({roles}: {roles: string[]}) {
             </div>
           </Panel>
 
+          <Panel title="路由配置快照" sub="当前进程使用的路由表快照。保存后本实例立即失效；其他实例按 5 秒 TTL 收敛。">
+            {data?.route_cache ? (
+              <p className="hint">
+                生成时间：{data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'} · 代次 {data.route_cache.generation}
+                {data.route_cache.stale
+                  ? ` · 最近重建失败（${data.route_cache.last_error_kind || 'unknown'}），当前继续使用旧快照；这不代表配置已全局生效。`
+                  : ' · 未检测到重建失败。'}
+              </p>
+            ) : (
+              <p className="hint">该实例未返回路由快照状态；不要把它读作“已全局生效”。</p>
+            )}
+          </Panel>
+
           {canReadLogs && (
             <Panel
               title="最近请求"
@@ -157,7 +180,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
             >
               {recent.loading && !recent.data ? (
                 <SkeletonRows rows={4} columns={5} />
-              ) : recent.data?.data.length ? (
+              ) : recent.data?.data?.length ? (
                 <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={620}>
                   {recent.data.data.map(r => (
                     <tr key={r.request_id}>

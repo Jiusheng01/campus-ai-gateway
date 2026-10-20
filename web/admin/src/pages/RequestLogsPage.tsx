@@ -102,12 +102,16 @@ function Filter({label, children}: {label: string; children: React.ReactNode}) {
   )
 }
 
-export function RequestLogsPage() {
+function seededFilters(seed?: Partial<Filters>): Filters {
+  return {...emptyFilters, ...(seed || {})}
+}
+
+export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filters>}) {
   const toast = useToast()
-  const [filters, setFilters] = useState<Filters>(emptyFilters)
+  const [filters, setFilters] = useState<Filters>(() => seededFilters(initialFilters))
   // `applied` is what the request actually used, so typing in a filter box does
   // not refetch on every keystroke.
-  const [applied, setApplied] = useState<Filters>(emptyFilters)
+  const [applied, setApplied] = useState<Filters>(() => seededFilters(initialFilters))
   const [offset, setOffset] = useState(0)
   const [detail, setDetail] = useState<RequestLog | null>(null)
 

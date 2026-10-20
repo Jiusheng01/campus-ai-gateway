@@ -47,10 +47,15 @@ type Server struct {
 	// reaches business traffic within seconds without putting three queries on
 	// the hot path and without every write handler having to remember to
 	// invalidate anything.
-	routeMu    sync.Mutex
-	routeCache routeTable
-	routeAt    time.Time
-	transport  *transportPool
+	routeMu       sync.Mutex
+	routeCache    routeTable
+	routeAt       time.Time
+	routeGen      uint64
+	routeBuildErr string
+	// routeBuildFn is a test seam for overlapping a slow rebuild with a write.
+	// Production leaves it nil and buildRouteTable is used.
+	routeBuildFn func(context.Context) (routeTable, error)
+	transport    *transportPool
 
 	// selector advances the smooth-weighted-round-robin rotation that picks
 	// which line of a priority band starts a request. In-memory scheduling
@@ -76,6 +81,10 @@ type Server struct {
 	// switch on purpose: the only way to relax it is the test helper's direct
 	// injection, so production cannot be talked out of it by configuration.
 	egress egressPolicy
+
+	// providerTests bounds channel diagnostics per actor per process. It is
+	// management state, not shared runtime state.
+	providerTests *providerTestLimiter
 }
 
 type requestEnvelope struct {
@@ -165,6 +174,7 @@ func NewServer(cfg Config) (*Server, error) {
 		mux:           http.NewServeMux(),
 		httpAllowlist: httpAllowlist,
 		egress:        strictEgressPolicy(),
+		providerTests: newProviderTestLimiter(),
 	}
 	s.upstream = http.HandlerFunc(s.serveDirect)
 	log.Printf("data plane: direct — channels are dialled in-process")
@@ -552,17 +562,17 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(aw, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
 			return
 		}
-		if !id.AllModels {
-			// The key is restricted — possibly to nothing at all. Falling
-			// through to the routing table would advertise models this key
-			// cannot call, which is the same mistake as answering 200 for a
-			// request that will be refused a line later.
-			writeAllowedModels(aw, id.AllowedModels)
+		// The answer is always the statically routable set, intersected with the
+		// key's allow-list. A restricted key must not advertise a disabled or
+		// nonexistent alias, and a wildcard key must not advertise a model with
+		// no enabled line.
+		table, err := s.routeTableForModels(r.Context())
+		if err != nil {
+			httpx.Error(aw, http.StatusServiceUnavailable, "routing_unavailable",
+				"The routing configuration could not be verified", reqID)
 			return
 		}
-		// The set of models that can be routed right now, which is exactly the
-		// routing table the data plane will consult.
-		s.serveDirectModels(aw, r)
+		writeModelsFromTable(aw, table, id.AllowedModels, id.AllModels)
 		return
 	}
 
@@ -831,27 +841,32 @@ func parseErrorCode(body []byte) string {
 	return ""
 }
 
-func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
-	models := make([]string, 0, len(allowed))
-	for name := range allowed {
-		models = append(models, name)
+// writeModelsFromTable is the one definition of GET /v1/models: the statically
+// routable set from the routing table, intersected with a restricted key's
+// allow-list. It never probes upstream health.
+func writeModelsFromTable(w http.ResponseWriter, table routeTable, allowed map[string]struct{}, allModels bool) {
+	names := make([]string, 0, len(table.models))
+	for alias := range table.models {
+		if allModels {
+			names = append(names, alias)
+			continue
+		}
+		if _, ok := allowed[alias]; ok {
+			names = append(names, alias)
+		}
 	}
-	sort.Strings(models)
-
-	data := make([]map[string]any, 0, len(models))
-	for _, name := range models {
+	sort.Strings(names)
+	data := make([]map[string]any, 0, len(names))
+	for _, name := range names {
 		data = append(data, map[string]any{
 			"id":       name,
 			"object":   "model",
 			"owned_by": "campus-ai-gateway",
 		})
 	}
-
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"object": "list",
-		"data":   data,
-	})
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }
 
 func (s *Server) recordSecurityEvent(r *http.Request, event model.SecurityEvent) {
