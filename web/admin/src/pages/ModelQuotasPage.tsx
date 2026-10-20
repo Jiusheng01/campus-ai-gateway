@@ -62,6 +62,15 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
   const quotas = data?.quotas || []
   const tenants = data?.tenants || []
 
+  // A scoped administrator may only write strict descendants. The campus pool
+  // is global, and their own tenant's rows are the ceilings their parent set,
+  // so neither is offered here rather than producing a 403.
+  const writableTenants = scopeTenantID ? tenants.filter(t => t.id !== scopeTenantID) : tenants
+  const writable = (q: ModelQuota) => (q.tenant_id ? q.tenant_id !== scopeTenantID : !scopeTenantID)
+  const defaultSubject = scopeTenantID ? writableTenants[0]?.id ?? '' : ''
+  const canCreate = !scopeTenantID || writableTenants.length > 0
+  const noDescendantHint = '你只能为下级租户配置模型额度；当前没有下级租户'
+
   const save = async (d: Draft) => {
     if (!d.model_alias.trim()) {
       toast.error('请填写模型别名')
@@ -118,12 +127,18 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
     <>
       <Panel
         title="模型额度"
-        sub="按「主体 + 模型」设定 Token 上限。主体为全校共享池或某个租户；删除一行即恢复继承。"
+        sub={
+          scopeTenantID
+            ? '按「主体 + 模型」设定 Token 上限。你只能为下级租户配置；删除一行即恢复继承。'
+            : '按「主体 + 模型」设定 Token 上限。主体为全校共享池或某个租户；删除一行即恢复继承。'
+        }
         actions={
           <Button
             variant="primary"
             icon={<Plus />}
-            onClick={() => setDraft(emptyDraft(scopeTenantID ?? ''))}
+            onClick={() => setDraft(emptyDraft(defaultSubject))}
+            disabled={!canCreate}
+            title={canCreate ? undefined : noDescendantHint}
           >
             新增额度
           </Button>
@@ -144,7 +159,7 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                 <td className="mono">{q.model_alias}</td>
                 <td className={`numeric ${limitClass(q.daily_token_limit)}`}>{limitText(q.daily_token_limit)}</td>
                 <td className={`numeric ${limitClass(q.monthly_token_limit)}`}>{limitText(q.monthly_token_limit)}</td>
-                <td className="rowActions">
+                <td className="rowActions" title={writable(q) ? undefined : noDescendantHint}>
                   <button
                     className="link"
                     onClick={() =>
@@ -156,15 +171,17 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                         editing: true,
                       })
                     }
-                    // The pool row is only writable by a global administrator.
-                    disabled={!q.tenant_id ? !canWritePool : false}
+                    // The pool row and the scoped administrator's own tenant
+                    // are read-only here: their values are the ceilings set
+                    // above them, not something they may raise.
+                    disabled={!writable(q)}
                   >
                     编辑
                   </button>
                   <button
                     className="link danger"
                     onClick={() => void remove(q)}
-                    disabled={!q.tenant_id ? !canWritePool : false}
+                    disabled={!writable(q)}
                     aria-label="删除"
                   >
                     <Trash2 size={14} />
@@ -177,9 +194,19 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
           <EmptyState
             icon={<Gauge />}
             title="暂无模型额度"
-            description="没有配置时，所有租户对任意模型都不设单独上限，只受租户配额约束。"
+            description={
+              scopeTenantID
+                ? '你的下级租户还没有单独的模型上限；不配置时它们只受租户配额与上级模型额度约束。'
+                : '没有配置时，所有租户对任意模型都不设单独上限，只受租户配额约束。'
+            }
             action={
-              <Button variant="primary" icon={<Plus />} onClick={() => setDraft(emptyDraft(scopeTenantID ?? ''))}>
+              <Button
+                variant="primary"
+                icon={<Plus />}
+                onClick={() => setDraft(emptyDraft(defaultSubject))}
+                disabled={!canCreate}
+                title={canCreate ? undefined : noDescendantHint}
+              >
                 新增额度
               </Button>
             }
@@ -190,7 +217,7 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
       {draft && (
         <Drawer
           title="模型额度"
-          subtitle="同一「主体 + 模型」只保留一行；再次保存即覆盖。留空表示继承，0 表示不限。"
+          subtitle="同一「主体 + 模型」只保留一行；再次保存即覆盖。留空表示本级不设上限（上级上限仍生效），0 表示本级不限。"
           onClose={() => setDraft(null)}
         >
           <form
@@ -205,7 +232,9 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
               hint={
                 draft.editing
                   ? '主体不可修改：写入按「主体 + 模型」定位，改了主体只会新增一行。要换主体请删除后重建。'
-                  : '全校共享池是每个租户用量都会计入的那一层。'
+                  : scopeTenantID
+                    ? '你只能为下级租户配置；全校共享池与你自己的租户由上级设置。'
+                    : '全校共享池是每个租户用量都会计入的那一层。'
               }
             >
               <select
@@ -217,7 +246,7 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                     scoped one is not offered it rather than shown an option
                     that can only produce a 403. */}
                 {canWritePool && <option value="">全校（共享池）</option>}
-                {tenants.map(t => (
+                {writableTenants.map(t => (
                   <option key={t.id} value={t.id}>
                     {'　'.repeat(Math.max(0, t.depth || 0))}
                     {t.name}

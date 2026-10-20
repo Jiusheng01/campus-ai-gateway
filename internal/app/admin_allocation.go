@@ -34,10 +34,11 @@ const maxModelAliasLength = 128
 
 // validateTenantAllocation checks a budget replacement.
 //
-// Three states, and the validator must not collapse any of them: nil inherits
-// from the nearest ancestor, 0 means explicitly unlimited, a positive value is
-// the cap. Only negative numbers are wrong, and the message names the field so
-// an operator with seven numbers in front of them knows which one.
+// Three states, and the validator must not collapse any of them: nil adds no cap
+// at this level (caps above it still apply), 0 means explicitly unlimited, a
+// positive value is the cap. Only negative numbers are wrong, and the message
+// names the field so an operator with seven numbers in front of them knows which
+// one.
 func validateTenantAllocation(a *model.TenantAllocation) string {
 	for _, limit := range []struct {
 		field string
@@ -249,26 +250,30 @@ func (s *Server) deleteModelQuota(w http.ResponseWriter, r *http.Request, reqID 
 }
 
 // modelQuotaSubjectReachable reports whether a model-quota subject can belong to
-// the caller's scope at all.
+// the caller's writable scope at all.
 //
-// A nil tenant is the campus-wide pool, which belongs to no subtree, so a
-// scoped administrator can never reach it. The subtree test itself needs the
-// database and happens after this; what this pins down is that "no tenant" is
-// not a subject a scope can own.
+// A nil tenant is the campus-wide pool, which belongs to no subtree, so only a
+// global administrator may write it. The scope tenant itself is excluded too:
+// its row is a ceiling someone above set, and replacing or deleting that row
+// would raise the effective value back to whatever it inherits. Strict
+// descendants are writable, which is what delegating a department's model
+// budgets means.
+//
+// The database-backed subtree test happens after this; what this pins down are
+// the two subjects an id comparison can already reject.
 func modelQuotaSubjectReachable(scope string, tenantID *string) bool {
 	if scope == "" {
 		return true
 	}
-	return tenantID != nil
+	return tenantID != nil && *tenantID != scope
 }
 
 // modelQuotaWritable enforces the scope on a model-quota write.
 //
-// The campus pool (a nil tenant) belongs to nobody's subtree, so only a global
-// administrator may change it. A scoped administrator may write any tenant in
-// their subtree, including their own: unlike a budget, a model cap can only
-// ever lower what that subject may spend, never raise it — the ancestors' rows
-// and their inclusive counters still apply.
+// The campus pool belongs to nobody's subtree, and an administrator's own
+// tenant holds the ceiling granted by their parent. Both are out of reach; every
+// other row must still pass the subtree check, which is the same test the
+// tenant list and the allocation endpoint use.
 func (s *Server) modelQuotaWritable(w http.ResponseWriter, r *http.Request, tenantID *string, reqID string) bool {
 	scope := adminScopeTenantID(r)
 	if !modelQuotaSubjectReachable(scope, tenantID) {
@@ -278,5 +283,5 @@ func (s *Server) modelQuotaWritable(w http.ResponseWriter, r *http.Request, tena
 	if scope == "" {
 		return true
 	}
-	return s.requireTenantInScope(w, r, *tenantID, reqID)
+	return s.requireTenantWritable(w, r, *tenantID, reqID)
 }

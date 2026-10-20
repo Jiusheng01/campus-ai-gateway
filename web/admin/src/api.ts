@@ -5,8 +5,8 @@ export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id
  * A tenant, as the admin API returns it.
  *
  * Every limit is nullable, and the three states mean different things:
- *   null  — inherit from the nearest ancestor
- *   0     — explicitly unlimited
+ *   null  — this level adds no cap; caps above it still apply
+ *   0     — explicitly unlimited at this level
  *   >0    — this tenant's own cap
  *
  * A plain number would collapse the first two, which is exactly the distinction
@@ -203,6 +203,8 @@ export type AccountUser={
   username:string
   display_name:string
   roles:string[]
+  /** Subtree a tenant_admin is confined to; null for every other account. */
+  scope_tenant_id?:string|null
   status:number
   last_login_at:string|null
   created_at:string
@@ -434,6 +436,8 @@ export type UserPatch={
   display_name?:string
   roles?:string[]
   status?:number
+  /** Required when roles includes tenant_admin; omitted leaves it unchanged. */
+  scope_tenant_id?:string|null
 }
 
 /**
@@ -447,6 +451,7 @@ export type AccountChangeSet={
   roles:boolean
   status:boolean
   display_name:boolean
+  scope?:boolean
   authentication:boolean
 }
 

@@ -169,4 +169,32 @@ func TestValidateModelQuotaRejectsNegativeCaps(t *testing.T) {
 	}
 }
 
+// A scoped administrator may write only strict descendants. The campus pool is
+// global, and the scope tenant's own row is the ceiling their parent set;
+// letting them replace or delete it would raise their own limit back to the
+// inherited value.
+func TestModelQuotaSubjectReachableExcludesThePoolAndTheScopeTenant(t *testing.T) {
+	scope := "11111111-1111-1111-1111-111111111111"
+	other := "22222222-2222-2222-2222-222222222222"
+	cases := []struct {
+		name   string
+		scope  string
+		tenant *string
+		want   bool
+	}{
+		{"global reaches the pool", "", nil, true},
+		{"global reaches a tenant", "", &other, true},
+		{"scoped cannot reach the pool", scope, nil, false},
+		{"scoped cannot reach its own tenant", scope, &scope, false},
+		{"scoped can reach a descendant candidate", scope, &other, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := modelQuotaSubjectReachable(tc.scope, tc.tenant); got != tc.want {
+				t.Fatalf("reachable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func strptr(v string) *string { return &v }

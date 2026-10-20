@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {Pencil, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
-import {listUsers, updateUser, type AccountChangeSet, type AccountUser, type UserPatch} from '../api'
+import {api, listUsers, updateUser, type AccountChangeSet, type AccountUser, type Tenant, type UserPatch} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge } from '../components/ui/Badge'
@@ -27,13 +27,17 @@ export function UsersPage() {
   const toast = useToast()
   const confirm = useConfirm()
   const {data, loading, error, reload} = useResource(async () => {
-    const out = await listUsers()
-    return out
+    const [users, tenants] = await Promise.all([
+      listUsers(),
+      api<{data: Tenant[]}>('/admin/tenants'),
+    ])
+    return {users, tenants: tenants.data || []}
   })
   const [editing, setEditing] = useState<AccountUser | null>(null)
 
-  const users = data?.data || []
-  const stats = data?.stats
+  const users = data?.users.data || []
+  const stats = data?.users.stats
+  const tenants = data?.tenants || []
 
   return (
     <>
@@ -72,6 +76,9 @@ export function UsersPage() {
                   ) : (
                     <Badge>{roleLabel('member')}</Badge>
                   )}
+                  {u.scope_tenant_id && (
+                    <div className="fieldHint">范围：{tenantName(tenants, u.scope_tenant_id)}</div>
+                  )}
                 </td>
                 <td>
                   <span className={`badge status ${u.status === 1 ? 'success' : 'neutral'}`}>
@@ -98,6 +105,7 @@ export function UsersPage() {
       {editing && (
         <UserDrawer
           user={editing}
+          tenants={tenants}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
@@ -114,6 +122,11 @@ export function UsersPage() {
 // not one of them: it is what an account is when it holds nothing else.
 function managementRolesOf(user: AccountUser): string[] {
   return (user.roles || []).filter(r => r !== 'member' && ASSIGNABLE_ROLES.includes(r))
+}
+
+/** tenantName resolves a stored scope id to the name an operator recognises. */
+function tenantName(tenants: Tenant[], id: string): string {
+  return tenants.find(t => t.id === id)?.name || id
 }
 
 /**
@@ -153,11 +166,13 @@ function Stat({label, value, icon, tone}: {label: string; value: number; icon: R
  */
 function UserDrawer({
   user,
+  tenants,
   onClose,
   onSaved,
   onDenied,
 }: {
   user: AccountUser
+  tenants: Tenant[]
   onClose: () => void
   onSaved: () => void
   onDenied: (message: string) => void
@@ -167,6 +182,7 @@ function UserDrawer({
   const [selected, setSelected] = useState<string[]>(
     (user.roles || []).filter(r => r !== 'member' && ASSIGNABLE_ROLES.includes(r)),
   )
+  const [scope, setScope] = useState(user.scope_tenant_id || '')
   const [status, setStatus] = useState(user.status)
   const [displayName, setDisplayName] = useState(user.display_name || '')
   const [busy, setBusy] = useState(false)
@@ -178,7 +194,12 @@ function UserDrawer({
   const rolesChanged = canonicalRoles(selected) !== initialRoles
   const statusChanged = status !== user.status
   const displayNameChanged = displayName.trim() !== (user.display_name || '')
-  const dirty = rolesChanged || statusChanged || displayNameChanged
+  const tenantScoped = selected.includes('tenant_admin')
+  const scopeChanged = tenantScoped && scope !== (user.scope_tenant_id || '')
+  // The role and its subtree are one grant: the API refuses a tenant_admin
+  // without a scope, so the form must not submit one either.
+  const scopeMissing = tenantScoped && !scope
+  const dirty = rolesChanged || statusChanged || displayNameChanged || scopeChanged
 
   const grantsSuperAdmin = selected.includes('super_admin')
   const disabling = status !== 1
@@ -186,6 +207,10 @@ function UserDrawer({
   const save = async () => {
     if (!dirty) {
       onClose()
+      return
+    }
+    if (scopeMissing) {
+      onDenied('租户管理员必须选择管理范围')
       return
     }
 
@@ -224,6 +249,7 @@ function UserDrawer({
     // it cannot end up alongside a management role.
     const patch: UserPatch = {}
     if (rolesChanged) patch.roles = selected
+    if (scopeChanged) patch.scope_tenant_id = scope
     if (statusChanged) patch.status = status
     if (displayNameChanged) patch.display_name = displayName.trim()
 
@@ -252,7 +278,7 @@ function UserDrawer({
       footer={
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button variant="primary" loading={busy} disabled={!dirty} onClick={() => void save()}>
+          <Button variant="primary" loading={busy} disabled={!dirty || scopeMissing} onClick={() => void save()}>
             保存权限
           </Button>
         </>
@@ -315,6 +341,24 @@ function UserDrawer({
             </div>
             <small className="fieldHint">不选择任何管理角色时，该账号即为普通用户。</small>
           </div>
+          {tenantScoped && (
+            <div className="detailRow column">
+              <span className="detailKey">管理范围</span>
+              <select value={scope} onChange={e => setScope(e.target.value)}>
+                <option value="">请选择租户</option>
+                {tenants.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {'　'.repeat(Math.max(0, t.depth || 0))}
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <small className="fieldHint">
+                租户管理员只能管理该租户的下级租户、API 密钥与模型额度，不能修改该租户自身的预算。
+              </small>
+              {scopeMissing && <small className="fieldHint danger">必须选择管理范围</small>}
+            </div>
+          )}
         </section>
 
         {grantsSuperAdmin && (
