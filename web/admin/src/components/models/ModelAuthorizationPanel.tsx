@@ -73,8 +73,10 @@ export function ModelAuthorizationPanel({modelID, canAuthorize}: {modelID: strin
   return (
     <div className="drawerStack">
       <Notice>
-        授权针对具体 API Key，不是整个租户。服务端只在最新白名单中增删此模型，不会覆盖其他模型的授权。
-        <code>[]</code> 表示不允许任何模型，<code>[*]</code> 表示允许全部；通配符不会被静默改写。
+        <span>
+          授权针对具体 API Key，不是整个租户。服务端只在最新白名单中增删此模型，不会覆盖其他模型的授权。
+          <code>[]</code> 表示不允许任何模型，<code>[*]</code> 表示允许全部；通配符不会被静默改写。
+        </span>
       </Notice>
       {!canAuthorize && <p className="hint">只有超级管理员可以修改模型授权。</p>}
 
@@ -84,7 +86,7 @@ export function ModelAuthorizationPanel({modelID, canAuthorize}: {modelID: strin
         <ErrorState message={error} status={errorStatus} onRetry={reload} />
       ) : items.length ? (
         <>
-          <Table heads={['选择', 'Key', '租户', '状态', '当前授权', '最后使用']} minWidth={760}>
+          <Table heads={['选择', 'Key', '租户', '状态', '当前授权', '最后使用']} minWidth={680}>
             {items.map(k => (
               <tr key={k.api_key_id}>
                 <td>

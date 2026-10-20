@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react'
 import {api, type RequestAttempt, type RequestLog} from '../../api'
 import {Detail, TelemetryRow} from '../ui/Detail'
+import {Badge} from '../ui/Badge'
 import {EmptyState} from '../ui/EmptyState'
 import {Panel} from '../ui/Panel'
 import {Table} from '../ui/Table'
@@ -57,14 +58,27 @@ export function LogDetail({v}: {v: RequestLog}) {
           ['来源 IP', v.client_ip || '—'],
         ]}
       />
+      {/* One glanceable answer to "which model actually ran, and did we
+          switch?". The fields below remain the authoritative telemetry; this
+          block only composes them, so a missing value still reads 未知. */}
+      <Detail
+        title="调用链路"
+        rows={[
+          ['客户端请求', <span key="requested" className="mono wrap">{v.requested_model || '未知'}</span>],
+          ['实际渠道', <span key="provider" className="mono">{v.provider || '未知'}</span>],
+          ['实际上游模型', <span key="upstream" className="mono wrap">{v.upstream_model || '未知'}</span>],
+          ['是否切换', v.failover ? <Badge key="failover" tone="warning">已故障切换</Badge> : <Badge key="failover" tone="success">未切换</Badge>],
+        ]}
+      />
+
       <Detail
         title="路由"
         rows={[
-          ['请求模型', v.requested_model],
-          ['实际模型', TelemetryRow('实际模型', v.actual_model)[1]],
+          ['请求模型（对外 Alias）', v.requested_model],
+          ['响应模型', TelemetryRow('响应模型', v.actual_model)[1]],
           ...([
-            TelemetryRow('渠道', v.provider),
-            TelemetryRow('上游模型', v.upstream_model),
+            TelemetryRow('实际渠道', v.provider),
+            TelemetryRow('实际上游模型', v.upstream_model),
             TelemetryRow('线路优先级', v.route_priority),
             TelemetryRow('尝试次数', v.attempts),
           ] as [string, React.ReactNode][]),

@@ -1,5 +1,5 @@
 import {useCallback, useState} from 'react'
-import {Boxes, ChevronRight, FlaskConical, Route} from 'lucide-react'
+import {Boxes, ChevronRight, FlaskConical, KeyRound, Plus, Route} from 'lucide-react'
 import {api, listModelTestOptions, type ModelConfig, type ModelDetail, type ModelImpact, type ModelRoute, type ModelTestOption} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
@@ -10,6 +10,7 @@ import {Drawer} from '../components/ui/Drawer'
 import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
+import {PublishModelWizard} from '../components/models/PublishModelWizard'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
@@ -48,6 +49,10 @@ export function PublishedModelsPage({
   const [impactError, setImpactError] = useState('')
   const [disableBusy, setDisableBusy] = useState(false)
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
+  const [publishing, setPublishing] = useState(false)
+  // Direct authorization entry: opens the same drawer at the authorization
+  // panel instead of requiring a scroll after the detail loads.
+  const [focusAuthorization, setFocusAuthorization] = useState(false)
 
   const openTest = async () => {
     try {
@@ -101,13 +106,19 @@ export function PublishedModelsPage({
     if (ok) await setModelStatus(1)
   }
 
-  const open = async (m: ModelConfig) => {
+  const open = async (m: ModelConfig, options: {authorize?: boolean} = {}) => {
     setDetailBusy(m.id)
     setDetailError('')
     setDetail(null)
+    setFocusAuthorization(options.authorize === true)
     try {
       const d = await api<ModelDetail>(`/admin/models/${m.id}`)
       setDetail(d)
+      if (options.authorize) {
+        window.setTimeout(() => {
+          document.getElementById('model-authorization')?.scrollIntoView({behavior: 'smooth', block: 'start'})
+        }, 50)
+      }
     } catch (e) {
       setDetailError(e instanceof Error ? e.message : '无法加载模型详情')
     } finally {
@@ -122,6 +133,11 @@ export function PublishedModelsPage({
       <Panel
         title="对外模型"
         sub="业务系统只使用这里的外部名称。渠道、上游模型和故障切换都由每个模型的线路决定。"
+        actions={
+          <Button variant="primary" icon={<Plus />} onClick={() => setPublishing(true)}>
+            发布模型
+          </Button>
+        }
       >
         {loading && !data ? (
           <SkeletonCards count={3} />
@@ -143,6 +159,11 @@ export function PublishedModelsPage({
                     </p>
                   </div>
                   <div className="modelActions">
+                    {canAuthorize && (
+                      <Button size="sm" icon={<KeyRound />} loading={detailBusy === m.id} onClick={() => void open(m, {authorize: true})}>
+                        管理授权
+                      </Button>
+                    )}
                     <Button size="sm" icon={<ChevronRight />} loading={detailBusy === m.id} onClick={() => void open(m)}>
                       查看详情
                     </Button>
@@ -183,15 +204,29 @@ export function PublishedModelsPage({
           <EmptyState
             icon={<Boxes />}
             title="暂无对外模型"
-            description="先在上游渠道中维护候选模型，再从候选模型发布对外名称。"
+            description="从已启用渠道的候选模型发布第一个对外名称。"
+            action={
+              <Button variant="primary" icon={<Plus />} onClick={() => setPublishing(true)}>
+                发布模型
+              </Button>
+            }
           />
         )}
       </Panel>
 
+      {publishing && (
+        <PublishModelWizard
+          onClose={() => setPublishing(false)}
+          onPublished={() => {
+            void reload()
+          }}
+        />
+      )}
+
       {detail && (
-        <Drawer title={detail.model.alias} subtitle="对外模型详情" onClose={() => setDetail(null)}>
+        <Drawer title={detail.model.alias} subtitle="对外模型详情" size="lg" onClose={() => setDetail(null)}>
           <div className="drawerStack">
-            {canAuthorize && (
+            {canAuthorize && !focusAuthorization && (
               <div className="quickActions">
                 <Button size="sm" onClick={() => document.getElementById('model-authorization')?.scrollIntoView({behavior: 'smooth'})}>
                   管理授权
@@ -260,7 +295,7 @@ export function PublishedModelsPage({
               <p className="hint">
                 真实业务链路验证请使用环境变量中的 Key；该请求会经过鉴权、配额、路由、熔断和日志，不由管理诊断替代。
               </p>
-              <pre className="mono responseText">{`curl "$GATEWAY_BASE_URL/v1/chat/completions" \\
+              <pre className="mono responseText curlSample">{`curl "$GATEWAY_BASE_URL/v1/chat/completions" \\
   -H "Authorization: Bearer $CAMPUS_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"${detail.model.alias}","messages":[{"role":"user","content":"hello"}]}'`}</pre>

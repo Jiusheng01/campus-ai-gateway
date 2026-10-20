@@ -1281,6 +1281,8 @@ input:focus, select:focus, textarea:focus {
 }
 .secretBox.success > svg { color: var(--success); }
 .responseText { white-space: pre-wrap; word-break: break-word; color: var(--text) !important; }
+/* The curl sample is copied by hand; wrapping mid-token would corrupt it. */
+.curlSample { overflow-x: auto; white-space: pre; word-break: normal; }
 
 .ackRow {
   display: flex;

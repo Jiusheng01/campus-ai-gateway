@@ -43,9 +43,11 @@ export function DashboardPage({roles}: {roles: string[]}) {
   // not that endpoint, so the request is skipped rather than allowed to 403 and
   // paint an error box onto an otherwise healthy overview.
   const canReadLogs = roles.includes('super_admin') || roles.includes('auditor')
+  // The endpoint answers `data: null` when there are no rows yet (a fresh
+  // deployment). Normalising here keeps the empty state from becoming a crash.
   const recent = useResource(() =>
     canReadLogs
-      ? api<{data: RequestLog[]}>('/admin/request-logs?limit=6')
+      ? api<{data: RequestLog[] | null}>('/admin/request-logs?limit=6').then(d => ({data: d.data || []}))
       : Promise.resolve({data: [] as RequestLog[]}),
   )
 
@@ -178,7 +180,7 @@ export function DashboardPage({roles}: {roles: string[]}) {
             >
               {recent.loading && !recent.data ? (
                 <SkeletonRows rows={4} columns={5} />
-              ) : recent.data?.data.length ? (
+              ) : recent.data?.data?.length ? (
                 <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={620}>
                   {recent.data.data.map(r => (
                     <tr key={r.request_id}>
