@@ -108,6 +108,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	// A channel's model list is addressed under the channel. Keep these before
+	// the single-channel match below so /models is not read as a provider id.
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/models/refresh"):
+		s.handleProviderModelsRefresh(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/models"):
+		s.handleProviderModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.Contains(r.URL.Path, "/models/"):
+		s.handleProviderModelByID(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/"):
 		s.handleProviderByID(w, r)
 	case r.URL.Path == "/admin/models":
@@ -246,7 +254,9 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusInternalServerError, "credential_seal_failed", "Unable to encrypt the channel credential", reqID)
 			return
 		}
-		out, err := s.pg.CreateProvider(r.Context(), in)
+		// The seed is part of the create, not a follow-up: a newly created
+		// channel already knows the common models its supplier offers.
+		out, err := s.pg.CreateProviderWithPresetModels(r.Context(), in, presetProviderModels(in.Name))
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "provider_create_failed", "Provider could not be created", reqID)
 			return

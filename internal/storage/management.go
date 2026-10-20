@@ -44,10 +44,27 @@ ORDER BY p.created_at DESC
 }
 
 func (p *Postgres) CreateProvider(ctx context.Context, v model.Provider) (model.Provider, error) {
+	return p.CreateProviderWithPresetModels(ctx, v, nil)
+}
+
+// CreateProviderWithPresetModels creates the channel and seeds its Provider
+// Model list in one transaction.
+//
+// The seed is part of the create rather than a second call the handler makes
+// afterwards: a channel that exists without the list it was supposed to come
+// with is exactly the half-configured state this work is meant to remove, and a
+// second call leaves a window where it can fail while the channel stays.
+func (p *Postgres) CreateProviderWithPresetModels(ctx context.Context, v model.Provider, presetModels []string) (model.Provider, error) {
 	if err := normaliseNewProviderCredential(&v); err != nil {
 		return v, err
 	}
-	err := p.Pool.QueryRow(ctx, `
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
 WITH new_credential AS (
 	INSERT INTO gateway_credential (name, source_type, secret_ref, ciphertext)
 	VALUES ('channel:' || gen_random_uuid()::text, $1, NULLIF($2,''), NULLIF($3,''))
@@ -61,6 +78,12 @@ RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, cr
 		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.CredentialID,
 	)
 	if err != nil {
+		return v, err
+	}
+	if err := seedProviderModels(ctx, tx, v.ID, presetModels, model.ProviderModelSourcePreset); err != nil {
+		return v, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
 	v.CredentialEnv = v.CredentialSecretRef

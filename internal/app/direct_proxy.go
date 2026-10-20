@@ -732,7 +732,15 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	client := &http.Client{Transport: s.transport.get(timeout)}
+	// ADR-0012 forbids automatic redirects. Following one would move the
+	// channel credential to a host the channel's configuration never named, so
+	// the 3xx is surfaced as the answer instead.
+	client := &http.Client{
+		Transport: s.transport.get(timeout),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	return client.Do(req)
 }
 

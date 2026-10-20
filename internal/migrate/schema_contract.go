@@ -181,6 +181,18 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			},
 		},
 		{
+			Name: "gateway_provider_model",
+			Columns: []contractColumn{
+				{"id", "uuid", true},
+				{"provider_id", "uuid", true},
+				{"upstream_model", "character varying", true},
+				{"source", "character varying", true},
+				{"status", "smallint", true},
+				{"created_at", "timestamp with time zone", true},
+				{"updated_at", "timestamp with time zone", true},
+			},
+		},
+		{
 			Name: "gateway_model",
 			Columns: []contractColumn{
 				{"id", "uuid", true},
@@ -287,6 +299,8 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_credential", "name", "u"},
 		{"gateway_provider", "id", "p"},
 		{"gateway_provider", "name", "u"},
+		{"gateway_provider_model", "id", "p"},
+		{"gateway_provider_model", "provider_id,upstream_model", "u"},
 		{"gateway_model", "id", "p"},
 		{"gateway_model", "alias", "u"},
 		{"gateway_model_route", "id", "p"},
@@ -299,6 +313,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 	fks = []contractFK{
 		{"gateway_api_key", "tenant_id", "gateway_tenant", "id", "a"},
 		{"gateway_provider", "credential_id", "gateway_credential", "id", "a"},
+		{"gateway_provider_model", "provider_id", "gateway_provider", "id", "c"},
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
@@ -349,8 +364,9 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_attempt.request_id": 64, "gateway_request_attempt.provider": 128,
 		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
 		"gateway_request_attempt.error_kind": 32,
-		"gateway_credential.name": 128, "gateway_credential.source_type": 16, "gateway_credential.secret_ref": 128,
-		"gateway_provider.name":              128, "gateway_provider.protocol": 32,
+		"gateway_credential.name":            128, "gateway_credential.source_type": 16, "gateway_credential.secret_ref": 128,
+		"gateway_provider.name": 128, "gateway_provider.protocol": 32,
+		"gateway_provider_model.upstream_model": 128, "gateway_provider_model.source": 16,
 		"gateway_model.alias":                128,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
@@ -391,6 +407,8 @@ func finalColumnDefaults() map[string]string {
 		"gateway_credential.id": "gen_random_uuid()", "gateway_credential.created_at": "now()", "gateway_credential.updated_at": "now()",
 		"gateway_provider.id": "gen_random_uuid()", "gateway_provider.protocol": "'openai-chat'::character varying",
 		"gateway_provider.status": "1", "gateway_provider.created_at": "now()", "gateway_provider.updated_at": "now()",
+		"gateway_provider_model.id": "gen_random_uuid()", "gateway_provider_model.status": "1",
+		"gateway_provider_model.created_at": "now()", "gateway_provider_model.updated_at": "now()",
 		"gateway_model.id": "gen_random_uuid()", "gateway_model.status": "1",
 		"gateway_model.created_at": "now()", "gateway_model.updated_at": "now()",
 
