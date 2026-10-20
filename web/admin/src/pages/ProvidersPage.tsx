@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {Network, Pencil, Plus, Trash2} from 'lucide-react'
-import {api, type ModelConfig, type ModelRoute, type Provider, type ProviderDeleteResult} from '../api'
+import {api, type CatalogModel, type ModelConfig, type ModelRoute, type Provider, type ProviderDeleteResult} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {StatusBadge} from '../components/ui/Badge'
@@ -37,12 +37,56 @@ async function deleteCost(providerID: string) {
   return {routes, modelsLost}
 }
 
+/**
+ * ServedLines answers "what does this channel serve?" read-only.
+ *
+ * A Route owns the upstream model, never a Provider (ADR-0018), so the channel
+ * form has no field for it. This section reads the same Model Catalog the 模型
+ * page reads and keeps the rows where this channel has a Route: `opened` on a
+ * catalog provider means the (model, channel, upstream) binding exists.
+ *
+ * The catalog groups by upstream name and does not carry route priority, so the
+ * section lists this channel's lines without claiming which one is primary —
+ * that ordering lives in the 模型 page's advanced view.
+ */
+function ServedLines({provider, catalog}: {provider: Partial<Provider>; catalog: CatalogModel[]}) {
+  const lines = catalog
+    .filter(m => m.providers.some(p => p.id === provider.id && p.opened))
+    .map(m => m.upstream_model)
+
+  return (
+    <section className="drawerSection" aria-label="本渠道服务的线路">
+      <h3 className="drawerSectionTitle">本渠道服务的线路（只读）</h3>
+      {lines.length ? (
+        <ul className="drawerSectionList">
+          {lines.map(upstream => (
+            <li key={upstream}>
+              <span className="muted">本渠道 →</span>
+              <code className="mono">{upstream}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="hint">
+          {provider.status === 1
+            ? '本渠道当前没有已接入的线路。'
+            : '渠道已停用；停用的渠道不出现在模型目录中，请到「模型」页确认线路。'}
+        </p>
+      )}
+      <p className="hint">上游模型属于线路，不在本表单中编辑。请到「模型」页的「对外模型与线路（高级）」中查看、添加或修改线路。</p>
+    </section>
+  )
+}
+
 export function ProvidersPage() {
   const toast = useToast()
   const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(async () => {
-    const d = await api<{data: Provider[]}>('/admin/providers')
-    return d.data || []
+    const [p, c] = await Promise.all([
+      api<{data: Provider[]}>('/admin/providers'),
+      api<{data: CatalogModel[]}>('/admin/model-catalog'),
+    ])
+    return {providers: p.data || [], catalog: c.data || []}
   })
   const [draft, setDraft] = useState<ProviderDraft | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -92,7 +136,8 @@ export function ProvidersPage() {
     }
   }
 
-  const items = data || []
+  const items = data?.providers || []
+  const catalog = data?.catalog || []
 
   return (
     <>
@@ -185,6 +230,7 @@ export function ProvidersPage() {
           subtitle="密钥加密保存、只写不读；也可以改为引用环境变量。"
           onClose={() => setDraft(null)}
         >
+          {draft.id && <ServedLines provider={draft} catalog={catalog} />}
           <ProviderForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />
         </Drawer>
       )}

@@ -64,6 +64,8 @@ export function ApiKeysPage() {
       description: `吊销后 ${k.key_prefix}… 会立即失效，且无法恢复——重新启用也不会让旧 Key 再次可用。历史使用日志会保留，如需继续使用请创建新的 Key。`,
       confirmText: '确认吊销',
       danger: true,
+      requireText: k.name,
+      requireTextLabel: `输入 Key 名称「${k.name}」以确认`,
     })
     if (!ok) return
     setRevoking(k.id)
