@@ -1,6 +1,6 @@
 import {useState, type FormEvent} from 'react'
 import {AlertTriangle, Loader2, Lock, ShieldCheck} from 'lucide-react'
-import {login, type AuthConfig} from '../api'
+import {login, type AuthConfig, type LoginResult} from '../api'
 import {PasswordInput} from '../components/ui/PasswordInput'
 import {RegisterPage} from './RegisterPage'
 import {friendlyError} from '../lib/errors'
@@ -21,7 +21,7 @@ export function LoginPage({
 }: {
   config: AuthConfig | null
   notice: string
-  onDone: () => void
+  onDone: (result?: LoginResult) => void
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -39,8 +39,8 @@ export function LoginPage({
     setError('')
     setBanner('')
     try {
-      await login(username.trim(), password)
-      onDone()
+      const result = await login(username.trim(), password)
+      onDone(result)
     } catch (err) {
       setError(friendlyError(err, '登录失败，请稍后重试。'))
     } finally {

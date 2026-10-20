@@ -122,7 +122,7 @@ export function ProviderModelsPanel({providerID, onChanged}: {providerID: string
       ) : error ? (
         <ErrorState message={error} status={errorStatus} onRetry={reload} />
       ) : items.length ? (
-        <Table heads={['上游模型', '来源', '状态', '关联对外模型', '操作']} minWidth={760}>
+        <Table heads={['上游模型', '来源', '状态', '关联对外模型', '操作']} minWidth={700}>
           {items.map(m => (
             <tr key={m.id}>
               <td className="mono">{m.upstream_model}</td>

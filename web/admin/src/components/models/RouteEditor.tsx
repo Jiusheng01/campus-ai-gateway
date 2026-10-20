@@ -173,13 +173,15 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
       {pending && (
         <div className="notice warning" role="alert">
           <AlertTriangle aria-hidden />
-          <b>切换到「{modeLabel[pending.mode]}」会改变以下字段，确认后只修改草稿，尚未保存：</b>
-          <ul className="drawerSectionList">
-            {pending.diff.map(line => <li key={line}><code>{line}</code></li>)}
-          </ul>
-          <div className="formActions">
-            <Button size="sm" onClick={() => setPending(null)}>取消切换</Button>
-            <Button size="sm" variant="primary" onClick={confirmMode}>确认并应用</Button>
+          <div>
+            <b>切换到「{modeLabel[pending.mode]}」会改变以下字段，确认后只修改草稿，尚未保存：</b>
+            <ul className="drawerSectionList">
+              {pending.diff.map(line => <li key={line}><code>{line}</code></li>)}
+            </ul>
+            <div className="formActions">
+              <Button size="sm" onClick={() => setPending(null)}>取消切换</Button>
+              <Button size="sm" variant="primary" onClick={confirmMode}>确认并应用</Button>
+            </div>
           </div>
         </div>
       )}
@@ -187,8 +189,10 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
       {conflict !== null && (
         <div className="notice warning" role="alert">
           <AlertTriangle aria-hidden />
-          该模型的线路已被其他管理员修改。你的草稿仍保留；当前版本为 {conflict}。
-          <Button size="sm" onClick={() => { setDraft(null); setConflict(null); reload() }}>加载最新版本</Button>
+          <div>
+            <p>该模型的线路已被其他管理员修改。你的草稿仍保留；当前版本为 {conflict}。</p>
+            <Button size="sm" onClick={() => { setDraft(null); setConflict(null); reload() }}>加载最新版本</Button>
+          </div>
         </div>
       )}
       {formError && <div className="notice warning" role="alert">{formError}</div>}

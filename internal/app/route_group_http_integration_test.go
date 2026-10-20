@@ -95,6 +95,64 @@ func TestGroupSavePreservesIdsAndRejectsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestGroupSaveRejectsInvalidRouteShapes(t *testing.T) {
+	s, created, providers, routes := routeGroupFixture(t)
+	before, err := s.pg.ModelByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("ModelByID: %v", err)
+	}
+	valid := func() map[string]any {
+		return map[string]any{
+			"id": routes[0].ID, "provider_id": providers[0].ID, "upstream_model": "up-1",
+			"priority": 1, "weight": 100, "timeout_ms": 60000, "status": 1,
+		}
+	}
+	cases := []struct {
+		name   string
+		routes []map[string]any
+	}{
+		{"empty", []map[string]any{}},
+		{"duplicate binding", []map[string]any{valid(), valid()}},
+		{"priority zero", []map[string]any{func() map[string]any { r := valid(); r["priority"] = 0; return r }()}},
+		{"weight too large", []map[string]any{func() map[string]any { r := valid(); r["weight"] = 10001; return r }()}},
+		{"timeout zero", []map[string]any{func() map[string]any { r := valid(); r["timeout_ms"] = 0; return r }()}},
+		{"status invalid", []map[string]any{func() map[string]any { r := valid(); r["status"] = 3; return r }()}},
+		{"provider not uuid", []map[string]any{func() map[string]any { r := valid(); r["provider_id"] = "not-a-uuid"; return r }()}},
+		{"provider missing", []map[string]any{func() map[string]any {
+			r := valid()
+			r["provider_id"] = "11111111-1111-1111-1111-111111111111"
+			return r
+		}()}},
+		{"all disabled on enabled model", []map[string]any{func() map[string]any { r := valid(); r["status"] = 2; return r }()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, _ := json.Marshal(map[string]any{
+				"expected_version": before.ConfigVersion,
+				"routes":           tc.routes,
+			})
+			rec := routeGroupRequest(t, s, created.ID, string(payload))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	after, err := s.pg.ModelByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("ModelByID after rejects: %v", err)
+	}
+	if after.ConfigVersion != before.ConfigVersion {
+		t.Fatalf("a rejected route set advanced the version: %d -> %d", before.ConfigVersion, after.ConfigVersion)
+	}
+	saved, err := s.pg.ListModelRoutes(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("ListModelRoutes: %v", err)
+	}
+	if len(saved) != 2 {
+		t.Fatalf("rejected route sets changed the stored routes: %+v", saved)
+	}
+}
+
 func TestGroupSaveRejectsChangedEnabledZeroWeightAndUnknownFields(t *testing.T) {
 	s, created, providers, routes := routeGroupFixture(t)
 	d, _ := s.pg.ModelByID(context.Background(), created.ID)

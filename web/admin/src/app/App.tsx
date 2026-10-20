@@ -155,8 +155,12 @@ function Console() {
   // renders and not others changes the hook count, which React refuses to
   // render at all.
   useEffect(() => {
+    // Do not infer a role list from an identity that has not resolved yet.
+    // Doing so treated every session restore as a member and bounced the
+    // administrator to 个人资料 before whoami returned the real roles.
+    if (!who) return
     if (!allowedPages(roles).includes(page)) setPage(landingPage(roles))
-  }, [roles, page])
+  }, [roles, page, who])
 
   // The public auth config is the answer to a question whose answer changes:
   // before the first super administrator exists, registration is closed, and it

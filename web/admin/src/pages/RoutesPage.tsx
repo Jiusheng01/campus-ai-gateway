@@ -62,7 +62,7 @@ export function RoutesPage() {
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : routes.length ? (
-          <Table heads={['对外模型', 'Route ID', '渠道', '上游模型', '优先级', '权重', '超时（响应头）', '状态', '凭据', '配置版本', '操作']} minWidth={1360}>
+          <Table heads={['对外模型', 'Route ID', '渠道', '上游模型', '优先级', '权重', '超时（响应头）', '状态', '凭据', '配置版本', '操作']} minWidth={1100}>
             {routes.map(r => (
               <tr key={r.id}>
                 <td>

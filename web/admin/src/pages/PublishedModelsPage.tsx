@@ -191,6 +191,13 @@ export function PublishedModelsPage({
       {detail && (
         <Drawer title={detail.model.alias} subtitle="对外模型详情" onClose={() => setDetail(null)}>
           <div className="drawerStack">
+            {canAuthorize && (
+              <div className="quickActions">
+                <Button size="sm" onClick={() => document.getElementById('model-authorization')?.scrollIntoView({behavior: 'smooth'})}>
+                  管理授权
+                </Button>
+              </div>
+            )}
             <Detail
               title="基本信息"
               rows={[
@@ -230,7 +237,7 @@ export function PublishedModelsPage({
                       <code className="routeModel mono">{r.upstream_model}</code>
                       <div className="routeMeta">
                         <span>权重 <b>{r.weight}</b></span>
-                        <span>超时 <b>{r.timeout_ms} ms</b></span>
+                        <span>响应头超时 <b>{r.timeout_ms} ms</b></span>
                       </div>
                     </div>
                   ))}
@@ -240,9 +247,11 @@ export function PublishedModelsPage({
               )}
             </Panel>
             {canAuthorize && (
-              <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
-                <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize />
-              </Panel>
+              <div id="model-authorization">
+                <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
+                  <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize />
+                </Panel>
+              </div>
             )}
             <Panel title="模型测试" sub="管理诊断不经过业务 API Key、租户配额或业务请求日志。">
               <div className="formActions">

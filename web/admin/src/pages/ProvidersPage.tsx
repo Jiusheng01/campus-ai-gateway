@@ -327,6 +327,7 @@ export function ProvidersPage({
         <Drawer
           title={draft.id ? `渠道：${draft.name}` : '新增渠道'}
           subtitle="密钥加密保存、只写不读；也可以改为引用环境变量。"
+          size="lg"
           onClose={() => setDraft(null)}
         >
           <div className="drawerStack">

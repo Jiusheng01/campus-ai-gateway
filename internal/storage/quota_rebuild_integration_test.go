@@ -74,6 +74,29 @@ func TestDailySettledQuotaAggregatesSettledRequestLogByTenantAndDay(t *testing.T
 	}
 }
 
+// A request record without a tenant cannot contribute to a tenant quota. It
+// must be skipped, not fail the whole rebuild with a NULL scan.
+func TestDailySettledQuotaSkipsRowsWithoutTenant(t *testing.T) {
+	pg := testPostgres(t)
+	clearRequestLogs(t, pg)
+	if _, err := pg.Pool.Exec(context.Background(), `
+INSERT INTO gateway_request_log(request_id,requested_model,status_code,total_tokens)
+VALUES ('q-null-tenant','unattributed',200,5)`); err != nil {
+		t.Fatalf("insert unattributed log: %v", err)
+	}
+	got, err := pg.DailySettledQuota(context.Background(),
+		time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("DailySettledQuota: %v", err)
+	}
+	for _, row := range got {
+		if row.TenantID == "" {
+			t.Fatalf("unattributed row leaked into the quota rebuild: %+v", row)
+		}
+	}
+}
+
 // TestDailySettledQuotaRangeIsHalfOpen pins the boundary semantics: a row sitting
 // exactly on the end of the range must not leak in, or a month-over-month
 // rebuild would double-count the boundary.
