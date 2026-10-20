@@ -251,7 +251,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateProvider(&in); err != "" {
+		if err := s.validateProvider(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 			return
 		}
@@ -291,7 +291,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateProviderForUpdate(&in); err != "" {
+	if err := s.validateProviderForUpdate(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 		return
 	}
@@ -1045,24 +1045,53 @@ func validateCredentialEnv(name string) string {
 // request time. Refusing it when it is saved is a configuration error instead
 // of an outage.
 func validateProvider(v *model.Provider) string {
-	return validateProviderInput(v, true)
+	return validateProviderInput(v, true, nil)
 }
 
 // validateProviderForUpdate permits a write with no credential at all, which
 // means "keep the stored one" — the console sends that when an operator edits
 // the base URL and leaves the key field blank.
 func validateProviderForUpdate(v *model.Provider) string {
-	return validateProviderInput(v, false)
+	return validateProviderInput(v, false, nil)
 }
 
-func validateProviderInput(v *model.Provider, requireCredential bool) string {
+// The Server-bound forms apply the deployment's PROVIDER_HTTP_ALLOWLIST. The
+// package-level functions above stay allowlist-free, so a caller that has not
+// loaded a configuration still gets the fail-closed rule.
+func (s *Server) validateProvider(v *model.Provider) string {
+	return validateProviderInput(v, true, s.providerHTTPAllowlist())
+}
+
+func (s *Server) validateProviderForUpdate(v *model.Provider) string {
+	return validateProviderInput(v, false, s.providerHTTPAllowlist())
+}
+
+// providerHTTPAllowlist compiles the configured entries once. A Server built
+// without NewServer (a unit test) compiles from its Config literal on demand;
+// malformed entries are already refused by LoadConfig, and a direct literal
+// with a malformed entry fails closed to "nothing allowed".
+func (s *Server) providerHTTPAllowlist() *hostAllowlist {
+	if s.httpAllowlist != nil {
+		return s.httpAllowlist
+	}
+	allowlist, _ := parseHostAllowlist(s.cfg.ProviderHTTPAllowlist)
+	return allowlist
+}
+
+func validateProviderInput(v *model.Provider, requireCredential bool, allowlist *hostAllowlist) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
 	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
-	if v.Name == "" || v.BaseURL == "" {
-		return "name and base_url are required"
+	if v.Name == "" {
+		return "name is required"
+	}
+	if v.BaseURL == "" {
+		return "base_url is required"
+	}
+	if reason := validateProviderBaseURL(v.BaseURL, allowlist); reason != "" {
+		return reason
 	}
 	// Two sources on one write is ambiguous: it is not clear whether the operator
 	// wants to replace an inline key with a variable reference or the reverse.

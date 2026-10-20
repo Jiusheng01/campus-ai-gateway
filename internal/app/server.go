@@ -66,6 +66,10 @@ type Server struct {
 	// change is a restart, which is also why the fallback warning is emitted once
 	// at startup.
 	credentialSealingKey []byte
+
+	// httpAllowlist is the compiled PROVIDER_HTTP_ALLOWLIST. It is fixed for the
+	// process and consulted whenever a Provider target is saved.
+	httpAllowlist *hostAllowlist
 }
 
 type requestEnvelope struct {
@@ -133,6 +137,10 @@ func (w *auditResponseWriter) Push(target string, opts *http.PushOptions) error 
 }
 
 func NewServer(cfg Config) (*Server, error) {
+	httpAllowlist, err := parseHostAllowlist(cfg.ProviderHTTPAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("PROVIDER_HTTP_ALLOWLIST contains an invalid entry: %w", err)
+	}
 	ctx := context.Background()
 	pg, err := storage.OpenPostgres(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -144,11 +152,12 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:   cfg,
-		pg:    pg,
-		redis: rd,
-		limit: ratelimit.New(rd.Client),
-		mux:   http.NewServeMux(),
+		cfg:           cfg,
+		pg:            pg,
+		redis:         rd,
+		limit:         ratelimit.New(rd.Client),
+		mux:           http.NewServeMux(),
+		httpAllowlist: httpAllowlist,
 	}
 	s.upstream = http.HandlerFunc(s.serveDirect)
 	log.Printf("data plane: direct — channels are dialled in-process")

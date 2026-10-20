@@ -24,7 +24,13 @@ import (
 func providerModelTestServer(t *testing.T, pg *storage.Postgres) *Server {
 	t.Helper()
 	return &Server{
-		pg:                   pg,
+		pg: pg,
+		// httptest upstreams listen on 127.0.0.1, and plaintext HTTP is
+		// refused unless the host is allowlisted. Configuring it here is the
+		// same explicit exception an operator makes with
+		// PROVIDER_HTTP_ALLOWLIST=127.0.0.1; production validation is not
+		// loosened for the tests.
+		cfg:                  Config{ProviderHTTPAllowlist: []string{"127.0.0.1"}},
 		credentialSealingKey: bytes.Repeat([]byte{0x44}, security.CredentialKeySize),
 		transport:            &transportPool{},
 	}
