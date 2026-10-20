@@ -44,7 +44,7 @@ Priority bands, smooth weighted round-robin inside a band, a per-provider circui
 
 ### 🔌 Add a provider, don't touch clients
 
-One OpenAI-compatible surface for every provider. Register a channel in the console and bind it to a virtual model; callers never learn it changed.
+One OpenAI-compatible surface for every provider. A model is the name callers send; a route is a deployment of it. Register a channel, pick an upstream name from that channel's own list, and callers never learn it changed.
 
 </td>
 <td width="50%" valign="top">
@@ -67,7 +67,7 @@ Business request logs, admin audit and security events are separate record class
 
 ### 🖥️ An admin console, included
 
-A React console embedded in the Go binary: tenants, keys, providers, routes, usage, audit. Session auth with Argon2id, six RBAC roles, and a trusted-header path for campus SSO.
+A React console embedded in the Go binary: tenants, keys, providers, routes, usage, audit. Session auth with Argon2id, six RBAC roles, and a trusted-header path for campus SSO. The dashboard's setup checklist is read off the deployment, so a model that exists but has no route says so instead of pointing at a tutorial.
 
 </td>
 </tr>

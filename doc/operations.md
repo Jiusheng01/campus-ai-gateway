@@ -212,6 +212,25 @@ bash scripts/verify-three-state.sh
 
 脚本只为专属别名 `e2e-three-state-probe` 写入额度，并在正常结束和异常退出时都删除自己创建的行（包括全校共享池）。它需要本地 `deploy-postgres-1` 容器来播种受限管理员账号，并使用本地开发凭据。
 
+数据面整条链路验收（渠道 → 模型 → 线路 → 密钥 → `/v1` 请求 → 限额拒绝）：
+
+```bash
+bash scripts/verify-data-plane.sh
+```
+
+覆盖：
+
+- 渠道建的上游模型列表真的带凭据取到了上游的模型名
+- 真实 `/v1/chat/completions` 请求穿透网关返回上游结果，并带 usage
+- 请求被记进业务请求日志
+- 按模型额度真的开始拒流，错误码是 `model_token_quota_exceeded`
+- 结束后不留下渠道、模型、线路、密钥
+
+这个脚本自带一个假上游（`scripts/fake-upstream.py`）并**另起一个私有网关实例**（默认 18090），
+因为渠道凭据是数据面在请求时从环境变量读的，8080 上那个实例没有这里用的凭据。
+**它不会重启或改动 8080 上的服务**；假上游响应固定的 usage，好让额度断言有确定的算术。
+端口可用 `GATEWAY_PORT` / `UPSTREAM_PORT` 覆盖。
+
 依赖数据库的集成测试需要 PostgreSQL 17 与 Redis 7，CI（`.github/workflows/ci.yml`）以
 health-checked service 方式提供，本地则用 `.\scripts\dev.ps1` 起容器。**没有数据库时这些
 测试会 SKIP**，因此"CI 绿"必须与"CI 里真的有数据库"一起看。
