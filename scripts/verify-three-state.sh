@@ -17,9 +17,38 @@ FAILS=0
 # A dedicated alias keeps the script from touching a real model's caps. Rows for
 # it are removed on exit as well as at the end of section 7, so a failed check
 # halfway through does not leave residue in the campus pool.
+#
+# The quota endpoint now requires the alias to exist in the model catalog, and
+# the catalog has no delete endpoint, so the probe model is seeded straight into
+# the database — the same way the scoped administrator below is seeded. It is
+# removed only when this run created it, and only after its quota rows, because
+# gateway_model_quota.model_alias references it with ON DELETE RESTRICT.
 PROBE=e2e-three-state-probe
+PROBE_SEEDED=0
 TOKEN= ROOT= CHILD= GRAND=
 SCOPED_USER_SEEDED=0
+
+psql_exec() {
+  docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -q "$@"
+}
+
+seed_probe_model() {
+  local exists
+  exists=$(docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -tAc \
+    "SELECT 1 FROM gateway_model WHERE alias='$PROBE'" 2>/dev/null | tr -d '[:space:]')
+  [ "$exists" = "1" ] && return 0
+  if psql_exec -c \
+    "INSERT INTO gateway_model (alias, display_name, status) VALUES ('$PROBE', 'E2E probe', 1)" >/dev/null 2>&1; then
+    PROBE_SEEDED=1
+  fi
+}
+
+cleanup_probe_model() {
+  [ "$PROBE_SEEDED" = "1" ] || return 0
+  psql_exec -c \
+    "DELETE FROM gateway_model_quota WHERE model_alias='$PROBE';
+     DELETE FROM gateway_model WHERE alias='$PROBE';" >/dev/null 2>&1 || true
+}
 
 cleanup_scoped_user() {
   # The scoped administrator is seeded into the database, not created through
@@ -31,6 +60,7 @@ cleanup_scoped_user() {
 
 cleanup() {
   cleanup_scoped_user
+  cleanup_probe_model
   [ -n "$TOKEN" ] || return 0
   local t
   for t in "$CHILD" "$GRAND"; do
@@ -139,6 +169,7 @@ check "root's 5,000,000 still wins" 5000000 "$(echo "$U" | json "d['effective'][
 req PUT "/admin/tenants/$GRAND/allocation" "$TOKEN" '{}' >/dev/null
 
 echo "== 4. per-model quota =="
+seed_probe_model
 OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"$PROBE\",\"daily_token_limit\":100000}")
 check "PUT model quota" 200 "$(code)"
 check "quota daily limit" 100000 "$(echo "$OUT" | json "d['daily_token_limit']")"
@@ -153,6 +184,9 @@ check "negative tpm rejected" 400 "$(code)"
 check "message names tpm_limit" 1 "$(echo "$OUT" | json "1 if 'tpm_limit' in d['error']['message'] else 0")"
 OUT=$(req PUT /admin/model-quotas "$TOKEN" '{"model_alias":"","daily_token_limit":1}')
 check "empty alias rejected" 400 "$(code)"
+OUT=$(req PUT /admin/model-quotas "$TOKEN" '{"model_alias":"no-such-model-e2e","daily_token_limit":1}')
+check "unknown model alias rejected" 400 "$(code)"
+check "message names the model" 1 "$(echo "$OUT" | json "1 if 'model' in d['error']['message'].lower() else 0")"
 OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"$PROBE\"}")
 check "quota with no limit rejected" 400 "$(code)"
 
@@ -231,6 +265,11 @@ OUT=$(req DELETE "/admin/model-quotas?model_alias=$PROBE" "$TOKEN")
 check "DELETE campus pool probe quota" 200 "$(code)"
 check "pool probe row was removed" True "$(echo "$OUT" | json "d['removed']")"
 check "no probe rows remain" 0 "$(req GET /admin/model-quotas "$TOKEN" | json "1 if any(q['model_alias']=='$PROBE' for q in d['data']) else 0")"
+if [ "$PROBE_SEEDED" = 1 ]; then
+  cleanup_probe_model
+  check "probe model removed" 0 "$(docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -tAc \
+    "SELECT count(*) FROM gateway_model WHERE alias='$PROBE'" | tr -d '[:space:]')"
+fi
 if [ "$SCOPED_USER_SEEDED" = 1 ]; then
   cleanup_scoped_user
   check "scoped test account removed" 0 "$(docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -tAc \
