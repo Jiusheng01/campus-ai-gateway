@@ -136,6 +136,46 @@ func TestServeDirectForwardsOnlyAllowlistedRequestHeaders(t *testing.T) {
 	}
 }
 
+// Accept-Encoding is not on the request allow list. Streaming passes the body
+// through unchanged, so the gateway forces identity; a client value would never
+// reach the upstream anyway, and listing it in the allow list only made the
+// policy claim something the code did not do.
+func TestAcceptEncodingIsForcedToIdentityNotForwarded(t *testing.T) {
+	if forwardableRequestHeaders["Accept-Encoding"] {
+		t.Fatal("Accept-Encoding must not be on the request allow list; the data plane forces identity")
+	}
+
+	var upstreamEncoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv("TEST_DIRECT_KEY_ACCEPT_ENCODING", "sk-channel-credential")
+
+	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
+		"campus-smart": {
+			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_ACCEPT_ENCODING", Priority: 1},
+		},
+	}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	rec := httptest.NewRecorder()
+
+	s.serveDirect(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if upstreamEncoding != "identity" {
+		t.Fatalf("upstream Accept-Encoding = %q, want identity", upstreamEncoding)
+	}
+}
+
 // The gateway authenticates the caller with its API Key and then authenticates
 // to the Provider with the channel Credential. A client that sends its own
 // Authorization must not be able to replace the second one.

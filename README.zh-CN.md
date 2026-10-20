@@ -125,6 +125,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 > 全部配置来自**进程环境变量**，**不读取 `.env` 文件**。Provider API Key 是例外：在渠道表单里粘贴后由网关加密存入 PostgreSQL。[`.env.example`](.env.example) 只是变量名参考清单——见[配置](doc/configuration.md)。
 
+> **升级提示 — Provider 出站**：渠道 `base_url` 必须是 `https://`；`http://` 目标只有在 host 命中 `PROVIDER_HTTP_ALLOWLIST` 时才允许。存量 `http://` 渠道需要迁到 HTTPS 或加入 allowlist。loopback 目标无法加入 allowlist，一律在建立连接前拒绝。
+
 ## 调用 API
 
 在控制台创建租户与业务 Key，设置该 Key 的模型白名单，然后：

@@ -84,8 +84,19 @@ func deniedAddressReason(ip net.IP) string {
 		return "multicast address"
 	case ip.IsUnspecified():
 		return "unspecified address"
+	case isIPv4ZeroNetwork(ip):
+		// On Linux 0.0.0.0/8 routes to local interfaces, so the whole range is
+		// a local-service target; only the exact 0.0.0.0 is IsUnspecified.
+		return "0.0.0.0/8 address"
 	}
 	return ""
+}
+
+// isIPv4ZeroNetwork reports whether ip is in 0.0.0.0/8. To4 also normalises an
+// IPv4-mapped IPv6 address, so ::ffff:0.1.2.3 is covered by the same rule.
+func isIPv4ZeroNetwork(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 0
 }
 
 // egressDeniedError is the recognisable refusal the dialer returns. The dial
@@ -109,10 +120,49 @@ func (e *egressDeniedError) Error() string {
 	return fmt.Sprintf("egress to %s is denied by policy: %s", target, e.Reason)
 }
 
+// SafeSummary is the caller-facing form of a denial: the channel and the policy
+// reason, never the resolved address. ADR-0009 keeps network detail in the
+// operational log and the security event; the response only gets a stable code
+// and a fixed summary an operator can act on.
+func (e *egressDeniedError) SafeSummary() string {
+	if e.Channel != "" {
+		return fmt.Sprintf("channel %s: egress to the provider target is denied by policy: %s", e.Channel, e.Reason)
+	}
+	return "egress to the provider target is denied by policy: " + e.Reason
+}
+
+// egressTargetReason applies the scheme and plaintext-allowlist rules to the
+// URL about to be dialled. Dialer.Control only receives an ip:port, so the
+// scheme is not visible there; this is the same egress decision, made one step
+// earlier on the target URL.
+//
+// Write-time validation is not enough on its own: a row can predate the rule,
+// and a hostname that was allowlisted when it was saved can resolve elsewhere
+// later. A refusal here is the same typed egressDeniedError the address policy
+// returns, so every audience treats the two identically.
+func (s *Server) egressTargetReason(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Hostname() == "" {
+		return "the provider target is not a valid absolute URL"
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return ""
+	case "http":
+		if allowlistAllowsHost(s.providerHTTPAllowlist(), u.Hostname()) {
+			return ""
+		}
+		return fmt.Sprintf("plaintext http:// to %q is not in PROVIDER_HTTP_ALLOWLIST", u.Hostname())
+	default:
+		return fmt.Sprintf("provider target scheme %q is not http or https", u.Scheme)
+	}
+}
+
 // hostAllowlist is the parsed form of PROVIDER_HTTP_ALLOWLIST: exact hostnames
 // plus address ranges. It is the one predicate for "is this target allowed to
-// speak plaintext HTTP", shared by write-time validation and, later, by the
-// dial-time address check that sees the resolved IP.
+// speak plaintext HTTP", shared by write-time validation and by the request-time
+// target check that runs before the dialer. The address policy is separate: it
+// denies dangerous resolved addresses even when the allowlist matched.
 type hostAllowlist struct {
 	hosts map[string]struct{}
 	nets  []*net.IPNet
@@ -292,7 +342,10 @@ func validateProviderBaseURLPath(u *url.URL) string {
 	// Escaped forms (%00, %0a) decode into u.Path, so the decoded path is
 	// checked too rather than trusting the raw bytes alone.
 	for _, r := range u.Path {
-		if r < 0x20 || r == 0x7f {
+		// Space (0x20) is whitespace too: leaving it out let "https://h/v 1"
+		// through, and a path the request writer and the upstream read
+		// differently is exactly what the fixed-prefix rule exists to prevent.
+		if r <= 0x20 || r == 0x7f {
 			return "base_url path must not contain whitespace or control characters"
 		}
 	}

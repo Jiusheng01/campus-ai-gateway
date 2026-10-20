@@ -266,6 +266,50 @@ func TestRefreshReportsAnEgressDenialWithTheChannelAndReason(t *testing.T) {
 	if !strings.Contains(body, "egress-blocked") || !strings.Contains(body, "loopback") {
 		t.Fatalf("the failure must name the channel and the reason: %s", body)
 	}
+	if ipLiteral.MatchString(body) {
+		t.Fatalf("the admin response must not expose the resolved address either: %s", body)
+	}
+}
+
+// A refresh denial is a security event, exactly like a data-plane denial: the
+// admin button is another way to point a channel at the gateway's own network,
+// and an auditor needs to see the attempt.
+func TestRefreshEgressDenialRecordsASecurityEvent(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	s := providerModelTestServer(t, pg)
+	s.egress = strictEgressPolicy()
+
+	created := createChannelThroughAPI(t, s, "egress-audited", "http://127.0.0.1:1/v1")
+
+	const reqID = "req_refresh_egress_denied"
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/providers/"+created.ID+"/models/refresh", nil)
+	req.Header.Set("X-Request-Id", reqID)
+	rec := httptest.NewRecorder()
+	s.handleAdmin(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("refresh status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+
+	events, err := pg.ListSecurityEvents(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("ListSecurityEvents: %v", err)
+	}
+	for _, event := range events {
+		if event.RequestID != reqID {
+			continue
+		}
+		if event.EventType != egressDenialEventType {
+			t.Fatalf("event type = %q, want %q", event.EventType, egressDenialEventType)
+		}
+		if !strings.Contains(event.Detail, "egress-audited") || !strings.Contains(event.Detail, "loopback") {
+			t.Fatalf("the event detail must name the channel and reason: %q", event.Detail)
+		}
+		return
+	}
+	t.Fatalf("no security event was recorded for the denied refresh (%d recent events)", len(events))
 }
 
 func addManualModel(t *testing.T, s *Server, providerID, name string) {

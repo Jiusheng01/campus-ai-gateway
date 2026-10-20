@@ -1004,10 +1004,11 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 // this function. CREDENTIAL_ is the same argument for the sealing key: naming
 // CREDENTIAL_ENCRYPTION_KEY here would make the gateway send the one key that
 // opens every inline Credential to the channel's configured base URL.
-// The proxy entries are separate because the direct data plane builds its
-// transport with http.ProxyFromEnvironment, which reads HTTPS_PROXY, NO_PROXY
-// and ALL_PROXY as well as HTTP_PROXY. Those values routinely embed
-// "user:password@proxy", and "HTTPS_" is not covered by "HTTP_".
+// The proxy entries are separate because those variables routinely embed
+// "user:password@proxy", and "HTTPS_" is not covered by "HTTP_". The Provider
+// transport deliberately ignores the environment proxy (ADR-0012), but naming
+// one of these as a channel credential would still send the proxy credential
+// upstream as a Bearer token.
 var reservedCredentialEnvPrefixes = []string{
 	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "CREDENTIAL_", "DATABASE_", "DATA_PLANE",
 	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "HTTPS_", "KUBERNETES_",
@@ -1037,31 +1038,22 @@ func validateCredentialEnv(name string) string {
 }
 
 // validateProvider validates a channel write that must name a credential (a
-// create).
+// create). It is a Server method because the deployment's
+// PROVIDER_HTTP_ALLOWLIST is what decides whether a plaintext target is an
+// allowed exception; a Server without a configuration fails closed.
 //
 // The gateway speaks the OpenAI wire format only: the in-process data plane
 // sends the OpenAI chat body it received straight to the provider, so a channel
 // marked anthropic or gemini would be sent a body it cannot read and fail at
 // request time. Refusing it when it is saved is a configuration error instead
 // of an outage.
-func validateProvider(v *model.Provider) string {
-	return validateProviderInput(v, true, nil)
+func (s *Server) validateProvider(v *model.Provider) string {
+	return validateProviderInput(v, true, s.providerHTTPAllowlist())
 }
 
 // validateProviderForUpdate permits a write with no credential at all, which
 // means "keep the stored one" — the console sends that when an operator edits
 // the base URL and leaves the key field blank.
-func validateProviderForUpdate(v *model.Provider) string {
-	return validateProviderInput(v, false, nil)
-}
-
-// The Server-bound forms apply the deployment's PROVIDER_HTTP_ALLOWLIST. The
-// package-level functions above stay allowlist-free, so a caller that has not
-// loaded a configuration still gets the fail-closed rule.
-func (s *Server) validateProvider(v *model.Provider) string {
-	return validateProviderInput(v, true, s.providerHTTPAllowlist())
-}
-
 func (s *Server) validateProviderForUpdate(v *model.Provider) string {
 	return validateProviderInput(v, false, s.providerHTTPAllowlist())
 }

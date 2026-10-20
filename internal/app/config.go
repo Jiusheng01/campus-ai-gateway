@@ -106,9 +106,11 @@ type Config struct {
 	// reached over plaintext http://. It is empty by default, which rejects
 	// every http:// Provider target; https:// never consults it.
 	//
-	// The same predicate is applied when base_url is saved and, at dial time,
-	// to the resolved address. Keeping it an explicit list keeps plaintext
-	// egress an exception a deployment opts into rather than the default.
+	// The same predicate is applied when base_url is saved and again to the
+	// target URL before a request dials it, so a pre-existing row and a host
+	// that was removed from the list are both refused. Keeping it an explicit
+	// list keeps plaintext egress an exception a deployment opts into rather
+	// than the default.
 	ProviderHTTPAllowlist []string
 
 	// AdminPublicOrigin is the browser-facing origin of the console, such as

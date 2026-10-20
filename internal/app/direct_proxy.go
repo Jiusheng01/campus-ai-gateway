@@ -116,7 +116,13 @@ func (p *transportPool) get(timeout time.Duration, policy egressPolicy) *http.Tr
 		Control:   policy.control,
 	}
 	t := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		// ADR-0012: Provider egress dials directly. ProxyFromEnvironment would
+		// make Dialer.Control see the proxy's address instead of the Provider's,
+		// so the address denial and the per-connection DNS revalidation would
+		// both be bypassed whenever HTTP(S)_PROXY is set. There is deliberately
+		// no configuration knob: a proxy setting must not route Provider traffic
+		// around the policy.
+		Proxy:                 nil,
 		DialContext:           dialer.DialContext,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
@@ -516,9 +522,11 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		// what to change instead of reading another generic 502.
 		var denied *egressDeniedError
 		if errors.As(lastErr, &denied) {
+			// The log keeps the full refusal, resolved address included; the
+			// caller gets the fixed summary writeEgressDenied builds.
 			log.Printf("direct: request %s model %q was denied egress for channel %s: %s",
-				reqID, oneLine(envelope.Model), oneLine(lastChannel), denied.Reason)
-			httpx.Error(w, http.StatusBadGateway, "provider_egress_denied", denied.Error(), reqID)
+				reqID, oneLine(envelope.Model), oneLine(lastChannel), denied.Error())
+			writeEgressDenied(w, reqID, denied)
 			return
 		}
 		log.Printf("direct: request %s model %q could not reach channel %s: %s",
@@ -576,6 +584,15 @@ func (s *Server) recordBreaker(provider string, ok bool) {
 // channel at the gateway or its metadata service", which is a different
 // question from "which requests failed".
 const egressDenialEventType = "provider_egress_denied"
+
+// writeEgressDenied answers a denied Provider target for both the data plane
+// and the admin refresh. It is the one place the response is built, so neither
+// caller can drift back to echoing the dial target: the code is stable and the
+// message is denied.SafeSummary(), which never carries the resolved address
+// (ADR-0009). The full refusal stays in the log and the security event.
+func writeEgressDenied(w http.ResponseWriter, reqID string, denied *egressDeniedError) {
+	httpx.Error(w, http.StatusBadGateway, "provider_egress_denied", denied.SafeSummary(), reqID)
+}
 
 // recordEgressDenial writes an egress refusal to the existing security-event
 // stream. It is a no-op for anything that is not a denial, and for a Server
@@ -654,12 +671,12 @@ func clientSafeFailure(err error) string {
 		return missing.Error()
 	}
 	// An egress refusal is the gateway's own policy decision about the target
-	// the operator configured. It names the channel and the category of
-	// address, which is what makes the failure actionable instead of a generic
-	// "could not be reached".
+	// the operator configured. SafeSummary names the channel and the category
+	// of address without the resolved literal, which is what makes the failure
+	// actionable while keeping network detail out of a response (ADR-0009).
 	var denied *egressDeniedError
 	if errors.As(err, &denied) {
-		return denied.Error()
+		return denied.SafeSummary()
 	}
 	return ""
 }
@@ -700,11 +717,15 @@ func (e missingCredentialError) Error() string {
 // reach the log.
 //
 // A missing credential and an egress refusal are the cases that keep real text,
-// and both are shared with the caller-facing summary on purpose: they name a
-// variable or a policy reason, never a secret, and they are the failures an
-// operator can fix from the log line alone. Reusing clientSafeFailure keeps the
-// two audiences from drifting apart.
+// and both are the failures an operator can fix from the log line alone. A
+// denial uses the full Error() here, because the log is the one audience
+// allowed to see the resolved address; the caller-facing path uses
+// clientSafeFailure, which omits it.
 func directFailureReason(err error) string {
+	var denied *egressDeniedError
+	if errors.As(err, &denied) {
+		return denied.Error()
+	}
 	if detail := clientSafeFailure(err); detail != "" {
 		return detail
 	}
@@ -768,6 +789,13 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	target, err := directTargetURL(route.BaseURL, r.URL)
 	if err != nil {
 		return nil, fmt.Errorf("channel %s: %w", route.Provider, err)
+	}
+	// The scheme and the plaintext allowlist are checked here, on the way to
+	// the dialer, because Dialer.Control only sees an ip:port. This covers rows
+	// that predate the write-time rule as well as hosts whose allowlist entry
+	// was removed after the save.
+	if reason := s.egressTargetReason(target); reason != "" {
+		return nil, &egressDeniedError{Channel: route.Provider, Reason: reason}
 	}
 
 	payload := body
@@ -839,15 +867,22 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 // either — it is replaced below with the channel Credential — and Host,
 // Content-Length and Connection are transport-managed.
 //
-// X-Request-Id is this repository's Client Correlation ID: requestIDMiddleware
-// keeps a client-supplied value and generates one otherwise.
+// Accept-Encoding is deliberately absent: the response body is streamed
+// unchanged, so the data plane forces identity after copying and a client value
+// would never reach the upstream. Listing it here only claimed a forwarding
+// that the code does not perform.
+//
+// X-Request-Id carries both identifiers in this repository: it is the internal
+// Request ID the request log records, and the Client Correlation ID when the
+// client supplied one. requestIDMiddleware keeps a client-supplied value and
+// generates one otherwise, and the data plane forwards whatever the header
+// holds.
 var forwardableRequestHeaders = map[string]bool{
-	"Accept":          true,
-	"Accept-Encoding": true,
-	"Content-Type":    true,
-	"Traceparent":     true,
-	"Tracestate":      true,
-	"X-Request-Id":    true,
+	"Accept":       true,
+	"Content-Type": true,
+	"Traceparent":  true,
+	"Tracestate":   true,
+	"X-Request-Id": true,
 }
 
 // forwardableResponseHeaders is the allow list ADR-0012 names for response

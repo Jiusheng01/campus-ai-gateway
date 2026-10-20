@@ -248,10 +248,15 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		// A denied target is a policy decision with its own reason; surfacing
 		// it as a credential failure would send the operator to the wrong fix.
+		// It goes through the same security-event path as a data-plane denial,
+		// because the refresh button is another way to aim a channel at the
+		// gateway's own network. The log and the event keep the full refusal;
+		// the response gets the address-free summary.
 		var denied *egressDeniedError
 		if errors.As(err, &denied) {
-			log.Printf("provider models refresh: request %s channel %s: %s", reqID, oneLine(provider.Name), denied.Reason)
-			httpx.Error(w, http.StatusBadGateway, "provider_egress_denied", denied.Error(), reqID)
+			log.Printf("provider models refresh: request %s channel %s: %s", reqID, oneLine(provider.Name), denied.Error())
+			s.recordEgressDenial(r, reqID, "", err)
+			writeEgressDenied(w, reqID, denied)
 			return
 		}
 		// A missing credential is the operator's fix and names the variable,

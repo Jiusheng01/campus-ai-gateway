@@ -28,7 +28,7 @@
 | `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥 | 是 | 无 |
 | `DATA_PLANE` | 数据面选择。只接受 `direct`；`auto` 与留空同样解析为 `direct`（`thinkwatch` / `shadow` 已随该数据面一起移除，写了会启动失败） | 否 | `direct` |
 | `CREDENTIAL_ENCRYPTION_KEY` | 内联 Provider Credential 的 AES-256-GCM 加密密钥；任意长随机字符串会被哈希为 32 字节 | 生产必填 | 空（留空时从 `API_KEY_HMAC_SECRET` 派生域分离密钥并打警告，仅供本地开发） |
-| `PROVIDER_HTTP_ALLOWLIST` | 允许以明文 `http://` 出站的 Provider host 或 CIDR，逗号分隔（例如 `127.0.0.1,10.0.0.0/8,campus-llm.example.edu`）。留空表示拒绝所有 `http://`；`https://` 不受影响。非法条目启动失败 | 否 | 空 |
+| `PROVIDER_HTTP_ALLOWLIST` | 允许以明文 `http://` 出站的 Provider host 或 CIDR，逗号分隔（例如 `10.0.0.0/8,campus-llm.example.edu`）。留空表示拒绝所有 `http://`；`https://` 不受影响。**loopback（`127.0.0.0/8`、`::1`）始终被拨号策略拒绝，写进本变量也不会生效**；生产环境请使用非 loopback 的校园地址。非法条目启动失败 | 否 | 空 |
 
 ### 管理员认证与会话
 
@@ -120,8 +120,10 @@ Base URL 在**创建与更新**时都会被校验，必须是绝对 URL，形式
 - 拒绝 userinfo（`user:password@`）、query（含尾随 `?`）与 fragment（含尾随 `#`），因为它们与「固定前缀」的语义冲突，也会把凭据带进日志。
 - 路径是固定前缀：拒绝 `.` / `..` 段、编码的 `/`、`\`、`.`（如 `%2f`、`%2e%2e`）以及反斜杠。
 - `http://` 默认拒绝。只有 host 精确命中 `PROVIDER_HTTP_ALLOWLIST`（大小写不敏感），或该 host 解析后的地址落在 allowlist 的 CIDR 内时才允许；host 解析失败不算命中。`https://` 永远不需要 allowlist。
+- 该判断不仅发生在保存时，也发生在**每次出站前**：写入校验上线前已存在的 `http://` 行，或后来从 allowlist 移除的 host，都会在建立连接前被拒绝。地址策略与它是两条独立的线：即使 allowlist 命中，loopback / link-local / multicast / `0.0.0.0/8` / 云 metadata 地址仍会被拨号时的地址拒绝拦下，因此 loopback 端点无法通过 allowlist 放行。
+- 路径中的空格（`0x20`）、控制字符与 DEL（`0x7f`）一律拒绝。
 
-> **升级注意（fail-closed）**：默认拒绝 `http://` 会让存量明文渠道在下次保存时失败。如果校园自建端点确实只能走 HTTP，把它的 host 或地址段加入 `PROVIDER_HTTP_ALLOWLIST`；其余渠道应改用 `https://`。`PROVIDER_HTTP_ALLOWLIST` 中的条目只接受 hostname、IP 或 CIDR，写错（例如带了 `http://`、端口或通配符）会让网关启动失败，而不是悄悄匹配不到。
+> **升级注意（fail-closed）**：默认拒绝 `http://` 会让存量明文渠道在下次保存**或首次出站**时失败。如果校园自建端点确实只能走 HTTP，把它的 host 或地址段加入 `PROVIDER_HTTP_ALLOWLIST`；其余渠道应改用 `https://`。loopback 目标不能靠 allowlist 例外，只能改用非 loopback 的校园端点。`PROVIDER_HTTP_ALLOWLIST` 中的条目只接受 hostname、IP 或 CIDR，写错（例如带了 `http://`、端口或通配符）会让网关启动失败，而不是悄悄匹配不到。
 
 Provider 模板包括（模板只预填 Base URL / 协议 / 环境变量名；凭据来源仍由表单里的开关决定）：
 

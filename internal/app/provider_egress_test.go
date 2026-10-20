@@ -42,10 +42,13 @@ func TestProviderBaseURLRejectsMalformedTargets(t *testing.T) {
 		{name: "encoded dot segment", baseURL: "https://api.example.com/%2e%2e/admin", want: "path"},
 		{name: "backslash", baseURL: `https://api.example.com/v1\admin`, want: "path"},
 		{name: "encoded control character", baseURL: "https://api.example.com/v1%00admin", want: "path"},
+		{name: "literal space", baseURL: "https://h/v 1", want: "whitespace"},
+		{name: "encoded space", baseURL: "https://api.example.com/v1%20admin", want: "whitespace"},
+		{name: "encoded delete", baseURL: "https://api.example.com/v1%7fadmin", want: "whitespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := providerWithBaseURL(tc.baseURL)
-			reason := validateProvider(&v)
+			reason := (&Server{}).validateProvider(&v)
 			if reason == "" {
 				t.Fatalf("base_url %q must be refused", tc.baseURL)
 			}
@@ -67,7 +70,7 @@ func TestProviderBaseURLAcceptsHTTPSPrefixes(t *testing.T) {
 	} {
 		t.Run(baseURL, func(t *testing.T) {
 			v := providerWithBaseURL(baseURL)
-			if reason := validateProvider(&v); reason != "" {
+			if reason := (&Server{}).validateProvider(&v); reason != "" {
 				t.Fatalf("base_url %q must be accepted: %s", baseURL, reason)
 			}
 		})
@@ -78,7 +81,7 @@ func TestProviderBaseURLAcceptsHTTPSPrefixes(t *testing.T) {
 // http:// target, and a matching entry is the only thing that opens one.
 func TestProviderBaseURLRejectsHTTPWithoutAnAllowlistEntry(t *testing.T) {
 	v := providerWithBaseURL("http://upstream.internal/v1")
-	reason := validateProvider(&v)
+	reason := (&Server{}).validateProvider(&v)
 	if reason == "" {
 		t.Fatal("http:// must be refused when no allowlist is configured")
 	}
@@ -174,9 +177,10 @@ func TestServerProviderValidationUsesConfiguredAllowlist(t *testing.T) {
 // create and update share the rule: a malformed target cannot slip in by
 // editing an existing channel instead of creating one.
 func TestProviderBaseURLRuleAppliesToCreateAndUpdate(t *testing.T) {
+	strict := &Server{}
 	for write, validate := range map[string]func(*model.Provider) string{
-		"create": validateProvider,
-		"update": validateProviderForUpdate,
+		"create": strict.validateProvider,
+		"update": strict.validateProviderForUpdate,
 	} {
 		for _, baseURL := range []string{
 			"http://upstream.internal/v1",
