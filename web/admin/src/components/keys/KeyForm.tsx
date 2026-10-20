@@ -2,6 +2,7 @@ import {useState} from 'react'
 import type {ApiKey, ModelConfig, Tenant} from '../../api'
 import {Button} from '../ui/Button'
 import {Field} from '../ui/Field'
+import {useConfirm} from '../ui/ConfirmDialog'
 
 export type KeyDraft = Partial<ApiKey> & {id?: string}
 
@@ -18,6 +19,7 @@ export function KeyForm({
   onSave: (v: KeyDraft) => void
   onCancel: () => void
 }) {
+  const confirm = useConfirm()
   const [v, setV] = useState<KeyDraft>(() => ({...value, tenant_id: value.tenant_id || tenants[0]?.id || ''}))
   const isNew = !value.id
   const allowed = v.allowed_models || []
@@ -26,7 +28,21 @@ export function KeyForm({
   // outside a key that was meant to have everything.
   const allModels = allowed.includes('*')
 
-  const setAllModels = (on: boolean) => setV({...v, allowed_models: on ? ['*'] : []})
+  // Turning a wildcard into a white list removes access to every model the
+  // operator does not then tick, including models added later. That is a
+  // deliberate restriction, not a silent edit.
+  const changeAllModels = async (on: boolean) => {
+    if (!on && allModels) {
+      const ok = await confirm({
+        title: '将通配符 Key 转为显式白名单？',
+        description: `转换后未勾选的 ${models.length} 个模型将立即失去访问权限；以后新增的模型也不会自动允许。`,
+        confirmText: '确认转换',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    setV({...v, allowed_models: on ? ['*'] : []})
+  }
   const toggleModel = (alias: string, on: boolean) =>
     setV({...v, allowed_models: on ? [...allowed, alias] : allowed.filter(x => x !== alias)})
 
@@ -58,7 +74,7 @@ export function KeyForm({
       >
         <div className="checks">
           <label>
-            <input type="checkbox" checked={allModels} onChange={e => setAllModels(e.target.checked)} />
+            <input type="checkbox" checked={allModels} onChange={e => void changeAllModels(e.target.checked)} />
             全部对外模型（含以后新增）
           </label>
           {models.map(m => (

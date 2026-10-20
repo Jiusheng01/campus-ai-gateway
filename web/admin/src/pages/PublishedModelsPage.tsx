@@ -10,6 +10,7 @@ import {Drawer} from '../components/ui/Drawer'
 import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
+import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -19,7 +20,7 @@ import {useResource} from '../lib/useResource'
  * MS1 has no model-kind contract. The page therefore says "未知" instead of
  * claiming every legacy alias is a chat model.
  */
-export function PublishedModelsPage() {
+export function PublishedModelsPage({canAuthorize = false}: {canAuthorize?: boolean}) {
   const loader = useCallback(async () => {
     const d = await api<{data: ModelConfig[]}>('/admin/models')
     return d.data || []
@@ -158,8 +159,11 @@ export function PublishedModelsPage() {
                 <EmptyState icon={<Route />} title="暂无线路" description="该模型尚不可路由。" />
               )}
             </Panel>
+            <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
+              <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize={canAuthorize} />
+            </Panel>
             <p className="responseText muted">
-              <FlaskConical aria-hidden /> 模型测试与授权将在后续票中接入此详情。
+              <FlaskConical aria-hidden /> 模型测试将在后续票中接入此详情。
             </p>
           </div>
         </Drawer>

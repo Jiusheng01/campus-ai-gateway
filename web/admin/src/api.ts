@@ -8,6 +8,8 @@ export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id
 export type RouteView=ModelRoute&{model_display_name:string;config_version:number;provider_status:number;credential_configured:boolean}
 export type ModelDetail={model:ModelConfig;routes:ModelRoute[];version:number}
 export type PublishResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean;version:number}
+export type ModelAuthorization={api_key_id:string;name:string;tenant_id:string;tenant_name:string;status:number;wildcard:boolean;allowed:boolean;last_used_at?:string}
+export type AuthorizationResult={api_key_id:string;outcome:'added'|'already_allowed'|'removed'|'not_present'|'wildcard_refused'|'not_found'}
 
 /** ProviderModel is one entry in a channel's own list of upstream names. */
 export type ProviderModelLink={route_id:string;model_id:string;alias:string;route_status:number}

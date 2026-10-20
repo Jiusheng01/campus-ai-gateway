@@ -230,6 +230,25 @@ type APIKeyCreateResult struct {
 	APIKey string `json:"api_key"`
 }
 
+// ModelAuthorization is one Key's relationship to a model alias. Wildcard keys
+// are reported separately so the console never treats removing one name from
+// "*" as a valid restriction.
+type ModelAuthorization struct {
+	APIKeyID   string     `json:"api_key_id"`
+	Name       string     `json:"name"`
+	TenantID   string     `json:"tenant_id"`
+	TenantName string     `json:"tenant_name"`
+	Status     int        `json:"status"`
+	Wildcard   bool       `json:"wildcard"`
+	Allowed    bool       `json:"allowed"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+type AuthorizationResult struct {
+	APIKeyID string `json:"api_key_id"`
+	Outcome  string `json:"outcome"`
+}
+
 // RequestAttempt is one Routing Attempt under a Request Record.
 //
 // It exists because the Request Record keeps only the winning channel and a

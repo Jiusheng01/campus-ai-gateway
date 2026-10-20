@@ -152,6 +152,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handlePublishModel(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/authorizations"):
+		s.handleModelAuthorizations(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):
 		s.handleModelRoutes(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/model-routes/"):
