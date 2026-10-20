@@ -101,6 +101,13 @@ func validateModelQuotaAllocation(a *model.ModelQuotaAllocation) string {
 	if a.MonthlyTokenLimit != nil && *a.MonthlyTokenLimit < 0 {
 		return "monthly_token_limit cannot be negative"
 	}
+	// A row with both limits left to inherit caps nothing, yet it would sit in
+	// the table looking like a configured quota. Deleting the row is how a
+	// subject goes back to inheriting, so an empty write has no meaning to
+	// express; rejecting it keeps the table honest.
+	if a.DailyTokenLimit == nil && a.MonthlyTokenLimit == nil {
+		return "set at least one limit; a row that inherits both caps nothing (delete it to inherit)"
+	}
 	return ""
 }
 

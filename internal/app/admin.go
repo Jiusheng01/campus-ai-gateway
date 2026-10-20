@@ -439,7 +439,15 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 		}
 		out, err := s.pg.CreateTenant(r.Context(), in)
 		if err != nil {
-			httpx.Error(w, http.StatusConflict, "tenant_create_failed", "Tenant could not be created", reqID)
+			switch {
+			case errors.Is(err, storage.ErrTenantParentNotFound):
+				httpx.Error(w, http.StatusBadRequest, "parent_tenant_not_found", "The parent tenant does not exist", reqID)
+			case errors.Is(err, storage.ErrTenantCodeTaken):
+				httpx.Error(w, http.StatusConflict, "tenant_code_taken", "That tenant code is already in use", reqID)
+			default:
+				log.Printf("tenant create: %s failed: %v", in.Code, err)
+				httpx.Error(w, http.StatusInternalServerError, "database_error", "Tenant could not be created", reqID)
+			}
 			return
 		}
 		writeJSON(w, http.StatusCreated, out)
@@ -508,7 +516,17 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.pg.UpdateTenant(r.Context(), id, in)
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
+		switch {
+		case errors.Is(err, storage.ErrTenantNotFound):
+			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found", reqID)
+		case errors.Is(err, storage.ErrTenantCodeTaken):
+			// A 404 here would send the operator hunting for a tenant that is
+			// right in front of them; the collision is with the code field.
+			httpx.Error(w, http.StatusConflict, "tenant_code_taken", "That tenant code is already in use", reqID)
+		default:
+			log.Printf("tenant update: %s failed: %v", id, err)
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Tenant could not be updated", reqID)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

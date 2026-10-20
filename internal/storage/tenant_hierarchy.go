@@ -11,7 +11,18 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// isUniqueViolation reports whether err is a unique-constraint violation.
+//
+// The SQLSTATE is the contract; matching on message text would break the moment
+// the server runs in another locale. The only unique key a tenant write can hit
+// is the code, which is globally unique by design.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 // Tenant hierarchy errors. They are returned by the storage layer and mapped to
 // HTTP status codes by the handlers.
@@ -25,6 +36,12 @@ var (
 	// ErrTenantCycle is returned when a move would make a tenant its own
 	// ancestor.
 	ErrTenantCycle = errors.New("tenant move would create a cycle")
+	// ErrTenantCodeTaken is returned when a code collides with an existing
+	// tenant. The code is globally unique, and the console has to be able to say
+	// which field is wrong: reporting the collision as "tenant not found" — the
+	// previous behaviour, because every error was mapped to 404 — sends the
+	// operator looking for a tenant that is right in front of them.
+	ErrTenantCodeTaken = errors.New("tenant code is already in use")
 )
 
 // rowScanner is implemented by both pgx.Row and pgx.Rows, so scanTenant works
@@ -327,6 +344,9 @@ RETURNING `+tenantColumns,
 		v.RPMLimit, v.TPMLimit, v.MaxConcurrency, marshalModels(v.AllowedModels),
 	)
 	out, err := scanTenant(row)
+	if isUniqueViolation(err) {
+		return model.Tenant{}, ErrTenantCodeTaken
+	}
 	if err != nil {
 		return model.Tenant{}, err
 	}
@@ -357,6 +377,9 @@ RETURNING `+tenantColumns,
 	out, err := scanTenant(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Tenant{}, ErrTenantNotFound
+	}
+	if isUniqueViolation(err) {
+		return model.Tenant{}, ErrTenantCodeTaken
 	}
 	if err != nil {
 		return model.Tenant{}, err

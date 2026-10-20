@@ -115,6 +115,19 @@ check "negative tpm rejected" 400 "$(code)"
 check "message names tpm_limit" 1 "$(echo "$OUT" | json "1 if 'tpm_limit' in d['error']['message'] else 0")"
 OUT=$(req PUT /admin/model-quotas "$TOKEN" '{"model_alias":"","daily_token_limit":1}')
 check "empty alias rejected" 400 "$(code)"
+OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"gpt-4o\"}")
+check "quota with no limit rejected" 400 "$(code)"
+
+echo "== 5b. error semantics =="
+# A code collision used to be reported as 404 "tenant was not found", which
+# sends the operator looking for a row that is right in front of them.
+OUT=$(req PUT "/admin/tenants/$CHILD" "$TOKEN" '{"code":"xust","name":"重名测试","status":1}')
+check "duplicate code on update" 409 "$(code)"
+check "duplicate code names the field" 1 "$(echo "$OUT" | json "1 if 'code' in d['error']['message'] else 0")"
+OUT=$(req POST /admin/tenants "$TOKEN" '{"code":"xust","name":"dup","status":1}')
+check "duplicate code on create" 409 "$(code)"
+OUT=$(req POST /admin/tenants "$TOKEN" '{"code":"ghost","name":"ghost","status":1,"parent_id":"11111111-1111-1111-1111-111111111111"}')
+check "missing parent rejected" 400 "$(code)"
 
 echo "== 6. scoped administrator =="
 # There is no create-user endpoint (public registration is off in this

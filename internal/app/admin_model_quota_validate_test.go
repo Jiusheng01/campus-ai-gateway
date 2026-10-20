@@ -102,18 +102,22 @@ func TestValidateTenantAllocationNormalizesTheAllowlist(t *testing.T) {
 
 func TestValidateModelQuotaAllocation(t *testing.T) {
 	tenant := "11111111-1111-1111-1111-111111111111"
+	cap := int64(1000)
 	cases := []struct {
 		name  string
 		in    model.ModelQuotaAllocation
 		ok    bool
 		field string
 	}{
-		{"system pool", model.ModelQuotaAllocation{ModelAlias: "campus-smart"}, true, ""},
-		{"tenant row", model.ModelQuotaAllocation{ModelAlias: "campus-smart", TenantID: &tenant}, true, ""},
-		{"alias trimmed", model.ModelQuotaAllocation{ModelAlias: "  campus-smart  "}, true, ""},
-		{"missing alias", model.ModelQuotaAllocation{}, false, "model_alias"},
-		{"blank alias", model.ModelQuotaAllocation{ModelAlias: "   "}, false, "model_alias"},
-		{"malformed tenant", model.ModelQuotaAllocation{ModelAlias: "m", TenantID: strptr("not-a-uuid")}, false, "tenant_id"},
+		{"system pool", model.ModelQuotaAllocation{ModelAlias: "campus-smart", DailyTokenLimit: &cap}, true, ""},
+		{"tenant row", model.ModelQuotaAllocation{ModelAlias: "campus-smart", TenantID: &tenant, DailyTokenLimit: &cap}, true, ""},
+		{"alias trimmed", model.ModelQuotaAllocation{ModelAlias: "  campus-smart  ", MonthlyTokenLimit: &cap}, true, ""},
+		{"missing alias", model.ModelQuotaAllocation{DailyTokenLimit: &cap}, false, "model_alias"},
+		{"blank alias", model.ModelQuotaAllocation{ModelAlias: "   ", DailyTokenLimit: &cap}, false, "model_alias"},
+		{"malformed tenant", model.ModelQuotaAllocation{ModelAlias: "m", TenantID: strptr("not-a-uuid"), DailyTokenLimit: &cap}, false, "tenant_id"},
+		// Both limits left to inherit caps nothing; the row would only look
+		// configured. Deleting the row is how a subject inherits again.
+		{"no limit at all", model.ModelQuotaAllocation{ModelAlias: "campus-smart"}, false, "at least one limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,7 +142,8 @@ func TestValidateModelQuotaAllocation(t *testing.T) {
 // nil explicitly: the storage layer distinguishes NULL from a real id, and a
 // stray "" would fail the uuid cast.
 func TestValidateModelQuotaTreatsBlankTenantAsTheSystemPool(t *testing.T) {
-	in := model.ModelQuotaAllocation{ModelAlias: "campus-smart", TenantID: strptr("  ")}
+	cap := int64(1000)
+	in := model.ModelQuotaAllocation{ModelAlias: "campus-smart", TenantID: strptr("  "), DailyTokenLimit: &cap}
 	if msg := validateModelQuotaAllocation(&in); msg != "" {
 		t.Fatalf("blank tenant id = %q, want accepted", msg)
 	}
