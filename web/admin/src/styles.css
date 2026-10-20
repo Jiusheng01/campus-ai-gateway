@@ -591,7 +591,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .providerRow { display: grid; grid-template-columns: 88px 1fr; gap: 10px; align-items: baseline; }
 .providerRow dt { color: var(--text-muted); font-size: 12px; }
 .providerRow dd { margin: 0; font-size: 12.5px; min-width: 0; }
-.providerFoot { margin-top: auto; }
+.providerFoot { margin-top: auto; display: flex; gap: 8px; }
 
 /* --- model cards and route chain ------------------------------------------ */
 

@@ -90,6 +90,139 @@ RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, cr
 	return v, nil
 }
 
+// DeleteProvider hard-deletes a channel and everything that only existed for
+// it, in one transaction.
+//
+// A plain DELETE cannot do this: gateway_model_route.provider_id is NO ACTION,
+// so a channel that still has Routes cannot be removed; and
+// gateway_provider.credential_id points the other way, so deleting the channel
+// would leave its Credential — and the sealed secret in it — behind.
+//
+// The cascade deliberately bypasses the single-Route invariant
+// (ErrLastModelRoute): a Route is deletable here because the Virtual Model left
+// with zero Routes is deleted too (ADR-0019). A Route that still has another
+// Provider is kept, and so is its model.
+//
+// The Provider row is deleted before its Credential, not after as the prose
+// order suggests: the foreign key is provider -> credential, so deleting the
+// referenced Credential first would fail while the Provider still points at it.
+func (p *Postgres) DeleteProvider(ctx context.Context, id string) (model.ProviderDeleteResult, error) {
+	var out model.ProviderDeleteResult
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the channel first: a missing row is the whole answer, and holding the
+	// lock stops a concurrent edit from changing what this delete is looking at.
+	var credentialID string
+	if err := tx.QueryRow(ctx, `
+SELECT credential_id::text
+FROM gateway_provider
+WHERE id=$1::uuid
+FOR UPDATE`, id).Scan(&credentialID); err != nil {
+		return out, err
+	}
+
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT model_id::text
+FROM gateway_model_route
+WHERE provider_id=$1::uuid
+ORDER BY model_id`, id)
+	if err != nil {
+		return out, err
+	}
+	var modelIDs []string
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			rows.Close()
+			return out, err
+		}
+		modelIDs = append(modelIDs, modelID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+
+	// Lock the affected models before touching their Routes. A concurrent Route
+	// write locks the model too, so this makes "delete the Routes, then delete a
+	// model only if none remain" atomic against it: a Route added to another
+	// Provider either commits before the orphan check (and saves the model) or
+	// waits until this transaction is done (and then finds its model gone).
+	if len(modelIDs) > 0 {
+		locks, err := tx.Query(ctx, `
+SELECT id::text
+FROM gateway_model
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR UPDATE`, modelIDs)
+		if err != nil {
+			return out, err
+		}
+		for locks.Next() {
+			var locked string
+			if err := locks.Scan(&locked); err != nil {
+				locks.Close()
+				return out, err
+			}
+		}
+		locks.Close()
+		if err := locks.Err(); err != nil {
+			return out, err
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM gateway_model_route WHERE provider_id=$1::uuid`, id)
+	if err != nil {
+		return out, err
+	}
+	out.DeletedRoutes = int(tag.RowsAffected())
+
+	if len(modelIDs) > 0 {
+		tag, err = tx.Exec(ctx, `
+DELETE FROM gateway_model m
+WHERE m.id = ANY($1::uuid[])
+  AND NOT EXISTS (SELECT 1 FROM gateway_model_route r WHERE r.model_id = m.id)`, modelIDs)
+		if err != nil {
+			return out, err
+		}
+		out.DeletedModels = int(tag.RowsAffected())
+	}
+
+	// The table has ON DELETE CASCADE, but the rows are deleted explicitly: the
+	// count is part of the answer the operator sees.
+	tag, err = tx.Exec(ctx, `DELETE FROM gateway_provider_model WHERE provider_id=$1::uuid`, id)
+	if err != nil {
+		return out, err
+	}
+	out.DeletedProviderModels = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx, `DELETE FROM gateway_provider WHERE id=$1::uuid`, id)
+	if err != nil {
+		return out, err
+	}
+	if tag.RowsAffected() != 1 {
+		return out, pgx.ErrNoRows
+	}
+
+	// Only now, with the last reference gone, can the Credential be removed —
+	// and only if no other Provider points at it.
+	if _, err := tx.Exec(ctx, `
+DELETE FROM gateway_credential c
+WHERE c.id=$1::uuid
+  AND NOT EXISTS (SELECT 1 FROM gateway_provider p WHERE p.credential_id=c.id)`, credentialID); err != nil {
+		return out, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 // UpdateProvider edits the provider and, when the caller supplies a credential
 // source, its Credential. An update with no source leaves the Credential alone:
 // that is how "leave the key field blank" edits the channel without touching the

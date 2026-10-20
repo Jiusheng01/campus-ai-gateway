@@ -1,24 +1,51 @@
 import {useState} from 'react'
-import {Network, Pencil, Plus} from 'lucide-react'
-import {api, type Provider} from '../api'
+import {Network, Pencil, Plus, Trash2} from 'lucide-react'
+import {api, type ModelConfig, type ModelRoute, type Provider, type ProviderDeleteResult} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {StatusBadge} from '../components/ui/Badge'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards} from '../components/ui/Skeleton'
 import {Drawer} from '../components/ui/Drawer'
+import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {ProviderForm, type ProviderDraft} from '../components/providers/ProviderForm'
 import {friendlyProviderName, protocolLabel} from '../components/providers/templates'
 import {useResource} from '../lib/useResource'
 
+/**
+ * deleteCost is the price the confirmation quotes: how many Routes the channel
+ * serves and how many Virtual Models lose their last Route with it.
+ *
+ * It is read from the same Route endpoints the models page uses rather than
+ * from a dedicated preview endpoint, so the number shown is the configuration
+ * the operator is looking at. The delete response reports what actually
+ * happened; the preview is only the warning.
+ */
+async function deleteCost(providerID: string) {
+  const models = (await api<{data: ModelConfig[]}>('/admin/models')).data || []
+  const lists = await Promise.all(
+    models.map(async m => (await api<{data: ModelRoute[]}>(`/admin/models/${m.id}/routes`)).data || []),
+  )
+  let routes = 0
+  let modelsLost = 0
+  for (const list of lists) {
+    const own = list.filter(r => r.provider_id === providerID).length
+    routes += own
+    if (own > 0 && own === list.length) modelsLost++
+  }
+  return {routes, modelsLost}
+}
+
 export function ProvidersPage() {
   const toast = useToast()
+  const confirm = useConfirm()
   const {data, loading, error, errorStatus, reload} = useResource(async () => {
     const d = await api<{data: Provider[]}>('/admin/providers')
     return d.data || []
   })
   const [draft, setDraft] = useState<ProviderDraft | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const save = async (v: ProviderDraft) => {
     try {
@@ -31,6 +58,37 @@ export function ProvidersPage() {
       reload()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '保存渠道失败')
+    }
+  }
+
+  const remove = async (p: Provider) => {
+    let cost: {routes: number; modelsLost: number}
+    try {
+      cost = await deleteCost(p.id)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '无法读取该渠道的删除影响')
+      return
+    }
+    const ok = await confirm({
+      title: `删除渠道「${p.name}」？`,
+      description: `将永久删除 1 个渠道、${cost.routes} 条线路、${cost.modelsLost} 个对外模型。此操作不可撤销。`,
+      confirmText: '永久删除',
+      danger: true,
+      requireText: p.name,
+      requireTextLabel: `输入渠道名「${p.name}」以确认`,
+    })
+    if (!ok) return
+    setDeleting(p.id)
+    try {
+      const result = await api<ProviderDeleteResult>(`/admin/providers/${encodeURIComponent(p.id)}`, {method: 'DELETE'})
+      toast.success(
+        `已删除渠道：${result.deleted_routes} 条线路、${result.deleted_models} 个对外模型、${result.deleted_provider_models} 条模型清单`,
+      )
+      reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '删除渠道失败')
+    } finally {
+      setDeleting(null)
     }
   }
 
@@ -91,6 +149,16 @@ export function ProvidersPage() {
                   <footer className="providerFoot">
                     <Button size="sm" icon={<Pencil />} onClick={() => setDraft(p)}>
                       编辑
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon={<Trash2 />}
+                      loading={deleting === p.id}
+                      disabled={deleting !== null}
+                      onClick={() => void remove(p)}
+                    >
+                      删除
                     </Button>
                   </footer>
                 </article>
