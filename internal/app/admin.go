@@ -128,6 +128,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
+		s.handleProviderRuntimeSummary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/test"):
 		s.handleProviderTest(w, r)
 	// A channel's model list is addressed under the channel. Keep these before
@@ -152,6 +154,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handlePublishModel(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
+		s.handleModelRuntimeSummary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/authorizations"):
 		s.handleModelAuthorizations(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):

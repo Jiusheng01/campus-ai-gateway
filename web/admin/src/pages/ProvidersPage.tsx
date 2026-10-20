@@ -12,6 +12,7 @@ import {useToast} from '../components/ui/Toast'
 import {ProviderForm, type ProviderDraft} from '../components/providers/ProviderForm'
 import {ProviderTestPanel} from '../components/providers/ProviderTestPanel'
 import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
+import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
 import {useResource} from '../lib/useResource'
 import {ms, when} from '../lib/format'
@@ -50,7 +51,15 @@ async function deleteCost(providerID: string) {
   return {routes, modelsLost}
 }
 
-export function ProvidersPage({canPreviewContent = false}: {canPreviewContent?: boolean}) {
+export function ProvidersPage({
+  canPreviewContent = false,
+  canOpenRawLogs = false,
+  onOpenLogs,
+}: {
+  canPreviewContent?: boolean
+  canOpenRawLogs?: boolean
+  onOpenLogs?: (filters: LogSeed) => void
+}) {
   const toast = useToast()
   const confirm = useConfirm()
   const [draftFilters, setDraftFilters] = useState<Filters>(emptyFilters)
@@ -355,10 +364,13 @@ export function ProvidersPage({canPreviewContent = false}: {canPreviewContent?: 
             {tab === 'test' && draft.id && (
               <ProviderTestPanel provider={draft as Provider} canPreviewContent={canPreviewContent} onTested={reload} />
             )}
-            {tab === 'usage' && (
-              <p className="hint">
-                业务调用日志仅超级管理员与审计员可读。gateway_admin 的渠道范围运行摘要将在运行摘要票中接入。
-              </p>
+            {tab === 'usage' && draft.id && (
+              <RuntimeSummaryPanel
+                kind="provider"
+                id={draft.id}
+                canOpenRawLogs={canOpenRawLogs}
+                onOpenLogs={onOpenLogs}
+              />
             )}
           </div>
         </Drawer>

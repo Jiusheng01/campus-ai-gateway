@@ -249,6 +249,61 @@ type AuthorizationResult struct {
 	Outcome  string `json:"outcome"`
 }
 
+// RuntimeSummaryTotals is the redacted aggregate for one model or channel.
+// SuccessRate and P95LatencyMS are computed over the same filter; no tenant,
+// key or client-IP dimension is exposed here.
+type RuntimeSummaryTotals struct {
+	Requests     int64   `json:"requests"`
+	Errors       int64   `json:"errors"`
+	SuccessRate  float64 `json:"success_rate"`
+	P95LatencyMS float64 `json:"p95_latency_ms"`
+	Failover     int64   `json:"failover"`
+	Tokens       int64   `json:"tokens"`
+}
+
+// RuntimeRequest is a redacted recent request row. It deliberately has no
+// tenant id, API key id or client IP.
+type RuntimeRequest struct {
+	RequestID      string    `json:"request_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	RequestedModel string    `json:"requested_model"`
+	ActualModel    string    `json:"actual_model"`
+	Provider       string    `json:"provider"`
+	UpstreamModel  string    `json:"upstream_model"`
+	RoutePriority  int       `json:"route_priority"`
+	StatusCode     int       `json:"status_code"`
+	ErrorCode      string    `json:"error_code"`
+	Attempts       int       `json:"attempts"`
+	Failover       bool      `json:"failover"`
+	InputTokens    int64     `json:"input_tokens"`
+	OutputTokens   int64     `json:"output_tokens"`
+	TotalTokens    int64     `json:"total_tokens"`
+	LatencyMS      int64     `json:"latency_ms"`
+}
+
+type RuntimeAttemptOutcomes struct {
+	Served int64 `json:"served"`
+	Failed int64 `json:"failed"`
+	Skipped int64 `json:"skipped"`
+}
+
+type ModelRuntimeSummary struct {
+	Alias  string               `json:"alias"`
+	From   time.Time            `json:"from"`
+	To     time.Time            `json:"to"`
+	Totals RuntimeSummaryTotals `json:"totals"`
+	Recent []RuntimeRequest     `json:"recent"`
+}
+
+type ProviderRuntimeSummary struct {
+	Provider string                  `json:"provider"`
+	From     time.Time               `json:"from"`
+	To       time.Time               `json:"to"`
+	Totals   RuntimeSummaryTotals    `json:"totals"`
+	Attempts RuntimeAttemptOutcomes  `json:"attempts"`
+	Recent   []RuntimeRequest        `json:"recent"`
+}
+
 // RequestAttempt is one Routing Attempt under a Request Record.
 //
 // It exists because the Request Record keeps only the winning channel and a

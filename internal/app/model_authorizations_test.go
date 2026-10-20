@@ -26,6 +26,33 @@ func TestModelAuthorizationRBACIsSuperAdminOnly(t *testing.T) {
 	}
 }
 
+func TestRuntimeSummaryRBACDoesNotOpenRawLogs(t *testing.T) {
+	for _, path := range []string{
+		"/admin/models/11111111-1111-1111-1111-111111111111/runtime-summary",
+		"/admin/providers/11111111-1111-1111-1111-111111111111/runtime-summary",
+	} {
+		for _, tc := range []struct {
+			role string
+			want bool
+		}{
+			{RoleGatewayAdmin, true},
+			{RoleSuperAdmin, true},
+			{RoleAuditor, false},
+			{RoleOperator, false},
+		} {
+			p := adminPrincipal{User: "u", Roles: map[string]bool{tc.role: true}}
+			if got := p.can(httptest.NewRequest(http.MethodGet, path, nil)); got != tc.want {
+				t.Fatalf("%s %s = %v, want %v", tc.role, path, got, tc.want)
+			}
+		}
+	}
+	// Raw logs remain closed to gateway_admin.
+	p := adminPrincipal{User: "u", Roles: map[string]bool{RoleGatewayAdmin: true}}
+	if p.can(httptest.NewRequest(http.MethodGet, "/admin/request-logs", nil)) {
+		t.Fatal("gateway_admin may read raw request logs")
+	}
+}
+
 func TestModelAuthorizationEndpointMergesAndRefusesWildcardRemoval(t *testing.T) {
 	pg := usagePostgres(t)
 	clearProviderFixtures(t, pg)

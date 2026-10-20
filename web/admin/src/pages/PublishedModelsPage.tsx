@@ -11,6 +11,7 @@ import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
+import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -20,7 +21,15 @@ import {useResource} from '../lib/useResource'
  * MS1 has no model-kind contract. The page therefore says "未知" instead of
  * claiming every legacy alias is a chat model.
  */
-export function PublishedModelsPage({canAuthorize = false}: {canAuthorize?: boolean}) {
+export function PublishedModelsPage({
+  canAuthorize = false,
+  canOpenRawLogs = false,
+  onOpenLogs,
+}: {
+  canAuthorize?: boolean
+  canOpenRawLogs?: boolean
+  onOpenLogs?: (filters: LogSeed) => void
+}) {
   const loader = useCallback(async () => {
     const d = await api<{data: ModelConfig[]}>('/admin/models')
     return d.data || []
@@ -162,8 +171,16 @@ export function PublishedModelsPage({canAuthorize = false}: {canAuthorize?: bool
             <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
               <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize={canAuthorize} />
             </Panel>
+            <Panel title="使用记录" sub="脱敏运行摘要；原始日志仍由超级管理员/审计员读取。">
+              <RuntimeSummaryPanel
+                kind="model"
+                id={detail.model.id}
+                canOpenRawLogs={canOpenRawLogs}
+                onOpenLogs={onOpenLogs}
+              />
+            </Panel>
             <p className="responseText muted">
-              <FlaskConical aria-hidden /> 模型测试将在后续票中接入此详情。
+              <FlaskConical aria-hidden /> 模型诊断测试保留在独立的管理测试入口。
             </p>
           </div>
         </Drawer>

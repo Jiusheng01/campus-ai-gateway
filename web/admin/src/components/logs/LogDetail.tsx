@@ -72,11 +72,14 @@ export function LogDetail({v}: {v: RequestLog}) {
         ]}
       />
 
-      <Panel title="尝试链" sub="本次请求按顺序打过的每一条线路，以及各自的结果。">
+      <Panel
+        title="尝试链"
+        sub="本次请求按顺序打过的每一条线路，以及各自的结果。尝试次数包含凭据解析等拨号前失败；熔断跳过不计入尝试次数。"
+      >
         {attempts === null ? (
           <p className="muted">加载中…</p>
         ) : attempts.length ? (
-          <Table heads={['#', '渠道', '上游模型', '结果', '状态', '耗时']} minWidth={720}>
+          <Table heads={['#', '渠道', '上游模型', '结果', '状态', '错误分类', '耗时']} minWidth={800}>
             {attempts.map(a => (
               <tr key={a.attempt_no}>
                 <td className="numeric">{a.attempt_no}</td>
@@ -84,12 +87,13 @@ export function LogDetail({v}: {v: RequestLog}) {
                 <td className="mono">{a.upstream_model || '—'}</td>
                 <td>{outcomeLabel(a)}</td>
                 <td className="numeric">{a.status_code > 0 ? a.status_code : '—'}</td>
+                <td>{a.error_kind || '—'}</td>
                 <td className="numeric">{ms(a.latency_ms)}</td>
               </tr>
             ))}
           </Table>
         ) : (
-          <EmptyState title="暂无尝试记录" description="直连数据面会为每次上游尝试留下一行。" />
+          <EmptyState title="暂无尝试记录" description="直连数据面会为每次上游尝试留下一行；熔断跳过会单独标记。" />
         )}
       </Panel>
 
@@ -128,6 +132,6 @@ function outcomeLabel(a: RequestAttempt): string {
     case 'skipped':
       return '跳过（熔断）'
     default:
-      return a.error_kind ? `失败（${a.error_kind}）` : '失败'
+      return '失败'
   }
 }

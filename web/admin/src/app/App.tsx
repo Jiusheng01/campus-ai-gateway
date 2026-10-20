@@ -46,6 +46,8 @@ import {AccessPage} from '../pages/AccessPage'
 // because a member and an administrator differ by role rather than by kind.
 type AuthPhase = 'loading' | 'login' | 'setup' | 'ready' | 'identity' | 'unsupported'
 
+type LogSeed = {model?: string; provider?: string; tenant_id?: string; api_key_id?: string}
+
 const authModeOf = (cfg: AuthConfig | null) => (cfg?.auth_mode || '').toLowerCase()
 
 function Console() {
@@ -55,6 +57,7 @@ function Console() {
   const [authNotice, setAuthNotice] = useState('')
   const [who, setWho] = useState<WhoAmI | null>(null)
   const [page, setPage] = useState<Page>('dashboard')
+  const [logSeed, setLogSeed] = useState<LogSeed>({})
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('campus_sidebar') === '1')
   const [dark, setDark] = useState(() => localStorage.getItem('campus_theme') === 'dark')
 
@@ -137,6 +140,11 @@ function Console() {
   // Derived, not state: the shell and every page read the same list, and it is
   // refreshed wholesale when whoami resolves.
   const roles = who?.roles || []
+  const canOpenRawLogs = roles.includes('super_admin') || roles.includes('auditor')
+  const openLogs = (filters: LogSeed) => {
+    setLogSeed(filters)
+    setPage('logs')
+  }
 
   // Roles can change under a live session — a promotion bumps auth_version and
   // revokes, but a demotion only resolves on the next request. Rather than
@@ -252,12 +260,24 @@ function Console() {
     >
       {page === 'dashboard' && <DashboardPage roles={roles} />}
       {page === 'analytics' && <AnalyticsPage />}
-      {page === 'providers' && <ProvidersPage canPreviewContent={roles.includes('super_admin')} />}
-      {page === 'models' && <PublishedModelsPage canAuthorize={roles.includes('super_admin')} />}
+      {page === 'providers' && (
+        <ProvidersPage
+          canPreviewContent={roles.includes('super_admin')}
+          canOpenRawLogs={canOpenRawLogs}
+          onOpenLogs={openLogs}
+        />
+      )}
+      {page === 'models' && (
+        <PublishedModelsPage
+          canAuthorize={roles.includes('super_admin')}
+          canOpenRawLogs={canOpenRawLogs}
+          onOpenLogs={openLogs}
+        />
+      )}
       {page === 'routes' && <RoutesPage />}
       {(page === 'calls' || page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}
       {page === 'tenants' && <CallsPage key="calls-tenants" initialTab="tenants" />}
-      {page === 'logs' && <RequestLogsPage />}
+      {page === 'logs' && <RequestLogsPage key={JSON.stringify(logSeed)} initialFilters={logSeed} />}
       {page === 'audit' && <AuditPage />}
       {page === 'security' && <SecurityPage />}
       {page === 'users' && <UsersPage />}
