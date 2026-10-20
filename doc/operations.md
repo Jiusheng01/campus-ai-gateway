@@ -15,7 +15,7 @@
 ### 第一次初始化
 
 ```powershell
-cd D:\AI\campus-ai-gateway
+cd <仓库根目录>
 .\scripts\setup.ps1
 ```
 
@@ -67,6 +67,10 @@ go run ./cmd/migrate -database-url "postgres://campus:campus@127.0.0.1:5432/camp
 - 已记录文件的校验值变化会失败；没有 `schema_migrations` 的旧库会重放全部幂等迁移后
   建立记录；并发执行由 advisory lock 串行化。
 - 迁移失败时命令非零退出，Compose 栈中的网关不会启动。
+- **不要用 `psql` 按文件名重放 `migrations/*.sql` 来代替这个命令。** 有些文件是数据迁移：
+  `0011_allowed_models_explicit.sql` 会把空的白名单 `[]` / `null` 改写成 `["*"]`。重放它
+  会把后来有意配置的「拒绝全部模型」改成「允许全部」，而且每次启动都会扩大一次权限。
+  `migrate` 通过 `schema_migrations` 避开这个问题。
 
 ---
 
@@ -87,6 +91,8 @@ npm --prefix .\web\admin run build
 ```
 
 生产运行时只使用构建后嵌入 Go 的静态资源，不需要单独运行 Node 服务。
+
+Admin UI 通过 `go:embed` 打进二进制，所以构建顺序必须是 **先 `npm run build`，再 `go build`**。替换二进制后还必须重启网关进程，否则端口上运行的仍是旧代码和旧 UI。
 
 ---
 
@@ -124,7 +130,10 @@ migrations/
 ├── 0010_analytics_indexes.sql
 ├── 0011_allowed_models_explicit.sql
 ├── 0012_rate_limits_on_tenant.sql
-└── 0013_request_attempt.sql
+├── 0013_request_attempt.sql
+├── 0014_tenant_hierarchy.sql
+├── 0015_admin_scope.sql
+└── 0016_model_quota.sql
 
 web/
 └── admin/                  React + TypeScript + Vite
@@ -145,6 +154,7 @@ scripts/
 ├── status.ps1
 ├── stop.ps1
 ├── verify-failover.ps1
+├── verify-three-state.sh
 └── e2e-admin-auth-v2.sh
 ```
 
@@ -182,8 +192,25 @@ bash scripts/e2e-admin-auth-v2.sh
 - CSRF
 - 登录限流
 - trusted-header
-- 五角色 RBAC
+- 六角色 RBAC
 - 浏览器凭据不落持久化存储
+
+租户树、三态额度、按模型额度与受限管理员验收（需要 8080 上已运行的网关）：
+
+```bash
+bash scripts/verify-three-state.sh
+```
+
+覆盖：
+
+- 租户树的父子关系、深度与物化路径
+- 三态分配（`NULL` / `0` / `>0`）与有效额度解析
+- 祖先上限不可被下级放大：下级声明更大的值，有效值仍是祖先的
+- 按模型额度的全校共享池与租户行
+- 受限 `tenant_admin`：不能改自己租户的预算或模型额度、不能写共享池、可以写严格下级
+- 验证失败的退出码等于失败检查数
+
+脚本只为专属别名 `e2e-three-state-probe` 写入额度，并在正常结束和异常退出时都删除自己创建的行（包括全校共享池）。它需要本地 `deploy-postgres-1` 容器来播种受限管理员账号，并使用本地开发凭据。
 
 依赖数据库的集成测试需要 PostgreSQL 17 与 Redis 7，CI（`.github/workflows/ci.yml`）以
 health-checked service 方式提供，本地则用 `.\scripts\dev.ps1` 起容器。**没有数据库时这些

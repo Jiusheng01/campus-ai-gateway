@@ -182,11 +182,25 @@ Provider API Key 应来自环境变量或 Secret Manager，不应进入代码仓
 
 ## 配额与限流：不在环境变量里
 
-这两样都**按 Tenant 在管理台设置**，不是启动参数：
+这些都在管理台按 Tenant 配置，不是启动参数。租户自 `0014` 起是一棵树，下级默认继承上级，并且**只能收紧、不能放宽**：
 
-- **Quota（日 / 月用量上限）**：`daily_token_limit`、`monthly_token_limit`、`monthly_request_limit`。定义在 Tenant 上，同租户的**所有 API Key 共享**一份；**0 表示不限**。用量以 `gateway_request_log` 为唯一权威来源，Redis 里的计数只是它可重建的投影。
+- **Quota（日 / 月用量上限）**：`daily_token_limit`、`monthly_token_limit`、`monthly_request_limit`。同租户的**所有 API Key 共享**一份；用量以 `gateway_request_log` 为唯一权威来源，Redis 里的计数只是它可重建的投影。
 - **Rate Limit（每分钟上限与并发）**：`rpm_limit`、`tpm_limit`、`max_concurrency`。同样定义在 Tenant 上，由 Redis 在请求时刻判定，没有持久真相。
 
-两者正交：Quota 管"这个月能用多少"，Rate Limit 管"此刻能打多快"。
+上述六个字段都是三态：
+
+| 值 | 含义 |
+| --- | --- |
+| `NULL` | 本级不设上限；祖先的正数上限仍然生效 |
+| `0` | 本级明确不限；仍然不能让祖先的上限失效 |
+| `>0` | 本级上限 |
+
+实际执行是包含式的：请求会检查链上**每一个**正数上限，最紧的一个决定结果。因此子级写 `0` 或写一个更大的数字，都无法突破祖先的天花板；管理台显示的「有效额度」用的是同一条规则。
+
+- **按模型额度**：`/admin/model-quotas` 按「主体 + 模型」配置 `daily_token_limit` / `monthly_token_limit`。主体是全校共享池（`tenant_id = NULL`，每个租户的该模型用量都计入）或某个租户；三态规则与租户额度相同，共享池的上限不能被租户行的 `0` 取消。目前只覆盖日/月 Token，不含按模型的 RPM / TPM / 请求数。
+
+Quota 管"这个月能用多少"，Rate Limit 管"此刻能打多快"，按模型额度管"这个模型能用多少"，三者正交。
 
 > 每个 Key 上还有 `route_group`，以及 Tenant 上的 `monthly_budget_micros`：这两个字段仍在库表与 API 中，但**数据面不读取**，所以管理台已不再提供编辑。详见[已知限制](design.md)。
+>
+> 受限管理员（`tenant_admin`）的 `scope_tenant_id` 是账号字段，不是环境变量；它只能通过用户管理接口/界面授予，规则见[认证与账号](authentication.md)。

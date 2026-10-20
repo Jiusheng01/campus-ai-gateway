@@ -28,7 +28,7 @@
 
 ### 🔑 以 Tenant 为边界
 
-配额、限流（RPM / TPM / 并发）与审计都定义在 **Tenant** 上，所以一个院系是**一份预算**，而不是每把 API Key 一份。同一租户下的所有 Key 共享同一个上限。
+配额、限流（RPM / TPM / 并发）与审计都定义在 **Tenant 树**上，所以一个院系共享一份预算，并自动继承上级的上限。限额是三态的——继承、不限、封顶——下级只能收紧、不能放宽；按模型的额度遵循同一规则。
 
 </td>
 <td width="50%" valign="top">
@@ -67,7 +67,7 @@
 
 ### 🖥️ 自带管理控制台
 
-React 控制台直接嵌入 Go 二进制：租户、密钥、渠道、线路、用量、审计。Argon2id 会话认证、五角色 RBAC，以及给校园 SSO 用的 trusted-header 通路。
+React 控制台直接嵌入 Go 二进制：租户、密钥、渠道、线路、用量、审计。Argon2id 会话认证、六角色 RBAC，以及给校园 SSO 用的 trusted-header 通路。
 
 </td>
 </tr>
@@ -82,7 +82,7 @@ flowchart TB
     subgraph GW["Campus AI Gateway · 单个 Go 进程"]
         direction TB
         Auth["认证与授权<br/>Tenant · 业务 API Key · 模型/IP 白名单"]
-        Limit["配额与限流<br/>日/月配额 · RPM / TPM / 并发"]
+        Limit["配额与限流<br/>租户树 · 三态上限 · 按模型额度 · RPM / TPM / 并发"]
         Route["路由<br/>priority 分组 · 加权轮询 · 故障切换 · 熔断"]
         Record["记录<br/>请求日志 · 用量 · 审计"]
         Auth --> Limit --> Route --> Record

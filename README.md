@@ -28,7 +28,7 @@ A single Go process with PostgreSQL and Redis. Callers keep speaking the OpenAI 
 
 ### 🔑 The Tenant is the boundary
 
-Quota, rate limits (RPM / TPM / concurrency) and audit are defined on the Tenant, so a department has **one budget**, not one per API key. Every key under it shares the same ceiling.
+Quota, rate limits (RPM / TPM / concurrency) and audit are defined on a tenant **tree**, so a department shares one budget and inherits its parent's ceilings. Limits are three-state — inherit, unlimited, or cap — and a child can tighten a ceiling but never widen it. The same rule applies per model.
 
 </td>
 <td width="50%" valign="top">
@@ -67,7 +67,7 @@ Business request logs, admin audit and security events are separate record class
 
 ### 🖥️ An admin console, included
 
-A React console embedded in the Go binary: tenants, keys, providers, routes, usage, audit. Session auth with Argon2id, five RBAC roles, and a trusted-header path for campus SSO.
+A React console embedded in the Go binary: tenants, keys, providers, routes, usage, audit. Session auth with Argon2id, six RBAC roles, and a trusted-header path for campus SSO.
 
 </td>
 </tr>
@@ -82,7 +82,7 @@ flowchart TB
     subgraph GW["Campus AI Gateway · one Go process"]
         direction TB
         Auth["Authentication & authorization<br/>Tenant · business API key · model &amp; IP allowlist"]
-        Limit["Quota &amp; rate limits<br/>daily / monthly quota · RPM / TPM / concurrency"]
+        Limit["Quota &amp; rate limits<br/>tenant tree · three-state caps · per-model quota · RPM / TPM / concurrency"]
         Route["Routing<br/>priority bands · weighted round-robin · failover · circuit breaker"]
         Record["Records<br/>request log · usage · audit"]
         Auth --> Limit --> Route --> Record

@@ -1,6 +1,6 @@
 [← 返回 README](../README.md) · 管理员认证与账号体系
 
-本页说明管理控制台的入口与认证模型：首次启动如何创建管理员、唯一账号体系与开放注册、Access + Refresh 的会话模型，以及 trusted-header / 校园 SSO 接入与五角色 RBAC 的权限边界。
+本页说明管理控制台的入口与认证模型：首次启动如何创建管理员、唯一账号体系与开放注册、Access + Refresh 的会话模型，以及 trusted-header / 校园 SSO 接入与六角色 RBAC 的权限边界。
 
 ---
 
@@ -63,7 +63,7 @@ User
 ├── member          公开注册创建，无管理权限
 ├── auditor         只读观测
 ├── operator        运行状态与模型连通测试
-├── tenant_admin    暂不授予任何权限（等同 member），待租户内部成员模型落地后启用
+├── tenant_admin    受限管理员，必须绑定 scope_tenant_id，只能管理严格下级
 ├── gateway_admin   渠道、模型与线路
 └── super_admin      只能通过首次 Setup 创建，或由现有 super_admin 授予
 ```
@@ -161,7 +161,7 @@ Campus AI Gateway RBAC
 
 ---
 
-## RBAC 五角色与权限边界
+## RBAC：五类管理角色与普通成员
 
 `super_admin` 无限制；其余角色各自持有一份**显式路径允许列表**（`internal/app/admin_auth.go` 的 `adminPrincipal.can`）。这是 allow-list，也正是用户管理接口安全的原因：`/admin/users` 只落在 super_admin 分支里，任何其它角色——尤其是 `gateway_admin`——都无法给自己授予角色。
 
@@ -173,10 +173,28 @@ Campus AI Gateway RBAC
 | `gateway_admin` | `/admin/providers*`、`/admin/models*`、`/admin/model-routes*`、`/admin/model-test`、`/admin/model-test-options`、`/admin/status`、`/admin/status/trend` |
 | `operator` | `GET /admin/status`、`GET /admin/status/trend`、`GET /admin/model-test-options`、`POST /admin/model-test`。连通测试是诊断而非编辑：operator 可以跑测试并从收窄的选项列表里选模型，但不能读写模型配置本身 |
 | `auditor` | 仅 `GET`：`/admin/status`、`/admin/status/trend`、`/admin/request-logs*`、`/admin/admin-audit`、`/admin/security-events` |
-| `tenant_admin` | 不授予任何权限。它本意是"某个租户自己的管理员"，但租户内部的成员模型还没做——以全局形态放开就会无范围地覆盖所有租户与 API Key。在正确的授权范围存在之前，这个角色**什么都不授予**（等同 member），而不是授予全部；持有该角色的账号可由 super_admin 重新分配 |
+| `tenant_admin` | `scope_tenant_id` 指定的子树：`/admin/tenants*`、`/admin/api-keys*`、`/admin/model-quotas*`。可读自己的租户与所有下级，写入只允许**严格下级**；不能改自己租户的预算或模型额度，也不能写全校共享池。没有范围的 `tenant_admin` 不授予任何权限，且会被授予接口拒绝 |
 | `member` | 仅自助接口，无任何管理权限 |
 
 `/admin/status/trend` 与 `/admin/status` 被显式分开列出，而不是用前缀规则覆盖：这样以后该路径下新增的端点必须自己说明授权理由。
+
+### 受限租户管理员（`tenant_admin`）
+
+角色与范围是同一个授权，必须成对出现：
+
+```json
+PATCH /admin/users/{id}
+{"roles": ["tenant_admin"], "scope_tenant_id": "<tenant-uuid>"}
+```
+
+也可以在用户管理界面勾选「租户管理员」并选择管理范围。缺少范围会返回 400；把角色改成非 `tenant_admin` 时范围自动清空，避免留下一个看起来存在、实际没人执行的边界。
+
+范围规则：
+
+- **读**：租户列表、API Key、模型额度在查询里就按 `path` 前缀收窄，不会把兄弟部门的行发给客户端。模型额度列表会包含全校共享池行——它是只读的天花板，作用域管理员需要看到它。
+- **写**：租户预算与模型额度都使用 `includeSelf=false` 的子树检查，只能改严格下级；改自己租户的预算或删除自己租户的模型额度行都会 403。API Key 允许在自己的子树内（含自己租户）管理。
+- **共享池**：`tenant_id = NULL` 的模型额度只有全局管理员可写，作用域管理员尝试写入会 403。
+- **仪表盘**：`/admin/status` 不授予 `tenant_admin`，因为它返回全校汇总数字，没有可收窄的范围。
 
 ---
 
