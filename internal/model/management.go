@@ -54,8 +54,8 @@ type Tenant struct {
 
 	// The six enforced limits are three-state since 0014:
 	//
-	//	nil -> inherit from the nearest ancestor that declares a value
-	//	  0 -> explicitly unlimited
+	//	nil -> this level adds no cap; caps above it still apply
+	//	  0 -> explicitly unlimited at this level
 	//	 >0 -> this tenant's own cap
 	//
 	// They are pointers rather than int64 because "inherit" has no numeric
@@ -112,10 +112,10 @@ func (t Tenant) InheritsAllowedModels() bool { return t.AllowedModels == nil }
 // patch -- an omitted field means "inherit", which is the same thing as
 // explicitly sending null.
 //
-// The two axes resolve differently and the fields reflect that: quota values
-// inherit from the nearest ancestor that sets one, while AllowedModels is
-// intersected with every ancestor so a child can never widen its parent's
-// access.
+// The two axes resolve differently and the fields reflect that: every positive
+// quota cap on the chain applies, with the tightest one winning, while
+// AllowedModels is intersected with every ancestor so a child can never widen
+// its parent's access.
 type TenantAllocation struct {
 	DailyTokenLimit     *int64   `json:"daily_token_limit"`
 	MonthlyTokenLimit   *int64   `json:"monthly_token_limit"`

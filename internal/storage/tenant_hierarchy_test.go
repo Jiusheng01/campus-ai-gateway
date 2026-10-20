@@ -108,7 +108,8 @@ func tenant(id string, daily *int64) model.Tenant {
 // contains its children's usage, and checking an inherited value at every level
 // would charge the same usage once per level -- and would turn an explicit 0
 // ("unlimited here") into the parent's number. The collapse into a single
-// "effective" number happens in ResolveEffectiveLimits, which is display only.
+// "effective" number happens in ResolveEffectiveLimits, which is display only
+// and uses the tightest positive cap the limiter actually enforces.
 func TestResolveQuotasKeepsEachLevelsOwnDeclaration(t *testing.T) {
 	chain := []model.Tenant{
 		tenant("a", i64(1000)),
@@ -130,11 +131,10 @@ func TestResolveQuotasKeepsEachLevelsOwnDeclaration(t *testing.T) {
 	}
 }
 
-// Effective limits are the display-side view: the nearest declaration walking
-// down from the root. This is where inheritance actually collapses, and the
-// subtle case is an explicit 0 -- it is a value, so it stops the walk rather
-// than being skipped as an absence.
-func TestResolveEffectiveLimitsInheritsFromTheNearestAncestor(t *testing.T) {
+// Effective limits are the display-side view of what the limiter enforces:
+// the tightest positive cap along the chain. nil inherits and 0 adds no cap of
+// its own, so neither can lift an ancestor's ceiling.
+func TestResolveEffectiveLimitsUsesTheTightestCap(t *testing.T) {
 	cases := []struct {
 		name  string
 		chain []model.Tenant
@@ -151,18 +151,28 @@ func TestResolveEffectiveLimitsInheritsFromTheNearestAncestor(t *testing.T) {
 			want:  1000,
 		},
 		{
-			name:  "a child overrides its own subtree only",
+			name:  "a tighter child cap applies to its subtree",
 			chain: []model.Tenant{tenant("a", i64(1000)), tenant("b", i64(200)), tenant("c", nil)},
 			want:  200,
 		},
 		{
-			name:  "a middle value does not affect the root",
+			name:  "a middle cap flows down to the leaf",
 			chain: []model.Tenant{tenant("a", nil), tenant("b", i64(300)), tenant("c", nil)},
 			want:  300,
 		},
 		{
-			name:  "an explicit zero stops inheritance",
+			name:  "a child cannot widen the root",
+			chain: []model.Tenant{tenant("a", i64(1000)), tenant("b", i64(5000)), tenant("c", nil)},
+			want:  1000,
+		},
+		{
+			name:  "an explicit zero adds no cap of its own",
 			chain: []model.Tenant{tenant("a", i64(1000)), tenant("b", i64(0)), tenant("c", nil)},
+			want:  1000,
+		},
+		{
+			name:  "an explicit zero with no ancestor cap is unlimited",
+			chain: []model.Tenant{tenant("a", i64(0)), tenant("b", i64(0))},
 			want:  0,
 		},
 	}
@@ -360,9 +370,9 @@ func TestComposeAccess(t *testing.T) {
 // --- effective limits --------------------------------------------------------
 
 // The flattened view is what an administrator reads back after allocating. It
-// has to agree with ResolveQuotas and ResolveAccess, because a discrepancy
-// between "what I allocated" and "what it says it has" is the bug this whole
-// reporting surface exists to prevent.
+// has to agree with ResolveQuotas, ResolveAccess and the limiter, because a
+// discrepancy between "what I allocated" and "what it says it has" is the bug
+// this whole reporting surface exists to prevent.
 func TestResolveEffectiveLimitsFlattensBothAxes(t *testing.T) {
 	chain := []model.Tenant{
 		{

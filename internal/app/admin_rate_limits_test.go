@@ -8,8 +8,8 @@ import (
 
 // The rate limits are the tenant's, and since 0014 they are three-state:
 //
-//	nil -> inherit from the nearest ancestor that declares a value
-//	  0 -> explicitly unlimited
+//	nil -> this level adds no cap (ancestors' caps still apply)
+//	  0 -> explicitly unlimited at this level
 //	 >0 -> this tenant's cap
 //
 // The bug this pins is the old behaviour on the key: validation silently

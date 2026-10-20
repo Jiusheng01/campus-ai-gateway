@@ -89,9 +89,9 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
 				// The six enforced limits are three-state since 0014: NULL means
-				// "inherit from the nearest ancestor", 0 means "explicitly
-				// unlimited". They are therefore nullable by contract -- a
-				// NOT NULL here would reject the inheritance state.
+				// "this level adds no cap", 0 means "explicitly unlimited".
+				// They are therefore nullable by contract -- a NOT NULL here
+				// would reject the inheritance state.
 				{"daily_token_limit", "bigint", false},
 				{"monthly_token_limit", "bigint", false},
 				{"monthly_request_limit", "bigint", false},

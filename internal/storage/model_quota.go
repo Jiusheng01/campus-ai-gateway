@@ -316,6 +316,10 @@ func declaresCap(v *int64) bool { return v != nil && *v > 0 }
 // configures, what the last tenant in the chain actually gets and where the
 // value came from.
 //
+// The effective value follows the same rule as enforcement: every positive cap
+// on the chain applies, so the tightest one wins. A level's 0 (unlimited) or
+// NULL (inherit) never lifts a ceiling declared above it.
+//
 // It exists so the admin UI can answer "I allocated 300, why does it stop at
 // 100?" without a database client -- the same reason EffectiveLimits exists for
 // the tenant axis.
@@ -374,40 +378,57 @@ WHERE q.tenant_id IS NULL OR q.tenant_id = ANY($1::uuid[])
 	out := make([]model.EffectiveModelQuota, 0, len(aliases))
 	for _, alias := range aliases {
 		cells := byAlias[alias]
-		var daily, monthly int64
-		setBy := ""
-		own := false
+
+		// Each limit keeps both the running tightest value and the level that
+		// declared it, because "300, set by 计算机学院" is the answer the
+		// operator needs. A nil or zero declaration never replaces a positive
+		// one: it adds no cap, it does not remove one.
+		type capSource struct {
+			value    int64
+			label    string
+			tenantID string
+		}
+		var daily, monthly capSource
+		tighten := func(cur capSource, v *int64, label, tenantID string) capSource {
+			if v == nil || *v <= 0 {
+				return cur
+			}
+			if cur.value == 0 || *v < cur.value {
+				return capSource{value: *v, label: label, tenantID: tenantID}
+			}
+			return cur
+		}
 
 		if r, ok := cells[""]; ok {
-			if r.daily != nil {
-				daily = *r.daily
-			}
-			if r.monthly != nil {
-				monthly = *r.monthly
-			}
-			setBy = SystemPoolLabel
+			daily = tighten(daily, r.daily, SystemPoolLabel, "")
+			monthly = tighten(monthly, r.monthly, SystemPoolLabel, "")
 		}
 		for _, t := range chain {
 			r, ok := cells[t.TenantID]
 			if !ok {
 				continue
 			}
-			if r.daily != nil {
-				daily = *r.daily
-			}
-			if r.monthly != nil {
-				monthly = *r.monthly
-			}
-			setBy = t.Name
-			own = t.TenantID == leafID
+			daily = tighten(daily, r.daily, t.Name, t.TenantID)
+			monthly = tighten(monthly, r.monthly, t.Name, t.TenantID)
+		}
+		if daily.value == 0 && monthly.value == 0 {
+			continue // rows that cap nothing are configuration noise, not results
+		}
+
+		// SetBy names the source of the daily cap, or the monthly one when daily
+		// is uncapped. When the two limits come from different levels this is
+		// the daily source; the per-limit numbers are still exact.
+		setBy, sourceTenant := daily.label, daily.tenantID
+		if daily.value == 0 {
+			setBy, sourceTenant = monthly.label, monthly.tenantID
 		}
 
 		out = append(out, model.EffectiveModelQuota{
 			ModelAlias:        alias,
-			DailyTokenLimit:   daily,
-			MonthlyTokenLimit: monthly,
+			DailyTokenLimit:   daily.value,
+			MonthlyTokenLimit: monthly.value,
 			SetBy:             setBy,
-			Own:               own,
+			Own:               sourceTenant != "" && sourceTenant == leafID,
 		})
 	}
 	return out, nil

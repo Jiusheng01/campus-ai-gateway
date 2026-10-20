@@ -77,11 +77,12 @@ type EffectiveModelQuota struct {
 	MonthlyTokenLimit int64 `json:"monthly_token_limit"`
 
 	// SetBy is the label of the level the effective value came from: "全校" for
-	// the system pool, otherwise the tenant's name. Empty when no level sets
-	// anything for this model (the tenant is uncapped).
+	// the system pool, otherwise the tenant's name. It names the source of the
+	// daily cap, or of the monthly cap when daily is uncapped; the two limits can
+	// come from different levels. Empty when no level caps this model.
 	SetBy string `json:"set_by"`
-	// Own reports whether this tenant sets the value itself rather than
-	// inheriting it. It is the difference between "I configured this" and "this
-	// is what I was given", which is the first thing an operator checks.
+	// Own reports whether the effective value was declared by this tenant rather
+	// than inherited from above. It is the difference between "I configured this"
+	// and "this is what I was given", which is the first thing an operator checks.
 	Own bool `json:"own"`
 }

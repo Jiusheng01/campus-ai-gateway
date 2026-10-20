@@ -526,10 +526,17 @@ ORDER BY path
 // ResolveEffectiveLimits flattens a root-first chain into the single set of
 // limits that actually applies to the last tenant in it.
 //
-// Both axes are reported: the inherited quota and the intersected access. An
+// Both axes are reported: the effective quota and the intersected access. An
 // administrator who allocated 5,000,000 tokens and sees usage stop at
-// 1,000,000 needs to be able to read back "the effective limit is 1,000,000,
-// set by your parent" without opening a database client.
+// 1,000,000 needs to be able to read back "the effective limit is 1,000,000"
+// without opening a database client.
+//
+// The quota axis is the TIGHTEST positive cap along the chain, not the nearest
+// declaration. Enforcement is inclusive: every level that declares a positive
+// cap gets its own counter, so a child's larger number or explicit 0 cannot
+// lift an ancestor's cap. Reporting the nearest declaration here would print a
+// number the limiter never enforces -- the exact discrepancy this reporting
+// surface exists to prevent.
 func ResolveEffectiveLimits(chain []model.Tenant) model.EffectiveLimits {
 	if len(chain) == 0 {
 		return model.EffectiveLimits{}
@@ -543,39 +550,23 @@ func ResolveEffectiveLimits(chain []model.Tenant) model.EffectiveLimits {
 	}
 	sort.Strings(models)
 
-	// The effective value is the nearest declaration walking down from the root,
-	// i.e. the last non-nil value seen. An explicit 0 is a declaration
-	// ("unlimited"), not an absence, so it stops the walk like any other value.
-	// ResolveQuotas deliberately returns per-level declarations instead, so the
-	// collapse has to happen here rather than being read off the chain.
+	// Each limit is the tightest positive declaration on the chain. nil means
+	// inherit and 0 means "this level adds no cap"; neither one can lift an
+	// ancestor's cap, so both are skipped. ResolveQuotas deliberately returns
+	// per-level declarations instead, so the collapse has to happen here rather
+	// than being read off the chain.
 	var daily, monthly, requests, rpm, tpm, concurrency, budget int64
 	for _, t := range chain {
-		if t.DailyTokenLimit != nil {
-			daily = *t.DailyTokenLimit
-		}
-		if t.MonthlyTokenLimit != nil {
-			monthly = *t.MonthlyTokenLimit
-		}
-		if t.MonthlyRequestLimit != nil {
-			requests = *t.MonthlyRequestLimit
-		}
-		if t.RPMLimit != nil {
-			rpm = *t.RPMLimit
-		}
-		if t.TPMLimit != nil {
-			tpm = *t.TPMLimit
-		}
-		if t.MaxConcurrency != nil {
-			concurrency = *t.MaxConcurrency
-		}
-		// monthly_budget_micros kept the two-state convention (it is stored but
-		// not enforced, so a third state would be a distinction nothing reads).
-		// With only 0 and >0 available, 0 has to mean "no budget configured"
-		// rather than a declaration, so the nearest non-zero value is the one
-		// that applies.
-		if t.MonthlyBudgetMicros > 0 {
-			budget = t.MonthlyBudgetMicros
-		}
+		daily = tightenCap(daily, t.DailyTokenLimit)
+		monthly = tightenCap(monthly, t.MonthlyTokenLimit)
+		requests = tightenCap(requests, t.MonthlyRequestLimit)
+		rpm = tightenCap(rpm, t.RPMLimit)
+		tpm = tightenCap(tpm, t.TPMLimit)
+		concurrency = tightenCap(concurrency, t.MaxConcurrency)
+		// monthly_budget_micros is stored but not enforced, so it is reported
+		// with the same tightest-positive rule for consistency. 0 means "no
+		// budget configured" rather than an explicit declaration.
+		budget = tightenCap(budget, &t.MonthlyBudgetMicros)
 	}
 
 	return model.EffectiveLimits{
@@ -592,6 +583,19 @@ func ResolveEffectiveLimits(chain []model.Tenant) model.EffectiveLimits {
 		Depth:                 leaf.Depth,
 		Path:                  leaf.Path,
 	}
+}
+
+// tightenCap keeps the smallest positive declaration seen so far. nil (inherit)
+// and 0 (this level adds no cap) leave the running value alone, so a level can
+// tighten a ceiling but never widen one.
+func tightenCap(current int64, v *int64) int64 {
+	if v == nil || *v <= 0 {
+		return current
+	}
+	if current == 0 || *v < current {
+		return *v
+	}
+	return current
 }
 
 // EffectiveTenantLimits resolves a tenant's inherited limits.

@@ -158,7 +158,7 @@ func TestValidateTenantAllowsZeroQuota(t *testing.T) {
 
 func TestValidateTenantAllowsNilQuota(t *testing.T) {
 	v := validTenant()
-	// nil means "inherit from the nearest ancestor that sets one".
+	// nil means "add no cap here"; caps above still apply.
 	if got := validateTenant(&v); got != "" {
 		t.Fatalf("validateTenant() rejected nil (=inherit): %q", got)
 	}
