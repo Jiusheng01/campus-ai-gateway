@@ -136,11 +136,10 @@ func TestLegacyAndGroupWritesSerializeWithoutHalfState(t *testing.T) {
 		t.Fatalf("final version = %d, want %d (group err %v)", after.ConfigVersion, wantVersion, groupErr)
 	}
 	saved, _ := pg.ListModelRoutes(ctx, created.ID)
-	wantRoutes := 2
-	if groupErr == nil {
-		wantRoutes = 3
-	}
-	if len(saved) != wantRoutes {
-		t.Fatalf("final routes = %d, want %d: %+v", len(saved), wantRoutes, saved)
+	// The fixture starts with two routes, and the legacy write always adds one.
+	// Whether the group save won or conflicted, the final set is those three
+	// routes; the version assertion above distinguishes the two orderings.
+	if len(saved) != 3 {
+		t.Fatalf("final routes = %d, want 3: %+v", len(saved), saved)
 	}
 }
