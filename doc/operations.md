@@ -68,9 +68,10 @@ $env:COMPOSE_PROJECT_NAME = "campus-gateway-sandbox"
 .\scripts\setup.ps1
 ```
 
-或直接使用 Compose：
+或直接使用 Compose（网关会拒绝占位符或过短的 `API_KEY_HMAC_SECRET`，compose 文件没有默认值，需先导出一次并保存好）：
 
 ```bash
+export API_KEY_HMAC_SECRET="$(openssl rand -base64 48)"
 docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --build
 ```
 

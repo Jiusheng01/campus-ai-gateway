@@ -72,6 +72,13 @@ function Test-DockerReady {
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+# Compose interpolates every service, including the gateway that this script
+# only tears down, and the production compose file requires a value for
+# API_KEY_HMAC_SECRET. Local development uses dev.ps1's accepted default.
+if (-not $env:API_KEY_HMAC_SECRET) {
+    $env:API_KEY_HMAC_SECRET = "campus-local-test-secret"
+}
+
 Write-Host ""
 Write-Host "============================================" -ForegroundColor DarkCyan
 Write-Host " Campus AI Gateway - RESET LOCAL DATA" -ForegroundColor Red

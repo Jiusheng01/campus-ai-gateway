@@ -158,6 +158,19 @@ func TestDirectTargetURL(t *testing.T) {
 		// inbound /v1 is how the upstream addresses its API and is kept.
 		{name: "non-version prefix keeps the path", base: "https://host.test/gateway", path: "/v1/chat/completions", want: "https://host.test/gateway/v1/chat/completions"},
 		{name: "trailing slash on a versioned base", base: "https://ark.cn-beijing.volces.com/api/v3/", path: "/v1/chat/completions", want: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		// The version rule is deliberately narrow. A segment that merely starts
+		// with "v" and digits is not a version, and treating it as one would drop
+		// the inbound /v1 that the upstream expects.
+		{name: "application path v1chat is not a version", base: "https://api.test/v1chat", path: "/v1/chat/completions", want: "https://api.test/v1chat/v1/chat/completions"},
+		{name: "proxy path v2ray is not a version", base: "https://api.test/v2ray", path: "/v1/chat/completions", want: "https://api.test/v2ray/v1/chat/completions"},
+		{name: "uppercase version segment", base: "https://api.test/V1", path: "/v1/chat/completions", want: "https://api.test/V1/chat/completions"},
+		{name: "v1beta1", base: "https://api.test/v1beta1", path: "/v1/chat/completions", want: "https://api.test/v1beta1/chat/completions"},
+		// A query or fragment on the base is not part of the path. Concatenating
+		// the raw string would put the inbound path inside the base's query.
+		{name: "base query is dropped", base: "https://api.test/v1?x=1", path: "/v1/models", want: "https://api.test/v1/models"},
+		{name: "base fragment is dropped", base: "https://api.test/v1#frag", path: "/v1/models", want: "https://api.test/v1/models"},
+		{name: "base query is dropped and inbound query is kept", base: "https://api.test/v1?x=1", path: "/v1/models", query: "limit=5", want: "https://api.test/v1/models?limit=5"},
+		{name: "base query is dropped on a non-version prefix", base: "https://host.test/gateway?x=1", path: "/v1/chat/completions", want: "https://host.test/gateway/v1/chat/completions"},
 		{name: "empty base is an error", base: "  ", path: "/v1/chat/completions", wantErr: true},
 	}
 	for _, tc := range cases {
@@ -560,6 +573,55 @@ func TestLoggableTargetDropsTheQueryString(t *testing.T) {
 	want := "https://api.test:8443/v1/chat/completions"
 	if got != want {
 		t.Fatalf("loggable target = %q, want %q", got, want)
+	}
+}
+
+// An egress denial is a policy answer about the target the operator configured,
+// not a failure to build a request. The target is the thing to fix, so the log
+// must name it exactly like any other failed attempt. Only a missing credential
+// fails before the target exists.
+func TestServeModelTestDirectLogsTheTargetOnAnEgressDenial(t *testing.T) {
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	t.Setenv("TEST_MODEL_TEST_DENIED", "sk-test")
+
+	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
+		"demo-model": {{
+			Provider:      "qwen",
+			BaseURL:       "http://127.0.0.1:1/v1",
+			UpstreamModel: "qwen-plus",
+			CredentialEnv: "TEST_MODEL_TEST_DENIED",
+			Priority:      1,
+			TimeoutMS:     1000,
+		}},
+	}})
+	// Deny the address in the dial hook, after the target has been built.
+	s.egress = strictEgressPolicy()
+
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model", Prompt: "ping"}, payload, "req_denied")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "denied by policy") {
+		t.Fatalf("the response should still carry the address-free denial: %s", rec.Body.String())
+	}
+	if ipLiteral.MatchString(rec.Body.String()) {
+		t.Fatalf("the response must not expose the resolved address: %s", rec.Body.String())
+	}
+
+	out := logged.String()
+	if !strings.Contains(out, "http://127.0.0.1:1/v1/chat/completions") {
+		t.Fatalf("a denial must log the target the operator configured: %s", out)
+	}
+	if !strings.Contains(out, "denied by policy") {
+		t.Fatalf("the log line should state the policy reason: %s", out)
 	}
 }
 

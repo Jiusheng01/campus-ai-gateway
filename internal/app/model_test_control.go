@@ -17,9 +17,10 @@ type modelTestRequest struct {
 
 type modelTestResult struct {
 	Model string `json:"model"`
-	// Channel is the line that answered, and UpstreamModel is the name the
-	// gateway sent it. The operator supplied the latter, so reporting it is not
-	// a disclosure: it is how a wrong model identifier becomes visible.
+	// Channel is the Provider (channel) that answered, and UpstreamModel is the
+	// name the gateway sent it. The operator supplied the latter, so reporting
+	// it is not a disclosure: it is how a wrong model identifier becomes
+	// visible.
 	Channel          string `json:"channel,omitempty"`
 	UpstreamModel    string `json:"upstream_model,omitempty"`
 	Content          string `json:"content"`

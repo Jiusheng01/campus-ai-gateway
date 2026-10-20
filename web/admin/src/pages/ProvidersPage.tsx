@@ -38,26 +38,38 @@ async function deleteCost(providerID: string) {
 }
 
 /**
- * ServedLines answers "what does this channel serve?" read-only.
+ * ServedLines lists, read-only, the lines this channel has opened through the
+ * Model Catalog.
  *
  * A Route owns the upstream model, never a Provider (ADR-0018), so the channel
- * form has no field for it. This section reads the same Model Catalog the 模型
- * page reads and keeps the rows where this channel has a Route: `opened` on a
- * catalog provider means the (model, channel, upstream) binding exists.
- *
- * The catalog groups by upstream name and does not carry route priority, so the
- * section lists this channel's lines without claiming which one is primary —
- * that ordering lives in the 模型 page's advanced view.
+ * form has no field for it. The catalog is built from gateway_provider_model,
+ * and `opened` on a catalog provider means the (model, channel, upstream)
+ * binding has a Route. That definition has two blind spots this section must not
+ * hide: a Route whose upstream was entered free-text on the 模型 page has no
+ * gateway_provider_model row, and the catalog excludes disabled channels (and
+ * disabled provider models). The catalog also carries no route priority, so the
+ * list makes no claim about which line is primary — that ordering and the
+ * complete set live in the 模型 page's advanced view.
  */
-function ServedLines({provider, catalog}: {provider: Partial<Provider>; catalog: CatalogModel[]}) {
+function ServedLines({
+  provider,
+  catalog,
+  catalogError,
+}: {
+  provider: Partial<Provider>
+  catalog: CatalogModel[]
+  catalogError: string
+}) {
   const lines = catalog
     .filter(m => m.providers.some(p => p.id === provider.id && p.opened))
     .map(m => m.upstream_model)
 
   return (
-    <section className="drawerSection" aria-label="本渠道服务的线路">
-      <h3 className="drawerSectionTitle">本渠道服务的线路（只读）</h3>
-      {lines.length ? (
+    <section className="drawerSection" aria-label="通过模型目录开放的线路">
+      <h3 className="drawerSectionTitle">通过模型目录开放的线路（只读）</h3>
+      {catalogError ? (
+        <p className="hint">线路信息暂时无法加载：{catalogError}。渠道本身仍可正常编辑。</p>
+      ) : lines.length ? (
         <ul className="drawerSectionList">
           {lines.map(upstream => (
             <li key={upstream}>
@@ -69,11 +81,14 @@ function ServedLines({provider, catalog}: {provider: Partial<Provider>; catalog:
       ) : (
         <p className="hint">
           {provider.status === 1
-            ? '本渠道当前没有已接入的线路。'
-            : '渠道已停用；停用的渠道不出现在模型目录中，请到「模型」页确认线路。'}
+            ? '该渠道尚未通过模型目录开放任何线路。'
+            : '渠道已停用，停用的渠道不会出现在模型目录中。'}
+          在「模型」页手工填写的线路不会显示在这里；请到「模型」页查看完整线路。
         </p>
       )}
-      <p className="hint">上游模型属于线路，不在本表单中编辑。请到「模型」页的「对外模型与线路（高级）」中查看、添加或修改线路。</p>
+      <p className="hint">
+        这里只列出通过模型目录开放的线路。上游模型属于线路，不在本表单中编辑；手工填写的线路与停用渠道的线路请到「模型」页的「对外模型与线路（高级）」中查看。
+      </p>
     </section>
   )
 }
@@ -81,13 +96,23 @@ function ServedLines({provider, catalog}: {provider: Partial<Provider>; catalog:
 export function ProvidersPage() {
   const toast = useToast()
   const confirm = useConfirm()
-  const {data, loading, error, errorStatus, reload} = useResource(async () => {
-    const [p, c] = await Promise.all([
-      api<{data: Provider[]}>('/admin/providers'),
-      api<{data: CatalogModel[]}>('/admin/model-catalog'),
-    ])
-    return {providers: p.data || [], catalog: c.data || []}
-  })
+  // The channel list drives the page; the catalog only enriches the drawer.
+  // Loading them together would let a catalog failure blank a page whose own
+  // data arrived, which is the opposite of the degradation being shown.
+  const {
+    data: providers,
+    loading,
+    error,
+    errorStatus,
+    reload: reloadProviders,
+  } = useResource(async () => (await api<{data: Provider[]}>('/admin/providers')).data || [])
+  const {data: catalogData, error: catalogError, reload: reloadCatalog} = useResource(
+    async () => (await api<{data: CatalogModel[]}>('/admin/model-catalog')).data || [],
+  )
+  const reload = () => {
+    reloadProviders()
+    reloadCatalog()
+  }
   const [draft, setDraft] = useState<ProviderDraft | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
 
@@ -136,8 +161,8 @@ export function ProvidersPage() {
     }
   }
 
-  const items = data?.providers || []
-  const catalog = data?.catalog || []
+  const items = providers || []
+  const catalog = catalogData || []
 
   return (
     <>
@@ -150,7 +175,7 @@ export function ProvidersPage() {
           </Button>
         }
       >
-        {loading && !data ? (
+        {loading && !providers ? (
           <SkeletonCards count={3} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
@@ -230,7 +255,7 @@ export function ProvidersPage() {
           subtitle="密钥加密保存、只写不读；也可以改为引用环境变量。"
           onClose={() => setDraft(null)}
         >
-          {draft.id && <ServedLines provider={draft} catalog={catalog} />}
+          {draft.id && <ServedLines provider={draft} catalog={catalog} catalogError={catalogError} />}
           <ProviderForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />
         </Drawer>
       )}

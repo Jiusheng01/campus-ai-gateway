@@ -113,9 +113,10 @@ cd campus-ai-gateway
 .\scripts\stop.ps1           # 停止
 ```
 
-Docker Compose：
+Docker Compose。网关会拒绝占位符或过短的 `API_KEY_HMAC_SECRET`，因此 compose 不提供默认值。用 `openssl rand -base64 48` 生成一次并导出、保存好——之后更换它会让所有已存 API Key 失效：
 
 ```bash
+export API_KEY_HMAC_SECRET="$(openssl rand -base64 48)"   # 生成一次并保存
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 

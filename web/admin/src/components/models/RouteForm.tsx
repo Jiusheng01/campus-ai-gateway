@@ -7,7 +7,7 @@ import {Field} from '../ui/Field'
 export type RouteDraft = Partial<ModelRoute> & {id?: string}
 
 /**
- * arkBase reports whether a channel's base URL is Volcengine Ark's
+ * isArkBase reports whether a channel's base URL is Volcengine Ark's
  * OpenAI-compatible root.
  *
  * Ark addresses an inference endpoint by its ID (`ep-...`) rather than by a
@@ -15,7 +15,7 @@ export type RouteDraft = Partial<ModelRoute> & {id?: string}
  * This drives a hint and nothing else: the gateway cannot know every vendor's
  * naming rule, so a value that does not match is still allowed to be saved.
  */
-function arkBase(baseUrl: string | undefined) {
+function isArkBase(baseUrl: string | undefined) {
   if (!baseUrl) return false
   try {
     return /\/api\/v3\/?$/.test(new URL(baseUrl).pathname)
@@ -71,7 +71,7 @@ export function RouteForm({
       <Field
         label="上游模型"
         hint={
-          arkBase(selectedProvider?.base_url)
+          isArkBase(selectedProvider?.base_url)
             ? '该渠道的 Base URL 指向火山方舟的 /api/v3，这里要填推理接入点 ID（ep-…），不是模型名称。'
             : '该渠道实际调用的上游模型名称。'
         }

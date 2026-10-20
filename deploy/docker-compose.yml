@@ -55,12 +55,20 @@ services:
       HTTP_ADDR: ":8080"
       DATABASE_URL: "postgres://campus:campus@postgres:5432/campus_gateway?sslmode=disable"
       REDIS_ADDR: "redis:6379"
-      API_KEY_HMAC_SECRET: "change-me-in-production"
+      # Required, with no default: the gateway refuses to start on a known
+      # placeholder or a secret shorter than 16 bytes. Generate it once with
+      # `openssl rand -base64 48` and keep it — changing it invalidates every
+      # stored API-key digest.
+      API_KEY_HMAC_SECRET: "${API_KEY_HMAC_SECRET:?set API_KEY_HMAC_SECRET (openssl rand -base64 48)}"
       # Which data plane to run. The direct data plane is the only data plane:
       # the gateway resolves the model against gateway_model_route and dials the
       # channel itself, so the stack needs only PostgreSQL and Redis.
       DATA_PLANE: "direct"
-      ADMIN_TOKEN: "change-me-in-production"
+      # Session mode (ADMIN_AUTH_MODE defaults to session) does not read
+      # ADMIN_TOKEN. Set it in the host environment only if this stack is
+      # switched to the break-glass ADMIN_AUTH_MODE=token; token mode refuses a
+      # placeholder at startup.
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
     depends_on:
       postgres:
         condition: service_healthy

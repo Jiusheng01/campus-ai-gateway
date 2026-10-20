@@ -1002,9 +1002,13 @@ func (s *Server) serveDirectModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiVersionSegment matches an API version path segment: "v" followed by
-// digits, optionally followed by letters and digits (v1, v3, v4, v1beta1).
-// The comparison is case-insensitive.
-var apiVersionSegment = regexp.MustCompile(`(?i)^v[0-9]+[a-z0-9]*$`)
+// digits and an optional beta suffix (v1, v3, v4, v1beta1). The comparison is
+// case-insensitive.
+//
+// It deliberately does not match every segment that starts with "v" and a
+// digit: /v1chat and /v2ray are application paths, not versions, and treating
+// them as versions would drop the inbound /v1 the upstream expects.
+var apiVersionSegment = regexp.MustCompile(`(?i)^v[0-9]+(beta[0-9]*)?$`)
 
 // directTargetURL joins a channel's base URL with the request path.
 //
@@ -1016,7 +1020,7 @@ var apiVersionSegment = regexp.MustCompile(`(?i)^v[0-9]+[a-z0-9]*$`)
 // does not serve. A bare host or a non-version prefix (/gateway) has no
 // version to carry, so the inbound path is left unchanged.
 func directTargetURL(base string, u *url.URL) (string, error) {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	base = strings.TrimSpace(base)
 	if base == "" {
 		return "", fmt.Errorf("base_url is empty")
 	}
@@ -1024,14 +1028,19 @@ func directTargetURL(base string, u *url.URL) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("base_url %q is not a valid URL: %w", base, err)
 	}
-	suffix := u.Path
+	// Build from the parsed components, not from the raw string: a legacy base
+	// with "?x" or "#f" would otherwise swallow the inbound path into its own
+	// query or fragment. The base's query and fragment are configuration noise,
+	// not part of the API root, so they are dropped; only the inbound request's
+	// query is carried over.
+	suffix := u.EscapedPath()
 	if lastPathSegmentIsVersion(parsed.Path) {
-		suffix = strings.TrimPrefix(u.Path, "/v1")
+		suffix = strings.TrimPrefix(suffix, "/v1")
 	}
 	if suffix == "" {
 		suffix = "/"
 	}
-	target := base + suffix
+	target := parsed.Scheme + "://" + parsed.Host + strings.TrimRight(parsed.EscapedPath(), "/") + suffix
 	if u.RawQuery != "" {
 		target += "?" + u.RawQuery
 	}
@@ -1153,46 +1162,47 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 	started := time.Now()
 	// The failure summary names the channel and the status; it never carries
 	// the upstream body or the dial error, which is where internal detail
-	// lives. The operator needs to know which line failed, not what the
+	// lives. The operator needs to know which channel failed, not what the
 	// upstream wrote to its own log.
 	var failures []string
 	for _, route := range routes {
 		resp, err := s.attemptDirect(probe, payload, envelope, route)
 		if err != nil {
-			if detail := clientSafeFailure(err); detail != "" {
-				// A missing credential or a denied target never reached the dial,
-				// so there is no dialled target to log; the detail is already the
-				// operator's fix.
+			var denied *egressDeniedError
+			switch detail := clientSafeFailure(err); {
+			case errors.As(err, &denied):
+				// The target was resolved and then refused by egress policy — at
+				// the scheme check or in the dial hook. That target is exactly
+				// what the operator must fix, so log it like any other failed
+				// attempt. The response keeps the address-free SafeSummary.
+				reason := directFailureReason(err)
+				logModelTestTarget(reqID, route, probe, reason)
 				failures = append(failures, detail)
-				continue
+			case detail != "":
+				// A missing credential fails before the target exists, so there
+				// is no target to log; the detail is already the operator's fix.
+				failures = append(failures, detail)
+			default:
+				// The dial was attempted. Report the resolved category rather
+				// than flattening DNS, timeout and refusal into one word, and
+				// record the target the operator configured.
+				failures = recordModelTestFailure(failures, reqID, route, probe, directFailureReason(err))
 			}
-			// The dial was attempted. Report the resolved category rather than
-			// flattening DNS, timeout and refusal into one word, and record the
-			// target the operator configured.
-			reason := directFailureReason(err)
-			logModelTestTarget(reqID, route, probe, reason)
-			failures = append(failures, modelTestFailureLine(route, reason))
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			reason := "response could not be read"
-			logModelTestTarget(reqID, route, probe, reason)
-			failures = append(failures, modelTestFailureLine(route, reason))
+			failures = recordModelTestFailure(failures, reqID, route, probe, "response could not be read")
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
-			reason := fmt.Sprintf("HTTP %d", resp.StatusCode)
-			logModelTestTarget(reqID, route, probe, reason)
-			failures = append(failures, modelTestFailureLine(route, reason))
+			failures = recordModelTestFailure(failures, reqID, route, probe, fmt.Sprintf("HTTP %d", resp.StatusCode))
 			continue
 		}
 		result, err := parseProbeResponse(body, time.Since(started))
 		if err != nil {
-			reason := "response is not valid JSON"
-			logModelTestTarget(reqID, route, probe, reason)
-			failures = append(failures, modelTestFailureLine(route, reason))
+			failures = recordModelTestFailure(failures, reqID, route, probe, "response is not valid JSON")
 			continue
 		}
 		result.Channel = route.Provider
@@ -1208,7 +1218,15 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", message, reqID)
 }
 
-// modelTestFailureLine names the line that failed and the upstream model it
+// recordModelTestFailure logs the target a failed attempt dialled and appends
+// the operator-facing failure line. Every post-dial failure needs both, so the
+// two cannot drift apart.
+func recordModelTestFailure(failures []string, reqID string, route directRoute, probe *http.Request, reason string) []string {
+	logModelTestTarget(reqID, route, probe, reason)
+	return append(failures, modelTestFailureLine(route, reason))
+}
+
+// modelTestFailureLine names the channel that failed and the upstream model it
 // sent. The model is operator-supplied and non-secret; reporting it keeps a
 // wrong model identifier from reading like a path problem.
 func modelTestFailureLine(route directRoute, reason string) string {

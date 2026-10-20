@@ -380,6 +380,7 @@ func TestAPIKeyHMACSecretRejectsKnownPlaceholders(t *testing.T) {
 	for _, placeholder := range []string{
 		"change-me-in-production",
 		"replace-with-a-long-random-secret",
+		"replace-with-a-long-random-admin-token",
 		"changeme",
 		"CHANGEME",
 	} {
@@ -450,6 +451,7 @@ func TestCredentialEncryptionKeyRejectsKnownPlaceholders(t *testing.T) {
 	for _, placeholder := range []string{
 		"change-me-in-production",
 		"replace-with-a-long-random-secret",
+		"replace-with-a-long-random-admin-token",
 		"changeme",
 	} {
 		t.Run(placeholder, func(t *testing.T) {

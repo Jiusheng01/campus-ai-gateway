@@ -28,6 +28,7 @@ const AdminSessionSecretMinBytes = 32
 var knownPlaceholderSecrets = []string{
 	"change-me-in-production",
 	"replace-with-a-long-random-secret",
+	"replace-with-a-long-random-admin-token",
 	"changeme",
 }
 
@@ -40,6 +41,18 @@ func isPlaceholderSecret(value string) bool {
 		}
 	}
 	return false
+}
+
+// placeholderSecretError builds the startup refusal for a secret still set to a
+// shipped example. Every refusal names the variable, quotes the offending value
+// and says how to produce a usable one; consequence, when set, states what
+// replacing the value later costs.
+func placeholderSecretError(variable, value, replacement, consequence string) error {
+	message := variable + " is set to a known placeholder (" + strings.TrimSpace(value) + "); " + replacement
+	if consequence != "" {
+		message += ". " + consequence
+	}
+	return errors.New(message)
 }
 
 // apiKeyHMACSecretMinBytes is the shortest API_KEY_HMAC_SECRET accepted at
@@ -239,9 +252,8 @@ func LoadConfig() (Config, error) {
 		return Config{}, errors.New("API_KEY_HMAC_SECRET is required")
 	}
 	if isPlaceholderSecret(cfg.KeyHMACSecret) {
-		return Config{}, errors.New("API_KEY_HMAC_SECRET is set to a known placeholder (" +
-			strings.TrimSpace(cfg.KeyHMACSecret) +
-			"); set a random value instead, for example from `openssl rand -base64 48`. " +
+		return Config{}, placeholderSecretError("API_KEY_HMAC_SECRET", cfg.KeyHMACSecret,
+			"set a random value instead, for example from `openssl rand -base64 48`",
 			"Changing this secret later invalidates every stored API-key digest, so all API keys would have to be recreated")
 	}
 	if len(strings.TrimSpace(cfg.KeyHMACSecret)) < apiKeyHMACSecretMinBytes {
@@ -250,9 +262,8 @@ func LoadConfig() (Config, error) {
 			"Changing this secret later invalidates every stored API-key digest, so all API keys would have to be recreated")
 	}
 	if isPlaceholderSecret(cfg.CredentialEncryptionKey) {
-		return Config{}, errors.New("CREDENTIAL_ENCRYPTION_KEY is set to a known placeholder (" +
-			strings.TrimSpace(cfg.CredentialEncryptionKey) +
-			"); set a random value instead, for example from `openssl rand -base64 48`. " +
+		return Config{}, placeholderSecretError("CREDENTIAL_ENCRYPTION_KEY", cfg.CredentialEncryptionKey,
+			"set a random value instead, for example from `openssl rand -base64 48`",
 			"Changing this key later makes every stored inline credential unreadable")
 	}
 	dataPlane, err := resolveDataPlane(os.Getenv("DATA_PLANE"))
@@ -290,9 +301,8 @@ func LoadConfig() (Config, error) {
 		// value on purpose, so validating it there would stop a deployment
 		// over a variable it never uses.
 		if isPlaceholderSecret(cfg.AdminToken) {
-			return Config{}, errors.New("ADMIN_TOKEN is set to a known placeholder (" +
-				strings.TrimSpace(cfg.AdminToken) +
-				"); set a random break-glass token instead, for example from `openssl rand -base64 48`")
+			return Config{}, placeholderSecretError("ADMIN_TOKEN", cfg.AdminToken,
+				"set a random break-glass token instead, for example from `openssl rand -base64 48`", "")
 		}
 	}
 	if cfg.AdminLoginMaxAttempts < 0 {
@@ -332,10 +342,9 @@ func LoadConfig() (Config, error) {
 		// meant to enable the mode will read the error, while one who set it
 		// by accident gets a loud stop instead of a silent takeover.
 		if isPlaceholderSecret(cfg.AdminProxySecret) {
-			return Config{}, errors.New("ADMIN_PROXY_SECRET is set to a known placeholder (" +
-				strings.TrimSpace(cfg.AdminProxySecret) +
-				"); set a random shared secret of at least " + strconv.Itoa(minAdminProxySecretLen) +
-				" characters instead, for example from `openssl rand -hex " + strconv.Itoa(minAdminProxySecretLen/2) + "`")
+			return Config{}, placeholderSecretError("ADMIN_PROXY_SECRET", cfg.AdminProxySecret,
+				"set a random shared secret of at least "+strconv.Itoa(minAdminProxySecretLen)+
+					" characters instead, for example from `openssl rand -hex "+strconv.Itoa(minAdminProxySecretLen/2)+"`", "")
 		}
 		if len(cfg.AdminProxySecret) < minAdminProxySecretLen {
 			return Config{}, errors.New("ADMIN_PROXY_SECRET must be at least " + strconv.Itoa(minAdminProxySecretLen) + " characters in trusted-header mode")
