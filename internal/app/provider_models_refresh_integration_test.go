@@ -125,6 +125,47 @@ func TestRefreshFailsCleanlyWhenTheUpstreamErrors(t *testing.T) {
 	assertOnlyManualKeepMe(t, listChannelModelsThroughAPI(t, s, created.ID))
 }
 
+// A 404 means the channel does not serve a model list, not that the gateway
+// built a wrong URL. The message names the path the gateway actually asked for —
+// the joined path, so an Ark channel reports /api/v3/models — and never the host
+// it dialled (ADR-0009).
+func TestRefreshExplainsThatA404MeansNoModelList(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	s := providerModelTestServer(t, pg)
+
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	created := createChannelThroughAPI(t, s, "refresh-no-list", upstream.URL+"/api/v3")
+	addManualModel(t, s, created.ID, "keep-me")
+
+	rec := httptest.NewRecorder()
+	s.handleAdmin(rec, httptest.NewRequest(http.MethodPost,
+		"/admin/providers/"+created.ID+"/models/refresh", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("refresh status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/api/v3/models" {
+		t.Fatalf("upstream saw %q, want /api/v3/models", gotPath)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "GET /api/v3/models") {
+		t.Fatalf("a 404 should name the joined path it asked for: %s", body)
+	}
+	if !strings.Contains(body, "does not expose a model list") {
+		t.Fatalf("a 404 should explain that the channel has no model list: %s", body)
+	}
+	if strings.Contains(body, "127.0.0.1") || strings.Contains(body, upstream.URL) {
+		t.Fatalf("the refresh message must not name the upstream host: %s", body)
+	}
+	assertOnlyManualKeepMe(t, listChannelModelsThroughAPI(t, s, created.ID))
+}
+
 func TestRefreshFailsCleanlyOnAMalformedUpstreamList(t *testing.T) {
 	pg := usagePostgres(t)
 	clearProviderFixtures(t, pg)

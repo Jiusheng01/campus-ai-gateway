@@ -25,9 +25,9 @@
 | `REDIS_ADDR` | Redis 地址 | 否 | 代码默认 `redis:6379`；`.env.example` 示例 `localhost:6379` |
 | `REDIS_PASSWORD` | Redis 密码 | 否 | 空 |
 | `REDIS_DB` | Redis DB 序号 | 否 | `0` |
-| `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥 | 是 | 无 |
+| `API_KEY_HMAC_SECRET` | 业务 API Key 的 HMAC-SHA256 密钥。**至少 16 字节，且不能是占位符**（见下文「启动时的占位符检查」）；不满足时启动直接失败。更换该密钥会让所有已存 API Key 的 digest 失效，必须重新创建这些 Key | 是 | 无 |
 | `DATA_PLANE` | 数据面选择。只接受 `direct`；`auto` 与留空同样解析为 `direct`（`thinkwatch` / `shadow` 已随该数据面一起移除，写了会启动失败） | 否 | `direct` |
-| `CREDENTIAL_ENCRYPTION_KEY` | 内联 Provider Credential 的 AES-256-GCM 加密密钥；任意长随机字符串会被哈希为 32 字节 | 生产必填 | 空（留空时从 `API_KEY_HMAC_SECRET` 派生域分离密钥并打警告，仅供本地开发） |
+| `CREDENTIAL_ENCRYPTION_KEY` | 内联 Provider Credential 的 AES-256-GCM 加密密钥；任意长随机字符串会被哈希为 32 字节。显式设置时不能是占位符 | 生产必填 | 空（留空时从 `API_KEY_HMAC_SECRET` 派生域分离密钥并打警告，仅供本地开发） |
 | `PROVIDER_HTTP_ALLOWLIST` | 允许以明文 `http://` 出站的 Provider host 或 CIDR，逗号分隔（例如 `10.0.0.0/8,campus-llm.example.edu`）。留空表示拒绝所有 `http://`；`https://` 不受影响。**loopback（`127.0.0.0/8`、`::1`）始终被拨号策略拒绝，写进本变量也不会生效**；生产环境请使用非 loopback 的校园地址。非法条目启动失败 | 否 | 空 |
 
 ### 管理员认证与会话
@@ -60,11 +60,11 @@
 
 | 变量 | 用途 | 必填 | 默认值 |
 | --- | --- | --- | --- |
-| `ADMIN_PROXY_SECRET` | trusted-header 模式下整个控制面的共享字符串，**至少 32 字符**，不足启动直接失败 | `ADMIN_AUTH_MODE=trusted-header` 时必填 | 空 |
+| `ADMIN_PROXY_SECRET` | trusted-header 模式下整个控制面的共享字符串，**至少 32 字符且不能是占位符**，不满足启动直接失败（仅在 trusted-header 模式检查） | `ADMIN_AUTH_MODE=trusted-header` 时必填 | 空 |
 | `ADMIN_PROXY_CIDRS` | 允许尝试 trusted-header 认证的对端地址段，逗号分隔；留空表示任何对端都可试（启动打印警告） | 强烈建议 | 空 |
 | `ADMIN_USER_HEADER` | 注入用户名的请求头 | 否 | `X-Forwarded-User` |
 | `ADMIN_ROLES_HEADER` | 注入角色的请求头 | 否 | `X-Forwarded-Groups` |
-| `ADMIN_TOKEN` | `ADMIN_AUTH_MODE=token` 的 break-glass Token，Admin UI 不提供输入框 | `token` 模式时必填 | 无 |
+| `ADMIN_TOKEN` | `ADMIN_AUTH_MODE=token` 的 break-glass Token，Admin UI 不提供输入框。`token` 模式下占位符值会让启动失败，其他模式不读取该变量 | `token` 模式时必填 | 无 |
 
 ### 凭据环境变量（仅在渠道引用时使用）
 
@@ -122,6 +122,8 @@ Base URL 在**创建与更新**时都会被校验，必须是绝对 URL，形式
 - `http://` 默认拒绝。只有 host 精确命中 `PROVIDER_HTTP_ALLOWLIST`（大小写不敏感），或该 host 解析后的地址落在 allowlist 的 CIDR 内时才允许；host 解析失败不算命中。`https://` 永远不需要 allowlist。
 - 该判断不仅发生在保存时，也发生在**每次出站前**：写入校验上线前已存在的 `http://` 行，或后来从 allowlist 移除的 host，都会在建立连接前被拒绝。地址策略与它是两条独立的线：即使 allowlist 命中，loopback / link-local / multicast / `0.0.0.0/8` / 云 metadata 地址仍会被拨号时的地址拒绝拦下，因此 loopback 端点无法通过 allowlist 放行。
 - 路径中的空格（`0x20`）、控制字符与 DEL（`0x7f`）一律拒绝。
+
+**Base URL 契约**：`base_url` 必须指向厂商的 **API 根地址，并包含其版本段**（例如 `https://api.openai.com/v1`、`https://ark.cn-beijing.volces.com/api/v3`、`https://open.bigmodel.cn/api/paas/v4`）。网关的入站路径总是以它自己的 `/v1` 路由前缀开头；当 `base_url` 的最后一段是版本段（`v` + 数字，可选再跟 `beta` + 数字，例如 `v1`、`v3`、`v4`、`v1beta1`，大小写不敏感）时，网关会去掉入站路径开头的一个 `/v1`，因此 Ark 渠道收到的是 `/api/v3/chat/completions`，而不是 `/api/v3/v1/chat/completions`。裸 host（`https://api.test`）或最后一段不是版本段的前缀（如 `/gateway`、`/v1chat`、`/v2ray`）保留入站 `/v1`，不做改写。`base_url` 自带的查询串与片段会被丢弃，不会拼进上游路径。
 
 > **升级注意（fail-closed）**：默认拒绝 `http://` 会让存量明文渠道在下次保存**或首次出站**时失败。如果校园自建端点确实只能走 HTTP，把它的 host 或地址段加入 `PROVIDER_HTTP_ALLOWLIST`；其余渠道应改用 `https://`。loopback 目标不能靠 allowlist 例外，只能改用非 loopback 的校园端点。`PROVIDER_HTTP_ALLOWLIST` 中的条目只接受 hostname、IP 或 CIDR，写错（例如带了 `http://`、端口或通配符）会让网关启动失败，而不是悄悄匹配不到。
 
@@ -190,6 +192,17 @@ $env:ARK_API_KEY = "…"
 - HTTPS
 - Secret Manager / KMS / Vault
 - PostgreSQL / Redis / Gateway HA
+
+### 启动时的占位符检查
+
+仓库自带的示例值不是密钥。以下变量在启动时会被检查，命中占位符列表（`change-me-in-production`、`replace-with-a-long-random-secret`、`replace-with-a-long-random-admin-token`、`changeme`，比较时忽略大小写与首尾空白）或长度不足时，进程直接退出，并在错误信息里说明原因和生成方式，而不是带着占位符继续运行：
+
+- `API_KEY_HMAC_SECRET`：始终检查，且至少 16 字节。`scripts/dev.ps1` 的本地默认值 `campus-local-test-secret` 满足规则。
+- `CREDENTIAL_ENCRYPTION_KEY`：仅在显式设置时检查（留空仍走开发回退）。
+- `ADMIN_TOKEN`：仅在 `ADMIN_AUTH_MODE=token` 时检查。
+- `ADMIN_PROXY_SECRET`：仅在 `ADMIN_AUTH_MODE=trusted-header` 时检查，并沿用至少 32 字符的下限。
+
+> **更换 `API_KEY_HMAC_SECRET` 的后果**：API Key 的 digest 是 `HMAC-SHA256(API_KEY_HMAC_SECRET, 明文 Key)`，数据库里不保存明文。更换密钥后，所有已存 digest 立刻与调用方持有的 Key 不再匹配，数据面返回 `401 invalid_api_key`，而管理台里的 Key 状态看起来仍然正常。因为没有明文，无法把旧 digest「迁移」到新密钥；正确做法是在维护窗口内为所有调用方**重新创建 API Key 并分发新值**。这也正是网关拒绝在占位符上启动的原因：占位符迟早会被换成真实密钥，而更换的那一刻就等于让全部 Key 失效。
 
 使用 `ADMIN_AUTH_MODE=trusted-header` 时还需：
 

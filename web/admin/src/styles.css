@@ -593,6 +593,23 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .providerRow dd { margin: 0; font-size: 12.5px; min-width: 0; }
 .providerFoot { margin-top: auto; display: flex; gap: 8px; }
 
+/* Read-only facts in the channel drawer. The border and heading keep this from
+   reading as another editable form row: what a channel serves belongs to its
+   Routes, and the pointer to where those are edited is the point of the block. */
+.drawerSection {
+  margin: 16px 18px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.drawerSectionTitle { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.drawerSectionList { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.drawerSectionList li { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; }
+
 /* --- model cards and route chain ------------------------------------------ */
 
 /* Models are separated by a rule rather than boxed. Each one already contains

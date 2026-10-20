@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -31,6 +32,22 @@ const maxUpstreamModelListBytes = 1 << 20
 // directTargetURL leaves a path that does not start with /v1 untouched, so
 // naming /v1/models here would ask those channels for /api/v3/v1/models.
 const providerModelsPath = "/models"
+
+// joinedRequestPath is the path the gateway asks the channel for, without the
+// scheme or host. The refresh error names it so a 404 points at the URL that
+// was actually built — /api/v3/models, not the relative /models — while the
+// host stays out of the admin response (ADR-0009).
+func joinedRequestPath(base string, u *url.URL) string {
+	target, err := directTargetURL(base, u)
+	if err != nil {
+		return u.Path
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Path == "" {
+		return u.Path
+	}
+	return parsed.Path
+}
 
 // The Provider Model list is what a channel says it can serve. It is managed
 // per channel — /admin/providers/{id}/models — because the list belongs to the
@@ -281,8 +298,20 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("provider models refresh: request %s channel %s: upstream status %d", reqID, oneLine(provider.Name), resp.StatusCode)
+		// Name the path the gateway actually asked for, joined through the
+		// channel's base URL, so an Ark failure reads /api/v3/models rather than
+		// the relative /models. The host is internal addressing and does not
+		// belong in an admin response (ADR-0009).
+		requestPath := joinedRequestPath(provider.BaseURL, probe.URL)
+		if resp.StatusCode == http.StatusNotFound {
+			// A 404 is the channel saying it has no model list, not evidence of
+			// a bad URL.
+			httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
+				"cannot refresh models from channel "+provider.Name+": the channel does not expose a model list at GET "+requestPath, reqID)
+			return
+		}
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
-			"cannot refresh models from channel "+provider.Name+": the channel answered HTTP "+strconv.Itoa(resp.StatusCode)+" for GET /models", reqID)
+			"cannot refresh models from channel "+provider.Name+": the channel answered HTTP "+strconv.Itoa(resp.StatusCode)+" for GET "+requestPath, reqID)
 		return
 	}
 

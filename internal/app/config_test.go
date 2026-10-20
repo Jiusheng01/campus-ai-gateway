@@ -351,6 +351,202 @@ func TestProviderHTTPAllowlistConfig(t *testing.T) {
 	}
 }
 
+// loadConfigWithSecrets applies the environment LoadConfig needs to reach the
+// secret checks, then the values under test. Every secret the checks read is
+// written explicitly so a value left over from the surrounding process cannot
+// decide the outcome.
+func loadConfigWithSecrets(t *testing.T, overrides map[string]string) (Config, error) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("ADMIN_TOKEN", "")
+	t.Setenv("ADMIN_PROXY_SECRET", "")
+	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "")
+	t.Setenv("DATA_PLANE", "direct")
+	for key, value := range overrides {
+		t.Setenv(key, value)
+	}
+	return LoadConfig()
+}
+
+// A placeholder is not a weak configuration, it is a startup trap: the gateway
+// accepts it now, and the day an operator replaces it every stored API-key
+// digest stops matching. Refusing to start is the only outcome that cannot be
+// missed, and the message has to name the variable, say what is wrong and say
+// how to produce a usable value.
+func TestAPIKeyHMACSecretRejectsKnownPlaceholders(t *testing.T) {
+	for _, placeholder := range []string{
+		"change-me-in-production",
+		"replace-with-a-long-random-secret",
+		"replace-with-a-long-random-admin-token",
+		"changeme",
+		"CHANGEME",
+	} {
+		t.Run(placeholder, func(t *testing.T) {
+			_, err := loadConfigWithSecrets(t, map[string]string{"API_KEY_HMAC_SECRET": placeholder})
+			if err == nil {
+				t.Fatalf("API_KEY_HMAC_SECRET=%q must stop startup", placeholder)
+			}
+			if !strings.Contains(err.Error(), "placeholder") {
+				t.Fatalf("the refusal must say the value is a placeholder, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "API_KEY_HMAC_SECRET") {
+				t.Fatalf("the refusal must name the variable, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "openssl rand") {
+				t.Fatalf("the refusal must say how to produce a usable secret, got %q", err.Error())
+			}
+		})
+	}
+}
+
+// The HMAC secret is the only input behind every stored API-key digest, so a
+// short one can be brute-forced offline against a stolen digest. Sixteen bytes
+// is the floor; the local development default from scripts/dev.ps1 is above it
+// and must keep starting without extra configuration.
+func TestAPIKeyHMACSecretLengthFloor(t *testing.T) {
+	for _, short := range []string{"123456789012345", "a"} {
+		t.Run("rejects "+short, func(t *testing.T) {
+			_, err := loadConfigWithSecrets(t, map[string]string{"API_KEY_HMAC_SECRET": short})
+			if err == nil {
+				t.Fatalf("a %d-byte API_KEY_HMAC_SECRET must stop startup", len(short))
+			}
+			if !strings.Contains(err.Error(), "at least 16 bytes") {
+				t.Fatalf("the refusal must state the floor, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "openssl rand") {
+				t.Fatalf("the refusal must say how to produce a usable secret, got %q", err.Error())
+			}
+		})
+	}
+
+	if _, err := loadConfigWithSecrets(t, map[string]string{"API_KEY_HMAC_SECRET": strings.Repeat("a", 16)}); err != nil {
+		t.Fatalf("a 16-byte secret must be accepted: %v", err)
+	}
+
+	// The exact default scripts/dev.ps1 passes when API_KEY_HMAC_SECRET is not
+	// already set. If it ever drops below the floor, local development starts
+	// failing on a value the repository itself chose.
+	const devDefault = "campus-local-test-secret"
+	if len(devDefault) < 16 {
+		t.Fatalf("scripts/dev.ps1 default is %d bytes, below the 16-byte floor", len(devDefault))
+	}
+	cfg, err := loadConfigWithSecrets(t, map[string]string{"API_KEY_HMAC_SECRET": devDefault})
+	if err != nil {
+		t.Fatalf("the scripts/dev.ps1 default must be accepted: %v", err)
+	}
+	if cfg.KeyHMACSecret != devDefault {
+		t.Fatalf("KeyHMACSecret = %q, want the development default", cfg.KeyHMACSecret)
+	}
+}
+
+// CREDENTIAL_ENCRYPTION_KEY seals inline Provider credentials. A placeholder
+// here is the same trap as a placeholder HMAC secret: it works until it is
+// replaced, and then every stored credential becomes unreadable. An absent key
+// still takes the documented development fallback, so only a set value is
+// checked.
+func TestCredentialEncryptionKeyRejectsKnownPlaceholders(t *testing.T) {
+	for _, placeholder := range []string{
+		"change-me-in-production",
+		"replace-with-a-long-random-secret",
+		"replace-with-a-long-random-admin-token",
+		"changeme",
+	} {
+		t.Run(placeholder, func(t *testing.T) {
+			_, err := loadConfigWithSecrets(t, map[string]string{"CREDENTIAL_ENCRYPTION_KEY": placeholder})
+			if err == nil {
+				t.Fatalf("CREDENTIAL_ENCRYPTION_KEY=%q must stop startup", placeholder)
+			}
+			if !strings.Contains(err.Error(), "CREDENTIAL_ENCRYPTION_KEY") {
+				t.Fatalf("the refusal must name the variable, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "placeholder") {
+				t.Fatalf("the refusal must say the value is a placeholder, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "openssl rand") {
+				t.Fatalf("the refusal must say how to produce a usable key, got %q", err.Error())
+			}
+		})
+	}
+
+	if _, err := loadConfigWithSecrets(t, nil); err != nil {
+		t.Fatalf("an absent CREDENTIAL_ENCRYPTION_KEY must keep the development fallback: %v", err)
+	}
+}
+
+// ADMIN_TOKEN is the break-glass credential for token mode. Only token mode
+// reads it, so a leftover placeholder in the other modes must not stop startup;
+// in token mode it is the one thing between an anonymous caller and the control
+// plane, and a shipped example is not a credential.
+func TestAdminTokenPlaceholderIsCheckedOnlyInTokenMode(t *testing.T) {
+	const placeholder = "changeme"
+
+	cfg, err := loadConfigWithSecrets(t, map[string]string{
+		"ADMIN_AUTH_MODE": "session",
+		"ADMIN_TOKEN":     placeholder,
+	})
+	if err != nil {
+		t.Fatalf("session mode does not read ADMIN_TOKEN and must start: %v", err)
+	}
+	if cfg.AdminToken != placeholder {
+		t.Fatalf("AdminToken = %q, want the ignored value to be preserved", cfg.AdminToken)
+	}
+
+	_, err = loadConfigWithSecrets(t, map[string]string{
+		"ADMIN_AUTH_MODE": "token",
+		"ADMIN_TOKEN":     placeholder,
+	})
+	if err == nil {
+		t.Fatal("token mode must refuse a placeholder ADMIN_TOKEN")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_TOKEN") || !strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("the refusal must name ADMIN_TOKEN and the problem, got %q", err.Error())
+	}
+
+	if _, err := loadConfigWithSecrets(t, map[string]string{
+		"ADMIN_AUTH_MODE": "token",
+		"ADMIN_TOKEN":     "a-long-random-break-glass-token",
+	}); err != nil {
+		t.Fatalf("token mode must accept a real token: %v", err)
+	}
+}
+
+// The placeholder check belongs to trusted-header mode, which is the only mode
+// that reads ADMIN_PROXY_SECRET. The value used here is longer than the
+// 32-character floor, so the refusal can only come from the placeholder rule.
+func TestAdminProxySecretPlaceholderIsCheckedOnlyInTrustedHeaderMode(t *testing.T) {
+	const placeholder = "replace-with-a-long-random-secret"
+
+	for _, mode := range []string{"session", "token"} {
+		t.Run(mode, func(t *testing.T) {
+			if _, err := loadConfigWithSecrets(t, map[string]string{
+				"ADMIN_AUTH_MODE":    mode,
+				"ADMIN_PROXY_SECRET": placeholder,
+			}); err != nil {
+				t.Fatalf("%s mode does not read ADMIN_PROXY_SECRET and must start: %v", mode, err)
+			}
+		})
+	}
+
+	t.Run("trusted-header", func(t *testing.T) {
+		_, err := loadConfigWithSecrets(t, map[string]string{
+			"ADMIN_AUTH_MODE":    "trusted-header",
+			"ADMIN_PROXY_SECRET": placeholder,
+		})
+		if err == nil {
+			t.Fatal("trusted-header mode must refuse a placeholder ADMIN_PROXY_SECRET")
+		}
+		if !strings.Contains(err.Error(), "ADMIN_PROXY_SECRET") || !strings.Contains(err.Error(), "placeholder") {
+			t.Fatalf("the refusal must name ADMIN_PROXY_SECRET and the problem, got %q", err.Error())
+		}
+		if !strings.Contains(err.Error(), "openssl rand") {
+			t.Fatalf("the refusal must say how to produce a usable secret, got %q", err.Error())
+		}
+	})
+}
+
 // setConfigEnv applies the environment LoadConfig needs to get as far as the
 // Admin UI settings. The cases that care about a particular field override it
 // after calling this, so the five values that only have to be present are

@@ -1,5 +1,12 @@
 $ErrorActionPreference = "SilentlyContinue"
 
+# Compose interpolates every service, including the gateway that this script
+# only queries, and the production compose file requires a value for
+# API_KEY_HMAC_SECRET. Local development uses dev.ps1's accepted default.
+if (-not $env:API_KEY_HMAC_SECRET) {
+    $env:API_KEY_HMAC_SECRET = "campus-local-test-secret"
+}
+
 function Port-Status([int]$Port) {
     $listener = Get-NetTCPConnection -LocalPort $Port -State Listen
     if ($listener) {

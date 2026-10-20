@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1000,24 +1001,46 @@ func (s *Server) serveDirectModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": out})
 }
 
+// apiVersionSegment matches an API version path segment: "v" followed by
+// digits and an optional beta suffix (v1, v3, v4, v1beta1). The comparison is
+// case-insensitive.
+//
+// It deliberately does not match every segment that starts with "v" and a
+// digit: /v1chat and /v2ray are application paths, not versions, and treating
+// them as versions would drop the inbound /v1 the upstream expects.
+var apiVersionSegment = regexp.MustCompile(`(?i)^v[0-9]+(beta[0-9]*)?$`)
+
 // directTargetURL joins a channel's base URL with the request path.
 //
-// A base that already ends in /v1 is the OpenAI-compatible convention, and the
-// incoming path repeats it; keeping both would produce /v1/v1/chat/completions.
-// A base without /v1 is a vendor root, where the path is already correct.
+// The contract is that a base URL points at the vendor's API root, including
+// its version segment. The inbound path always starts with the gateway's own
+// /v1 route prefix, so when the base already carries a version segment
+// (/v1, /api/v3, /api/paas/v4, /compatible-mode/v1) that prefix is removed;
+// keeping both would produce /api/v3/v1/chat/completions, which the vendor
+// does not serve. A bare host or a non-version prefix (/gateway) has no
+// version to carry, so the inbound path is left unchanged.
 func directTargetURL(base string, u *url.URL) (string, error) {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	base = strings.TrimSpace(base)
 	if base == "" {
 		return "", fmt.Errorf("base_url is empty")
 	}
-	suffix := u.Path
-	if strings.HasSuffix(base, "/v1") {
-		suffix = strings.TrimPrefix(u.Path, "/v1")
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("base_url %q is not a valid URL: %w", base, err)
+	}
+	// Build from the parsed components, not from the raw string: a legacy base
+	// with "?x" or "#f" would otherwise swallow the inbound path into its own
+	// query or fragment. The base's query and fragment are configuration noise,
+	// not part of the API root, so they are dropped; only the inbound request's
+	// query is carried over.
+	suffix := u.EscapedPath()
+	if lastPathSegmentIsVersion(parsed.Path) {
+		suffix = strings.TrimPrefix(suffix, "/v1")
 	}
 	if suffix == "" {
 		suffix = "/"
 	}
-	target := base + suffix
+	target := parsed.Scheme + "://" + parsed.Host + strings.TrimRight(parsed.EscapedPath(), "/") + suffix
 	if u.RawQuery != "" {
 		target += "?" + u.RawQuery
 	}
@@ -1025,6 +1048,19 @@ func directTargetURL(base string, u *url.URL) (string, error) {
 		return "", fmt.Errorf("base_url %q produced an invalid URL: %w", base, err)
 	}
 	return target, nil
+}
+
+// lastPathSegmentIsVersion reports whether a URL path ends in an API version
+// segment. Only the last non-empty segment is considered: /api/v3 and
+// /api/paas/v4 carry a version, while /gateway and the empty path do not.
+func lastPathSegmentIsVersion(path string) bool {
+	segments := strings.Split(strings.TrimRight(path, "/"), "/")
+	for i := len(segments) - 1; i >= 0; i-- {
+		if segments[i] != "" {
+			return apiVersionSegment.MatchString(segments[i])
+		}
+	}
+	return false
 }
 
 // rewriteJSONModel replaces the model field of a JSON body, leaving every other
@@ -1126,35 +1162,51 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 	started := time.Now()
 	// The failure summary names the channel and the status; it never carries
 	// the upstream body or the dial error, which is where internal detail
-	// lives. The operator needs to know which line failed, not what the
+	// lives. The operator needs to know which channel failed, not what the
 	// upstream wrote to its own log.
 	var failures []string
 	for _, route := range routes {
 		resp, err := s.attemptDirect(probe, payload, envelope, route)
 		if err != nil {
-			if detail := clientSafeFailure(err); detail != "" {
+			var denied *egressDeniedError
+			switch detail := clientSafeFailure(err); {
+			case errors.As(err, &denied):
+				// The target was resolved and then refused by egress policy — at
+				// the scheme check or in the dial hook. That target is exactly
+				// what the operator must fix, so log it like any other failed
+				// attempt. The response keeps the address-free SafeSummary.
+				reason := directFailureReason(err)
+				logModelTestTarget(reqID, route, probe, reason)
 				failures = append(failures, detail)
-			} else {
-				failures = append(failures, fmt.Sprintf("%s: unreachable", route.Provider))
+			case detail != "":
+				// A missing credential fails before the target exists, so there
+				// is no target to log; the detail is already the operator's fix.
+				failures = append(failures, detail)
+			default:
+				// The dial was attempted. Report the resolved category rather
+				// than flattening DNS, timeout and refusal into one word, and
+				// record the target the operator configured.
+				failures = recordModelTestFailure(failures, reqID, route, probe, directFailureReason(err))
 			}
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			failures = append(failures, fmt.Sprintf("%s: response could not be read", route.Provider))
+			failures = recordModelTestFailure(failures, reqID, route, probe, "response could not be read")
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
-			failures = append(failures, fmt.Sprintf("%s: HTTP %d", route.Provider, resp.StatusCode))
+			failures = recordModelTestFailure(failures, reqID, route, probe, fmt.Sprintf("HTTP %d", resp.StatusCode))
 			continue
 		}
 		result, err := parseProbeResponse(body, time.Since(started))
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: response is not valid JSON", route.Provider))
+			failures = recordModelTestFailure(failures, reqID, route, probe, "response is not valid JSON")
 			continue
 		}
 		result.Channel = route.Provider
+		result.UpstreamModel = route.UpstreamModel
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
@@ -1164,6 +1216,48 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 		message += ": " + strings.Join(failures, "; ")
 	}
 	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", message, reqID)
+}
+
+// recordModelTestFailure logs the target a failed attempt dialled and appends
+// the operator-facing failure line. Every post-dial failure needs both, so the
+// two cannot drift apart.
+func recordModelTestFailure(failures []string, reqID string, route directRoute, probe *http.Request, reason string) []string {
+	logModelTestTarget(reqID, route, probe, reason)
+	return append(failures, modelTestFailureLine(route, reason))
+}
+
+// modelTestFailureLine names the channel that failed and the upstream model it
+// sent. The model is operator-supplied and non-secret; reporting it keeps a
+// wrong model identifier from reading like a path problem.
+func modelTestFailureLine(route directRoute, reason string) string {
+	if route.UpstreamModel == "" {
+		return fmt.Sprintf("%s: %s", route.Provider, reason)
+	}
+	return fmt.Sprintf("%s (%s): %s", route.Provider, route.UpstreamModel, reason)
+}
+
+// logModelTestTarget records the target a failed probe dialled. Only scheme,
+// host and path are written: the query is dropped and userinfo never appears,
+// because the log is retained and read by people who are not entitled to the
+// channel's configuration (ADR-0009).
+func logModelTestTarget(reqID string, route directRoute, probe *http.Request, reason string) {
+	target, err := directTargetURL(route.BaseURL, probe.URL)
+	if err != nil {
+		return
+	}
+	log.Printf("model test: request %s channel %s target %s: %s",
+		oneLine(reqID), oneLine(route.Provider), oneLine(loggableTarget(target)), reason)
+}
+
+// loggableTarget reduces a dialled target to scheme, host and path. The query
+// can carry request data and is dropped; url.URL keeps userinfo out of Host, so
+// credentials embedded in a base_url cannot reach the log.
+func loggableTarget(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "(unparseable target)"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 // oneLine collapses a client-supplied value to a single line for logging, so a

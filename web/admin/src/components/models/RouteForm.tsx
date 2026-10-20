@@ -6,6 +6,24 @@ import {Field} from '../ui/Field'
 
 export type RouteDraft = Partial<ModelRoute> & {id?: string}
 
+/**
+ * isArkBase reports whether a channel's base URL is Volcengine Ark's
+ * OpenAI-compatible root.
+ *
+ * Ark addresses an inference endpoint by its ID (`ep-...`) rather than by a
+ * model name, and the base URL is the only vendor signal in the configuration.
+ * This drives a hint and nothing else: the gateway cannot know every vendor's
+ * naming rule, so a value that does not match is still allowed to be saved.
+ */
+function isArkBase(baseUrl: string | undefined) {
+  if (!baseUrl) return false
+  try {
+    return /\/api\/v3\/?$/.test(new URL(baseUrl).pathname)
+  } catch {
+    return false
+  }
+}
+
 export function RouteForm({
   value,
   model,
@@ -24,6 +42,8 @@ export function RouteForm({
     provider_id: value.provider_id || providers[0]?.id || '',
   }))
   const isNew = !value.id
+  const providerId = v.provider_id || providers[0]?.id || ''
+  const selectedProvider = providers.find(p => p.id === providerId)
 
   return (
     <form
@@ -39,7 +59,7 @@ export function RouteForm({
       </div>
 
       <Field label="渠道">
-        <select value={v.provider_id || providers[0]?.id || ''} onChange={e => setV({...v, provider_id: e.target.value})}>
+        <select value={providerId} onChange={e => setV({...v, provider_id: e.target.value})}>
           {providers.map(p => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -48,7 +68,14 @@ export function RouteForm({
         </select>
       </Field>
 
-      <Field label="上游模型" hint="该渠道实际调用的模型名称。">
+      <Field
+        label="上游模型"
+        hint={
+          isArkBase(selectedProvider?.base_url)
+            ? '该渠道的 Base URL 指向火山方舟的 /api/v3，这里要填推理接入点 ID（ep-…），不是模型名称。'
+            : '该渠道实际调用的上游模型名称。'
+        }
+      >
         <input className="mono" value={v.upstream_model || ''} onChange={e => setV({...v, upstream_model: e.target.value})} />
       </Field>
 

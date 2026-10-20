@@ -152,6 +152,16 @@ if (-not (Test-DockerReady)) {
 }
 Write-Ok "Docker is ready"
 
+# The compose file requires API_KEY_HMAC_SECRET because the gateway refuses a
+# placeholder at startup. Local development uses the same accepted default the
+# script has always passed to the gateway below; it is a development value only.
+if (-not $env:ADMIN_TOKEN) {
+    $env:ADMIN_TOKEN = $AdminToken
+}
+if (-not $env:API_KEY_HMAC_SECRET) {
+    $env:API_KEY_HMAC_SECRET = $HmacSecret
+}
+
 $composeFiles = @(
     "-f", ".\deploy\docker-compose.yml",
     "-f", ".\deploy\docker-compose.dev.yml"
@@ -194,12 +204,6 @@ if (-not (Test-NativeSuccess)) {
 }
 Write-Ok "Database migrations complete"
 
-if (-not $env:ADMIN_TOKEN) {
-    $env:ADMIN_TOKEN = $AdminToken
-}
-if (-not $env:API_KEY_HMAC_SECRET) {
-    $env:API_KEY_HMAC_SECRET = $HmacSecret
-}
 $env:REDIS_ADDR = "127.0.0.1:6379"
 
 # The direct data plane is the only data plane: the gateway resolves the model

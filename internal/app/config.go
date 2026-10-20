@@ -17,6 +17,49 @@ import (
 // rather than silently weakening access-token signing.
 const AdminSessionSecretMinBytes = 32
 
+// knownPlaceholderSecrets are the values that ship in example configuration:
+// .env.example, deploy/docker-compose.yml and the documentation. None of them
+// is a secret. A deployment that leaves one in place looks healthy until the
+// day it is replaced — and replacing API_KEY_HMAC_SECRET invalidates every
+// stored API-key digest at once — so startup refuses them by name.
+//
+// The comparison is case-insensitive because these values are copied by hand,
+// and an operator who types CHANGEME meant the same thing.
+var knownPlaceholderSecrets = []string{
+	"change-me-in-production",
+	"replace-with-a-long-random-secret",
+	"replace-with-a-long-random-admin-token",
+	"changeme",
+}
+
+// isPlaceholderSecret reports whether value is one of the shipped examples.
+func isPlaceholderSecret(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	for _, placeholder := range knownPlaceholderSecrets {
+		if strings.EqualFold(trimmed, placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholderSecretError builds the startup refusal for a secret still set to a
+// shipped example. Every refusal names the variable, quotes the offending value
+// and says how to produce a usable one; consequence, when set, states what
+// replacing the value later costs.
+func placeholderSecretError(variable, value, replacement, consequence string) error {
+	message := variable + " is set to a known placeholder (" + strings.TrimSpace(value) + "); " + replacement
+	if consequence != "" {
+		message += ". " + consequence
+	}
+	return errors.New(message)
+}
+
+// apiKeyHMACSecretMinBytes is the shortest API_KEY_HMAC_SECRET accepted at
+// startup. The secret is the only input to every API-key digest, so a short one
+// can be brute-forced offline against a leaked digest.
+const apiKeyHMACSecretMinBytes = 16
+
 // adminSessionDerivationLabel domain-separates the development fallback key.
 // It guarantees the derived value differs from API_KEY_HMAC_SECRET and from
 // every other HMAC the gateway computes with that secret.
@@ -208,6 +251,21 @@ func LoadConfig() (Config, error) {
 	if cfg.KeyHMACSecret == "" {
 		return Config{}, errors.New("API_KEY_HMAC_SECRET is required")
 	}
+	if isPlaceholderSecret(cfg.KeyHMACSecret) {
+		return Config{}, placeholderSecretError("API_KEY_HMAC_SECRET", cfg.KeyHMACSecret,
+			"set a random value instead, for example from `openssl rand -base64 48`",
+			"Changing this secret later invalidates every stored API-key digest, so all API keys would have to be recreated")
+	}
+	if len(strings.TrimSpace(cfg.KeyHMACSecret)) < apiKeyHMACSecretMinBytes {
+		return Config{}, errors.New("API_KEY_HMAC_SECRET must be at least 16 bytes; " +
+			"set a random value, for example from `openssl rand -base64 48`. " +
+			"Changing this secret later invalidates every stored API-key digest, so all API keys would have to be recreated")
+	}
+	if isPlaceholderSecret(cfg.CredentialEncryptionKey) {
+		return Config{}, placeholderSecretError("CREDENTIAL_ENCRYPTION_KEY", cfg.CredentialEncryptionKey,
+			"set a random value instead, for example from `openssl rand -base64 48`",
+			"Changing this key later makes every stored inline credential unreadable")
+	}
 	dataPlane, err := resolveDataPlane(os.Getenv("DATA_PLANE"))
 	if err != nil {
 		return Config{}, err
@@ -237,6 +295,14 @@ func LoadConfig() (Config, error) {
 		}
 		if cfg.AdminRefreshTTL <= cfg.AdminAccessTTL {
 			return Config{}, errors.New("ADMIN_REFRESH_TTL must be longer than ADMIN_ACCESS_TTL")
+		}
+	case "token":
+		// Only token mode reads ADMIN_TOKEN. The other modes ignore a stale
+		// value on purpose, so validating it there would stop a deployment
+		// over a variable it never uses.
+		if isPlaceholderSecret(cfg.AdminToken) {
+			return Config{}, placeholderSecretError("ADMIN_TOKEN", cfg.AdminToken,
+				"set a random break-glass token instead, for example from `openssl rand -base64 48`", "")
 		}
 	}
 	if cfg.AdminLoginMaxAttempts < 0 {
@@ -275,6 +341,11 @@ func LoadConfig() (Config, error) {
 		// door, and it is worth refusing to start over — an operator who
 		// meant to enable the mode will read the error, while one who set it
 		// by accident gets a loud stop instead of a silent takeover.
+		if isPlaceholderSecret(cfg.AdminProxySecret) {
+			return Config{}, placeholderSecretError("ADMIN_PROXY_SECRET", cfg.AdminProxySecret,
+				"set a random shared secret of at least "+strconv.Itoa(minAdminProxySecretLen)+
+					" characters instead, for example from `openssl rand -hex "+strconv.Itoa(minAdminProxySecretLen/2)+"`", "")
+		}
 		if len(cfg.AdminProxySecret) < minAdminProxySecretLen {
 			return Config{}, errors.New("ADMIN_PROXY_SECRET must be at least " + strconv.Itoa(minAdminProxySecretLen) + " characters in trusted-header mode")
 		}

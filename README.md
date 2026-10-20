@@ -113,9 +113,10 @@ cd campus-ai-gateway
 .\scripts\stop.ps1           # stop
 ```
 
-Docker Compose:
+Docker Compose. The gateway refuses a placeholder or short `API_KEY_HMAC_SECRET`, so compose has no default for it. Generate one once with `openssl rand -base64 48`, export it, and keep it — changing it later invalidates every stored API key:
 
 ```bash
+export API_KEY_HMAC_SECRET="$(openssl rand -base64 48)"   # generate once and keep
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
