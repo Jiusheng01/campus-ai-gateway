@@ -786,9 +786,7 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 		return nil, fmt.Errorf("channel %s: %w", route.Provider, err)
 	}
 	for k, values := range r.Header {
-		switch http.CanonicalHeaderKey(k) {
-		case "Authorization", "Host", "Content-Length", "Connection", "Keep-Alive",
-			"Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		if !forwardableRequestHeaders[http.CanonicalHeaderKey(k)] {
 			continue
 		}
 		for _, v := range values {
@@ -826,6 +824,30 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 		return nil, err
 	}
 	return resp, nil
+}
+
+// forwardableRequestHeaders is the allow list ADR-0012 names for request
+// headers: content negotiation, W3C trace context and the Client Correlation
+// ID. It is the mirror of forwardableResponseHeaders and lives beside it so the
+// two sides are maintained together.
+//
+// Everything else stays in the gateway. A tenant's Cookie and its forwarding
+// chain (X-Forwarded-For, X-Real-IP) are between the tenant and the gateway,
+// not facts a third-party Provider should receive; a deny list would have to
+// anticipate every header a browser or proxy might attach, while an allow list
+// only names what an upstream can legitimately need. Authorization is not here
+// either — it is replaced below with the channel Credential — and Host,
+// Content-Length and Connection are transport-managed.
+//
+// X-Request-Id is this repository's Client Correlation ID: requestIDMiddleware
+// keeps a client-supplied value and generates one otherwise.
+var forwardableRequestHeaders = map[string]bool{
+	"Accept":          true,
+	"Accept-Encoding": true,
+	"Content-Type":    true,
+	"Traceparent":     true,
+	"Tracestate":      true,
+	"X-Request-Id":    true,
 }
 
 // forwardableResponseHeaders is the allow list ADR-0012 names for response

@@ -103,7 +103,7 @@ gateway_request_log
 - **Config Revision（ADR-0011）尚未实现**：Provider / Virtual Model / Route 没有 draft / 审批 / 原子激活，管理写入保存即生效。
 - **keyring 轮换（ADR-0008）尚未实现**：内联 Credential 的密文带 `v1:` 版本前缀，但当前只写不读，也没有多密钥轮换或旧密文重加密。
 - **迁移全量重放存在已知张力**：`0002` 为 `gateway_model.provider_id` 建了索引，而 `0014` 删除了该列，所以把整套迁移重放到一个已处于终态的数据库会在 `0002` 处失败。bootstrap 不要求每个历史文件都重放成功，而是先用 `verifyFinalSchema` 校验最终 schema 契约、通过后才写入 `schema_migrations`；这条容忍只在最终契约校验随每次新迁移同步更新时才成立。
-- **ADR-0012 尚未实现的条款**：私有 CA / 自定义 RootCAs、Provider 客户端证书（mTLS）、请求体限额与 `413`（chat 16 MiB / 30s、管理 1 MiB / 10s）、把 `/v1` 面收敛为 `GET /v1/models` + `POST /v1/chat/completions`，以及 Kubernetes egress 第二层控制。地址拒绝与拨号时 DNS 复验、`base_url` 写入校验、禁止自动重定向已经实现：每次连接都在 `Dialer.Control` 中按本次解析出的地址拒绝 loopback / link-local / multicast / unspecified / 云 metadata。
+- **ADR-0012 尚未实现的条款**：私有 CA / 自定义 RootCAs、Provider 客户端证书（mTLS）、请求体限额与 `413`（chat 16 MiB / 30s、管理 1 MiB / 10s）、把 `/v1` 面收敛为 `GET /v1/models` + `POST /v1/chat/completions`，以及 Kubernetes egress 第二层控制。地址拒绝与拨号时 DNS 复验、`base_url` 写入校验、禁止自动重定向已经实现：每次连接都在 `Dialer.Control` 中按本次解析出的地址拒绝 loopback / link-local / multicast / unspecified / 云 metadata。发往 Provider 的请求头同样是白名单：只转发内容协商（`Accept` / `Accept-Encoding` / `Content-Type`）、W3C trace context（`traceparent` / `tracestate`）与 Client Correlation ID（`X-Request-Id`），`Cookie`、`X-Forwarded-For`、`X-Real-IP` 等客户端头不再外泄；`Authorization` 由渠道 Credential 覆盖。
 - 🧊 冻结：完整业务数据面的 Qwen -> Volcengine Ark Failover 仍需最终验收。
 - 直连数据面的加权路由轮换与熔断状态是**每实例、内存中**的：多实例部署各自独立，重启只重置轮换与熔断；跨实例共享状态尚未实现。
 - 🧊 冻结：学校真实 IdP 尚未完成现场集成验收。
