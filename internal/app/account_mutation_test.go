@@ -510,12 +510,10 @@ func TestGatewayAdminCannotPromoteItself(t *testing.T) {
 // the restricted endpoint by default.
 func TestModelTestOptionViewDropsEverythingElse(t *testing.T) {
 	full := model.ModelConfig{
-		ID:            "36d2e51c-b6b7-4409-a871-a088616cd9cd",
-		Alias:         "campus-smart",
-		ProviderID:    "49cd2afd-b8e4-4187-a3fe-de698874186e",
-		ProviderName:  "qwen",
-		UpstreamModel: "qwen3.7-flash-2026-07-15",
-		Status:        1,
+		ID:          "36d2e51c-b6b7-4409-a871-a088616cd9cd",
+		Alias:       "campus-smart",
+		DisplayName: "校园智能助手",
+		Status:      1,
 	}
 	view := modelTestOptionView{ID: full.ID, Alias: full.Alias, Status: full.Status}
 
@@ -526,7 +524,7 @@ func TestModelTestOptionViewDropsEverythingElse(t *testing.T) {
 	body := string(raw)
 
 	for _, forbidden := range []string{
-		"provider_id", "provider_name", "upstream_model",
+		"provider_id", "provider_name", "upstream_model", "display_name",
 		"credential_env", "base_url", "api_key", "secret", "password",
 		"route_group",
 	} {

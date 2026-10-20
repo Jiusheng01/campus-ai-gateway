@@ -8,7 +8,6 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
-	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -57,6 +56,7 @@ func (s *Server) handleModelRoutes(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusConflict, "model_route_create_failed", "Model route could not be created", reqID)
 			return
 		}
+		s.invalidateRouteTable()
 		writeJSON(w, http.StatusCreated, out)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -92,14 +92,11 @@ func (s *Server) handleModelRouteByID(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusNotFound, "model_route_not_found", "Model route was not found", reqID)
 			return
 		}
-		if errors.Is(err, storage.ErrLastEnabledModelRoute) {
-			httpx.Error(w, http.StatusConflict, "last_enabled_route", "The last enabled route cannot be disabled", reqID)
-			return
-		}
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "model_route_update_failed", "Model route could not be updated", reqID)
 			return
 		}
+		s.invalidateRouteTable()
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodDelete:
 		err := s.pg.DeleteModelRoute(r.Context(), routeID)
@@ -107,18 +104,11 @@ func (s *Server) handleModelRouteByID(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusNotFound, "model_route_not_found", "Model route was not found", reqID)
 			return
 		}
-		if errors.Is(err, storage.ErrLastModelRoute) {
-			httpx.Error(w, http.StatusConflict, "last_model_route", "The last route of a model cannot be deleted", reqID)
-			return
-		}
-		if errors.Is(err, storage.ErrLastEnabledModelRoute) {
-			httpx.Error(w, http.StatusConflict, "last_enabled_route", "The last enabled route cannot be deleted", reqID)
-			return
-		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to delete model route", reqID)
 			return
 		}
+		s.invalidateRouteTable()
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")

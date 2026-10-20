@@ -78,6 +78,11 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 		{"operator", nil, http.MethodDelete, "/admin/api-keys/x", false},
 		{"gateway_admin", nil, http.MethodPost, "/admin/providers", true},
 		{"gateway_admin", nil, http.MethodPut, "/admin/tenants/x", false},
+		// The setup checklist counts deployment-wide rows, so it belongs to the
+		// roles that configure the deployment, not to those that read telemetry.
+		{"gateway_admin", nil, http.MethodGet, "/admin/onboarding", true},
+		{"auditor", nil, http.MethodGet, "/admin/onboarding", false},
+		{"operator", nil, http.MethodGet, "/admin/onboarding", false},
 		// A tenant_admin without a scope is the withdrawn global grant and
 		// still reaches nothing. The scope is what turns the role on.
 		{"tenant_admin", nil, http.MethodPut, "/admin/tenants/x", false},
@@ -109,6 +114,7 @@ func TestAdminPrincipalPermissions(t *testing.T) {
 		{"tenant_admin", &scope, http.MethodGet, "/admin/admin-audit", false},
 		{"tenant_admin", &scope, http.MethodGet, "/admin/security-events", false},
 		{"tenant_admin", &scope, http.MethodGet, "/admin/status/trend", false},
+		{"tenant_admin", &scope, http.MethodGet, "/admin/onboarding", false},
 		{"operator", nil, http.MethodPost, "/admin/model-test", true},
 		// A plain member reaches nothing but its own account.
 		{"member", nil, http.MethodGet, "/admin/status", false},

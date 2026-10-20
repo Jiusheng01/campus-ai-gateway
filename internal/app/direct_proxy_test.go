@@ -45,8 +45,8 @@ func TestAssembleRouteTableSkipsUnroutableEntries(t *testing.T) {
 		{ID: "p-nourl", Name: "nourl", BaseURL: "   ", CredentialEnv: "KEY_NOURL", Status: 1},
 	}
 	models := []model.ModelConfig{
-		{ID: "m-ok", Alias: "campus-smart", UpstreamModel: "qwen-plus", Status: 1},
-		{ID: "m-off", Alias: "campus-off", UpstreamModel: "qwen-plus", Status: 2},
+		{ID: "m-ok", Alias: "campus-smart", Status: 1},
+		{ID: "m-off", Alias: "campus-off", Status: 2},
 	}
 	routesByModel := map[string][]model.ModelRoute{
 		"m-ok": {
@@ -110,16 +110,15 @@ func TestAssembleRouteTableOrdersByPriorityNotWeight(t *testing.T) {
 	}
 }
 
-func TestAssembleRouteTableFallsBackToTheModelUpstreamName(t *testing.T) {
+func TestAssembleRouteTableSkipsRoutesWithoutUpstream(t *testing.T) {
 	providers := []model.Provider{{ID: "p1", Name: "qwen", BaseURL: "https://a.test/v1", CredentialEnv: "K1", Status: 1}}
-	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", UpstreamModel: "qwen-plus", Status: 1}}
+	models := []model.ModelConfig{{ID: "m1", Alias: "campus-smart", Status: 1}}
 	routesByModel := map[string][]model.ModelRoute{
 		"m1": {{ModelID: "m1", ProviderID: "p1", UpstreamModel: "", Priority: 1, Status: 1}},
 	}
 
-	routes := assembleRouteTable(providers, models, routesByModel).models["campus-smart"]
-	if len(routes) != 1 || routes[0].UpstreamModel != "qwen-plus" {
-		t.Fatalf("empty route upstream must fall back to the model's: %+v", routes)
+	if _, ok := assembleRouteTable(providers, models, routesByModel).models["campus-smart"]; ok {
+		t.Fatal("a route without an upstream model must not make the alias routable")
 	}
 }
 

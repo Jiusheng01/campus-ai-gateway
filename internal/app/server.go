@@ -43,13 +43,15 @@ type Server struct {
 
 	// Direct data plane state.
 	//
-	// routeCache is rebuilt at most once per routeCacheTTL, so a saved change
-	// reaches business traffic within seconds without putting three queries on
-	// the hot path and without every write handler having to remember to
-	// invalidate anything.
+	// routeCache is rebuilt at most once per routeCacheTTL. Admin writes bump
+	// routeGen and clear the cache immediately, so a saved change is visible to
+	// the next request; the TTL is the backstop for out-of-band changes. The
+	// generation also prevents a rebuild that raced a write from caching its
+	// pre-write snapshot.
 	routeMu    sync.Mutex
 	routeCache routeTable
 	routeAt    time.Time
+	routeGen   uint64
 	transport  *transportPool
 
 	// selector advances the smooth-weighted-round-robin rotation that picks

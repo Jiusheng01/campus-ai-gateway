@@ -105,8 +105,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminTrend(w, r)
 	case r.URL.Path == "/admin/whoami":
 		s.handleAdminWhoAmI(w, r)
+	case r.URL.Path == "/admin/onboarding":
+		s.handleOnboarding(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/upstream-models"):
+		s.handleProviderUpstreamModels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/"):
 		s.handleProviderByID(w, r)
 	case r.URL.Path == "/admin/models":
@@ -293,6 +297,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusConflict, "provider_create_failed", "Provider could not be created", reqID)
 			return
 		}
+		s.invalidateRouteTable()
 		writeJSON(w, http.StatusCreated, out)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -326,6 +331,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found or could not be updated", reqID)
 		return
 	}
+	s.invalidateRouteTable()
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -350,10 +356,15 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out, err := s.pg.CreateModel(r.Context(), in)
-		if err != nil {
-			httpx.Error(w, http.StatusConflict, "model_create_failed", "Model could not be created", reqID)
+		if errors.Is(err, storage.ErrModelAliasTaken) {
+			httpx.Error(w, http.StatusConflict, "model_alias_taken", "alias is already in use; choose another public model name", reqID)
 			return
 		}
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Model could not be created", reqID)
+			return
+		}
+		s.invalidateRouteTable()
 		writeJSON(w, http.StatusCreated, out)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -383,10 +394,18 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.pg.UpdateModel(r.Context(), id, in)
-	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found or could not be updated", reqID)
+	switch {
+	case errors.Is(err, storage.ErrModelAliasImmutable):
+		httpx.Error(w, http.StatusConflict, "model_alias_immutable", "alias is the public model name and cannot be changed; create a new model instead", reqID)
+		return
+	case errors.Is(err, storage.ErrModelNotFound):
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	case err != nil:
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Model could not be updated", reqID)
 		return
 	}
+	s.invalidateRouteTable()
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1183,12 +1202,17 @@ func validateProvider(v *model.Provider) string {
 	return ""
 }
 
+// validateModel checks the catalog entry only. Provider and upstream model are
+// deliberately absent: a model with no route is valid and simply not exposed to
+// business traffic until a route is added.
 func validateModel(v *model.ModelConfig) string {
 	v.Alias = strings.TrimSpace(v.Alias)
-	v.ProviderID = strings.TrimSpace(v.ProviderID)
-	v.UpstreamModel = strings.TrimSpace(v.UpstreamModel)
-	if v.Alias == "" || v.ProviderID == "" || v.UpstreamModel == "" {
-		return "alias, provider_id and upstream_model are required"
+	v.DisplayName = strings.TrimSpace(v.DisplayName)
+	if v.Alias == "" {
+		return "alias is required"
+	}
+	if v.DisplayName == "" {
+		v.DisplayName = v.Alias
 	}
 	if v.Status == 0 {
 		v.Status = 1

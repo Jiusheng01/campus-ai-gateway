@@ -102,6 +102,17 @@ func (p *transportPool) get(timeout time.Duration) *http.Transport {
 	return t
 }
 
+// invalidateRouteTable drops the cached table so the next request rebuilds it.
+// Admin writes call this after the transaction commits; the TTL remains as a
+// backstop for changes made outside the admin API.
+func (s *Server) invalidateRouteTable() {
+	s.routeMu.Lock()
+	s.routeGen++
+	s.routeCache = routeTable{}
+	s.routeAt = time.Time{}
+	s.routeMu.Unlock()
+}
+
 // routeTableCached returns the current routing table, rebuilding it at most
 // once per routeCacheTTL.
 func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
@@ -111,6 +122,7 @@ func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
 		s.routeMu.Unlock()
 		return cached, nil
 	}
+	gen := s.routeGen
 	s.routeMu.Unlock()
 
 	built, err := s.buildRouteTable(ctx)
@@ -127,8 +139,13 @@ func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
 	}
 
 	s.routeMu.Lock()
-	s.routeCache = built
-	s.routeAt = time.Now()
+	// A write may have committed while this table was being built. Caching the
+	// pre-write snapshot would hide that write for another TTL, so it is
+	// returned to this request but not stored; the next request rebuilds.
+	if s.routeGen == gen {
+		s.routeCache = built
+		s.routeAt = time.Now()
+	}
 	s.routeMu.Unlock()
 	return built, nil
 }
@@ -145,13 +162,13 @@ func (s *Server) buildRouteTable(ctx context.Context) (routeTable, error) {
 	if err != nil {
 		return routeTable{}, err
 	}
+	routes, err := s.pg.ListAllModelRoutes(ctx)
+	if err != nil {
+		return routeTable{}, err
+	}
 	routesByModel := make(map[string][]model.ModelRoute, len(models))
-	for _, m := range models {
-		lines, err := s.pg.ListModelRoutes(ctx, m.ID)
-		if err != nil {
-			return routeTable{}, err
-		}
-		routesByModel[m.ID] = lines
+	for _, r := range routes {
+		routesByModel[r.ModelID] = append(routesByModel[r.ModelID], r)
 	}
 	return assembleRouteTable(providers, models, routesByModel), nil
 }
@@ -185,9 +202,12 @@ func assembleRouteTable(providers []model.Provider, models []model.ModelConfig, 
 			if !ok {
 				continue
 			}
+			// A route without an upstream model cannot serve a request. This
+			// used to fall back to the legacy model column; that column is
+			// retired, and the route write path rejects an empty value anyway.
 			upstream := strings.TrimSpace(rt.UpstreamModel)
 			if upstream == "" {
-				upstream = strings.TrimSpace(m.UpstreamModel)
+				continue
 			}
 			routes = append(routes, directRoute{
 				Provider:      p.Name,
@@ -672,25 +692,25 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 // Content-Length is copied because the body is streamed unchanged; leaving it
 // off would switch every non-streaming response to chunked encoding.
 var forwardableResponseHeaders = map[string]bool{
-	"Content-Type":         true,
-	"Content-Length":       true,
-	"Content-Encoding":     true,
-	"Cache-Control":        true,
-	"ETag":                 true,
-	"Last-Modified":        true,
-	"Expires":              true,
-	"Vary":                 true,
-	"Retry-After":          true,
-	"RateLimit-Limit":      true,
-	"RateLimit-Remaining":  true,
-	"RateLimit-Reset":      true,
-	"X-RateLimit-Limit":    true,
+	"Content-Type":          true,
+	"Content-Length":        true,
+	"Content-Encoding":      true,
+	"Cache-Control":         true,
+	"ETag":                  true,
+	"Last-Modified":         true,
+	"Expires":               true,
+	"Vary":                  true,
+	"Retry-After":           true,
+	"RateLimit-Limit":       true,
+	"RateLimit-Remaining":   true,
+	"RateLimit-Reset":       true,
+	"X-RateLimit-Limit":     true,
 	"X-RateLimit-Remaining": true,
-	"X-RateLimit-Reset":    true,
-	"Traceparent":          true,
-	"Tracestate":           true,
-	"Request-Id":           true,
-	"X-Request-Id":         true,
+	"X-RateLimit-Reset":     true,
+	"Traceparent":           true,
+	"Tracestate":            true,
+	"Request-Id":            true,
+	"X-Request-Id":          true,
 }
 
 // writeDirectResponse copies the upstream response to the client and stamps the

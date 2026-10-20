@@ -180,6 +180,14 @@ func (s *Server) handleModelQuotas(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// modelQuotaView adds the value the limiter will actually apply to a configured
+// row. The configured numbers alone cannot answer "I set 300 here, why does it
+// stop at 100?" -- that needs the chain resolved and the level named.
+type modelQuotaView struct {
+	model.ModelQuota
+	Effective *model.EffectiveModelQuota `json:"effective,omitempty"`
+}
+
 func (s *Server) listModelQuotas(w http.ResponseWriter, r *http.Request, reqID string) {
 	var scope *string
 	if v := adminScopeTenantID(r); v != "" {
@@ -190,7 +198,43 @@ func (s *Server) listModelQuotas(w http.ResponseWriter, r *http.Request, reqID s
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list model quotas", reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+
+	// Only the subjects actually on this page are resolved. A pool row has no
+	// chain of its own, so its configured value is already the ceiling.
+	ids := make([]string, 0, len(items))
+	for _, q := range items {
+		if q.TenantID != nil {
+			ids = append(ids, *q.TenantID)
+		}
+	}
+	byTenant, err := s.pg.EffectiveModelQuotasForTenants(r.Context(), ids)
+	if err != nil {
+		// Returning the rows without their effective values would let the page
+		// present a configured number as if it were the one being enforced.
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to resolve effective model quotas", reqID)
+		return
+	}
+	effective := make(map[string]map[string]model.EffectiveModelQuota, len(byTenant))
+	for tenantID, list := range byTenant {
+		byAlias := make(map[string]model.EffectiveModelQuota, len(list))
+		for _, e := range list {
+			byAlias[e.ModelAlias] = e
+		}
+		effective[tenantID] = byAlias
+	}
+
+	views := make([]modelQuotaView, 0, len(items))
+	for _, q := range items {
+		v := modelQuotaView{ModelQuota: q}
+		if q.TenantID != nil {
+			if e, ok := effective[*q.TenantID][q.ModelAlias]; ok {
+				eff := e
+				v.Effective = &eff
+			}
+		}
+		views = append(views, v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": views})
 }
 
 func (s *Server) putModelQuota(w http.ResponseWriter, r *http.Request, reqID string) {
@@ -204,6 +248,18 @@ func (s *Server) putModelQuota(w http.ResponseWriter, r *http.Request, reqID str
 		return
 	}
 	if !s.modelQuotaWritable(w, r, in.TenantID, reqID) {
+		return
+	}
+	// The alias is the identity of a quota row, but it is not a foreign key the
+	// operator can see in the form. Refuse a name the catalog does not contain
+	// instead of saving a cap that will never apply.
+	exists, err := s.pg.ModelAliasExists(r.Context(), in.ModelAlias)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to check the referenced model", reqID)
+		return
+	}
+	if !exists {
+		httpx.Error(w, http.StatusBadRequest, "model_not_found", "The referenced model does not exist; create it before setting a quota", reqID)
 		return
 	}
 
