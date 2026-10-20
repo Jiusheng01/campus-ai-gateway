@@ -8,6 +8,9 @@ export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id
 export type RouteView=ModelRoute&{model_display_name:string;config_version:number;provider_status:number;credential_configured:boolean}
 export type ModelDetail={model:ModelConfig;routes:ModelRoute[];version:number}
 export type PublishResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean;version:number}
+export type ProviderImpactModel={model_id:string;alias:string;routes_to_provider:number;remaining_routes:number;orphaned:boolean}
+export type ProviderImpact={routes:number;provider_models:number;orphaned_models:number;affected_models:ProviderImpactModel[]}
+export type ModelImpact={alias:string;enabled_routes:number;enabled_providers:number;explicit_keys:number;wildcard_keys:number}
 export type ModelAuthorization={api_key_id:string;name:string;tenant_id:string;tenant_name:string;status:number;wildcard:boolean;allowed:boolean;last_used_at?:string}
 export type AuthorizationResult={api_key_id:string;outcome:'added'|'already_allowed'|'removed'|'not_present'|'wildcard_refused'|'not_found'}
 
@@ -50,7 +53,8 @@ export type ProviderStat={provider:string;requests:number;success_rate:number;av
 export type DataPlane='direct'
 
 export type CircuitView={provider:string;state:'closed'|'open'|'half-open';failures:number;retry_in_ms:number}
-export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[];circuits?:CircuitView[]}
+export type RouteCacheStatus={built_at:string|null;age_ms:number;stale:boolean;last_error_kind?:string;generation:number}
+export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[];circuits?:CircuitView[];route_cache?:RouteCacheStatus}
 export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
 
 /**

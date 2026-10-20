@@ -1,6 +1,6 @@
 import {useCallback, useMemo, useState} from 'react'
 import {ChevronLeft, ChevronRight, Network, Pencil, Plus, RefreshCw, Trash2} from 'lucide-react'
-import {api, type CircuitView, type DashboardStatus, type ModelConfig, type ModelRoute, type Provider, type ProviderDeleteResult} from '../api'
+import {api, type CircuitView, type DashboardStatus, type Provider, type ProviderDeleteResult, type ProviderImpact} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {StatusBadge} from '../components/ui/Badge'
@@ -32,23 +32,11 @@ type Bundle = {
 }
 
 /**
- * deleteCost is the price the confirmation quotes. It is a preview computed
- * from the same route endpoints the model page uses; the DELETE response is the
- * actual result and the UI shows both.
+ * The impact preview is server-computed. DELETE still rechecks and returns the
+ * actual counts; the preview is only the warning.
  */
-async function deleteCost(providerID: string) {
-  const models = (await api<{data: ModelConfig[]}>('/admin/models')).data || []
-  const lists = await Promise.all(
-    models.map(async m => (await api<{data: ModelRoute[]}>(`/admin/models/${m.id}/routes`)).data || []),
-  )
-  let routes = 0
-  let modelsLost = 0
-  for (const list of lists) {
-    const own = list.filter(r => r.provider_id === providerID).length
-    routes += own
-    if (own > 0 && own === list.length) modelsLost++
-  }
-  return {routes, modelsLost}
+async function deleteImpact(providerID: string): Promise<ProviderImpact> {
+  return api<ProviderImpact>(`/admin/providers/${providerID}/impact`)
 }
 
 export function ProvidersPage({
@@ -112,16 +100,16 @@ export function ProvidersPage({
   }
 
   const remove = async (p: Provider) => {
-    let cost: {routes: number; modelsLost: number}
+    let impact: ProviderImpact
     try {
-      cost = await deleteCost(p.id)
+      impact = await deleteImpact(p.id)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无法读取该渠道的删除影响')
       return
     }
     const ok = await confirm({
       title: `删除渠道「${p.name}」？`,
-      description: `将永久删除 1 个渠道、${cost.routes} 条线路、${cost.modelsLost} 个对外模型。此操作不可撤销。`,
+      description: `将永久删除 1 个渠道、${impact.routes} 条线路、${impact.orphaned_models} 个对外模型（共影响 ${impact.affected_models.length} 个模型）。提交时会重新校验，实际结果以返回数量为准。此操作不可撤销。`,
       confirmText: '永久删除',
       danger: true,
       requireText: p.name,

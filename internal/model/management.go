@@ -304,6 +304,32 @@ type ProviderRuntimeSummary struct {
 	Recent   []RuntimeRequest        `json:"recent"`
 }
 
+// ProviderImpact is a server-computed preview of a channel delete. It is not
+// the final authority: DELETE rechecks and returns what actually happened.
+type ProviderImpactModel struct {
+	ModelID          string `json:"model_id"`
+	Alias            string `json:"alias"`
+	RoutesToProvider int    `json:"routes_to_provider"`
+	RemainingRoutes  int    `json:"remaining_routes"`
+	Orphaned         bool   `json:"orphaned"`
+}
+
+type ProviderImpact struct {
+	Routes            int                   `json:"routes"`
+	ProviderModels    int                   `json:"provider_models"`
+	OrphanedModels    int                   `json:"orphaned_models"`
+	AffectedModels    []ProviderImpactModel `json:"affected_models"`
+}
+
+// ModelImpact is the disable preview: it never rewrites Keys.
+type ModelImpact struct {
+	Alias            string `json:"alias"`
+	EnabledRoutes    int    `json:"enabled_routes"`
+	EnabledProviders int    `json:"enabled_providers"`
+	ExplicitKeys     int    `json:"explicit_keys"`
+	WildcardKeys     int    `json:"wildcard_keys"`
+}
+
 // RequestAttempt is one Routing Attempt under a Request Record.
 //
 // It exists because the Request Record keeps only the winning channel and a

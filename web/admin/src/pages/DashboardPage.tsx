@@ -20,7 +20,7 @@ import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {useResource} from '../lib/useResource'
-import {ago, fmt, ms, num, ratio} from '../lib/format'
+import {ago, fmt, ms, num, ratio, when} from '../lib/format'
 
 /**
  * The overview answers "is it working right now", and nothing else.
@@ -143,6 +143,19 @@ export function DashboardPage({roles}: {roles: string[]}) {
                 )
               })}
             </div>
+          </Panel>
+
+          <Panel title="路由配置快照" sub="当前进程使用的路由表快照。保存后本实例立即失效；其他实例按 5 秒 TTL 收敛。">
+            {data?.route_cache ? (
+              <p className="hint">
+                生成时间：{data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'} · 代次 {data.route_cache.generation}
+                {data.route_cache.stale
+                  ? ` · 最近重建失败（${data.route_cache.last_error_kind || 'unknown'}），当前继续使用旧快照；这不代表配置已全局生效。`
+                  : ' · 未检测到重建失败。'}
+              </p>
+            ) : (
+              <p className="hint">该实例未返回路由快照状态；不要把它读作“已全局生效”。</p>
+            )}
           </Panel>
 
           {canReadLogs && (

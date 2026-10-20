@@ -128,6 +128,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminWhoAmI(w, r)
 	case r.URL.Path == "/admin/providers":
 		s.handleProviders(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/impact"):
+		s.handleProviderImpact(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
 		s.handleProviderRuntimeSummary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/") && strings.HasSuffix(r.URL.Path, "/test"):
@@ -154,6 +156,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handlePublishModel(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/impact"):
+		s.handleModelImpact(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/runtime-summary"):
 		s.handleModelRuntimeSummary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/authorizations"):
@@ -497,6 +501,17 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(in.Alias) != "" && strings.TrimSpace(in.Alias) != existing.Alias {
 		httpx.Error(w, http.StatusBadRequest, "alias_immutable",
 			"A published model alias is immutable; publish a new alias instead", reqID)
+		return
+	}
+	if in.ConfigVersion > 0 && in.ConfigVersion != existing.ConfigVersion {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": map[string]any{
+				"code":            "config_version_conflict",
+				"message":         "The model changed since it was loaded; current version is " + strconv.FormatInt(existing.ConfigVersion, 10),
+				"request_id":      reqID,
+				"current_version": existing.ConfigVersion,
+			},
+		})
 		return
 	}
 	in.Alias = existing.Alias
