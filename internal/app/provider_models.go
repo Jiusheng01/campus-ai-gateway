@@ -281,8 +281,17 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("provider models refresh: request %s channel %s: upstream status %d", reqID, oneLine(provider.Name), resp.StatusCode)
+		if resp.StatusCode == http.StatusNotFound {
+			// A 404 is the channel saying it has no model list, not evidence of
+			// a bad URL. Name only the path the gateway asked for: the host is
+			// internal addressing and does not belong in an admin response
+			// (ADR-0009).
+			httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
+				"cannot refresh models from channel "+provider.Name+": the channel does not expose a model list at GET "+providerModelsPath, reqID)
+			return
+		}
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
-			"cannot refresh models from channel "+provider.Name+": the channel answered HTTP "+strconv.Itoa(resp.StatusCode)+" for GET /models", reqID)
+			"cannot refresh models from channel "+provider.Name+": the channel answered HTTP "+strconv.Itoa(resp.StatusCode)+" for GET "+providerModelsPath, reqID)
 		return
 	}
 

@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -436,6 +438,128 @@ func TestServeModelTestDirectReportsTheServingChannel(t *testing.T) {
 	}
 	if out.TotalTokens != 7 {
 		t.Fatalf("total tokens = %d, want 7 (derived from input+output)", out.TotalTokens)
+	}
+	// The operator supplied the upstream name, so the probe can report which
+	// model it actually sent without exposing anything secret.
+	if out.UpstreamModel != "qwen-plus" {
+		t.Fatalf("upstream model = %q, want qwen-plus", out.UpstreamModel)
+	}
+}
+
+// A transport failure must report the resolved category rather than flattening
+// DNS, timeout and refusal into one word. The upstream model travels with the
+// failure line so a wrong model identifier is not mistaken for a path bug.
+func TestServeModelTestDirectNamesTheFailureCategory(t *testing.T) {
+	t.Setenv("TEST_MODEL_TEST_REFUSED", "sk-test")
+
+	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
+		"demo-model": {{
+			Provider:      "qwen",
+			BaseURL:       "http://127.0.0.1:1/v1",
+			UpstreamModel: "qwen-plus",
+			CredentialEnv: "TEST_MODEL_TEST_REFUSED",
+			Priority:      1,
+			TimeoutMS:     1000,
+		}},
+	}})
+
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model", Prompt: "ping"}, payload, "req_category")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "unreachable") {
+		t.Fatalf("the failure must name the resolved category, not the old literal: %s", body)
+	}
+	if !strings.Contains(body, "could not be reached") {
+		t.Fatalf("a refused connection should say it could not be reached: %s", body)
+	}
+	if !strings.Contains(body, "qwen-plus") {
+		t.Fatalf("the failure should report the upstream model it sent: %s", body)
+	}
+}
+
+// A channel that accepts the connection but never answers is a timeout, which
+// the operator must be able to tell apart from a refusal.
+func TestServeModelTestDirectNamesATimeout(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"model":"qwen-plus"}`))
+	}))
+	defer slow.Close()
+
+	t.Setenv("TEST_MODEL_TEST_TIMEOUT", "sk-test")
+
+	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
+		"demo-model": {{
+			Provider:      "qwen",
+			BaseURL:       slow.URL + "/v1",
+			UpstreamModel: "qwen-plus",
+			CredentialEnv: "TEST_MODEL_TEST_TIMEOUT",
+			Priority:      1,
+			TimeoutMS:     50,
+		}},
+	}})
+
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model", Prompt: "ping"}, payload, "req_timeout")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "did not answer in time") {
+		t.Fatalf("a timeout should say the channel did not answer in time: %s", body)
+	}
+}
+
+// The failed attempt is recorded in the log with the target it dialled, so a
+// duplicated path segment is visible at a glance. Userinfo and the query are
+// not part of the target: a base_url with embedded credentials must not reach a
+// retained log (ADR-0009).
+func TestServeModelTestDirectLogsTheDialledTargetWithoutCredentials(t *testing.T) {
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	t.Setenv("TEST_MODEL_TEST_LOG", "sk-test")
+
+	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
+		"demo-model": {{
+			Provider:      "qwen",
+			BaseURL:       "http://user:super-secret@127.0.0.1:1/v1",
+			UpstreamModel: "qwen-plus",
+			CredentialEnv: "TEST_MODEL_TEST_LOG",
+			Priority:      1,
+			TimeoutMS:     1000,
+		}},
+	}})
+
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model", Prompt: "ping"}, payload, "req_target")
+
+	out := logged.String()
+	if !strings.Contains(out, "http://127.0.0.1:1/v1/chat/completions") {
+		t.Fatalf("the log should name the dialled scheme, host and path: %s", out)
+	}
+	if strings.Contains(out, "super-secret") {
+		t.Fatalf("the log must not carry the base URL's userinfo: %s", out)
+	}
+}
+
+func TestLoggableTargetDropsTheQueryString(t *testing.T) {
+	got := loggableTarget("https://user:secret@api.test:8443/v1/chat/completions?api_key=leak")
+	want := "https://api.test:8443/v1/chat/completions"
+	if got != want {
+		t.Fatalf("loggable target = %q, want %q", got, want)
 	}
 }
 

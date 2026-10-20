@@ -1160,28 +1160,43 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 		resp, err := s.attemptDirect(probe, payload, envelope, route)
 		if err != nil {
 			if detail := clientSafeFailure(err); detail != "" {
+				// A missing credential or a denied target never reached the dial,
+				// so there is no dialled target to log; the detail is already the
+				// operator's fix.
 				failures = append(failures, detail)
-			} else {
-				failures = append(failures, fmt.Sprintf("%s: unreachable", route.Provider))
+				continue
 			}
+			// The dial was attempted. Report the resolved category rather than
+			// flattening DNS, timeout and refusal into one word, and record the
+			// target the operator configured.
+			reason := directFailureReason(err)
+			logModelTestTarget(reqID, route, probe, reason)
+			failures = append(failures, modelTestFailureLine(route, reason))
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			failures = append(failures, fmt.Sprintf("%s: response could not be read", route.Provider))
+			reason := "response could not be read"
+			logModelTestTarget(reqID, route, probe, reason)
+			failures = append(failures, modelTestFailureLine(route, reason))
 			continue
 		}
 		if shouldFailover(resp.StatusCode) {
-			failures = append(failures, fmt.Sprintf("%s: HTTP %d", route.Provider, resp.StatusCode))
+			reason := fmt.Sprintf("HTTP %d", resp.StatusCode)
+			logModelTestTarget(reqID, route, probe, reason)
+			failures = append(failures, modelTestFailureLine(route, reason))
 			continue
 		}
 		result, err := parseProbeResponse(body, time.Since(started))
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: response is not valid JSON", route.Provider))
+			reason := "response is not valid JSON"
+			logModelTestTarget(reqID, route, probe, reason)
+			failures = append(failures, modelTestFailureLine(route, reason))
 			continue
 		}
 		result.Channel = route.Provider
+		result.UpstreamModel = route.UpstreamModel
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
@@ -1191,6 +1206,40 @@ func (s *Server) serveModelTestDirect(w http.ResponseWriter, r *http.Request, in
 		message += ": " + strings.Join(failures, "; ")
 	}
 	httpx.Error(w, http.StatusBadGateway, "upstream_unavailable", message, reqID)
+}
+
+// modelTestFailureLine names the line that failed and the upstream model it
+// sent. The model is operator-supplied and non-secret; reporting it keeps a
+// wrong model identifier from reading like a path problem.
+func modelTestFailureLine(route directRoute, reason string) string {
+	if route.UpstreamModel == "" {
+		return fmt.Sprintf("%s: %s", route.Provider, reason)
+	}
+	return fmt.Sprintf("%s (%s): %s", route.Provider, route.UpstreamModel, reason)
+}
+
+// logModelTestTarget records the target a failed probe dialled. Only scheme,
+// host and path are written: the query is dropped and userinfo never appears,
+// because the log is retained and read by people who are not entitled to the
+// channel's configuration (ADR-0009).
+func logModelTestTarget(reqID string, route directRoute, probe *http.Request, reason string) {
+	target, err := directTargetURL(route.BaseURL, probe.URL)
+	if err != nil {
+		return
+	}
+	log.Printf("model test: request %s channel %s target %s: %s",
+		oneLine(reqID), oneLine(route.Provider), oneLine(loggableTarget(target)), reason)
+}
+
+// loggableTarget reduces a dialled target to scheme, host and path. The query
+// can carry request data and is dropped; url.URL keeps userinfo out of Host, so
+// credentials embedded in a base_url cannot reach the log.
+func loggableTarget(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "(unparseable target)"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 // oneLine collapses a client-supplied value to a single line for logging, so a

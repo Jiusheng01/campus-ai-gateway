@@ -13,6 +13,8 @@ type TestResult = {
   model?: string
   /** Which channel answered. */
   channel?: string
+  /** The upstream model name the gateway sent, not the virtual alias. */
+  upstream_model?: string
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
@@ -109,6 +111,7 @@ export function ModelTestDrawer({
               rows={[
                 ['模型', result.model || model],
                 ...(result.channel ? ([['渠道', result.channel]] as [string, string][]) : []),
+                ...(result.upstream_model ? ([['上游模型', result.upstream_model]] as [string, string][]) : []),
                 ['Input Tokens', result.input_tokens ?? 0],
                 ['Output Tokens', result.output_tokens ?? 0],
                 ['Total Tokens', result.total_tokens ?? 0],
