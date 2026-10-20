@@ -19,9 +19,24 @@ type Draft = {
   model_alias: string
   daily_token_limit: number | null
   monthly_token_limit: number | null
+  /**
+   * True when the drawer was opened from an existing row.
+   *
+   * The write is an upsert keyed on (subject, model), so editing a row and
+   * changing either half does not move it — it creates a second row and leaves
+   * the first one in place, which reads as "my edit did nothing". The subject
+   * and the alias are therefore fixed while editing; changing them means
+   * deleting the row and adding the right one.
+   */
+  editing?: boolean
 }
 
-const emptyDraft = (): Draft => ({tenant_id: '', model_alias: '', daily_token_limit: null, monthly_token_limit: null})
+const emptyDraft = (tenantID = ''): Draft => ({
+  tenant_id: tenantID,
+  model_alias: '',
+  daily_token_limit: null,
+  monthly_token_limit: null,
+})
 
 /**
  * Per-model quotas.
@@ -50,6 +65,13 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
   const save = async (d: Draft) => {
     if (!d.model_alias.trim()) {
       toast.error('请填写模型别名')
+      return
+    }
+    // A row whose two limits are both "inherit" caps nothing. Saving it would
+    // leave a line in the table that looks like a configured quota and behaves
+    // like no row at all; deleting the row is the honest way to say that.
+    if (d.daily_token_limit === null && d.monthly_token_limit === null) {
+      toast.error('每日与每月上限都留空等于没有配置；如要恢复继承，请删除该行')
       return
     }
     try {
@@ -98,7 +120,11 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
         title="模型额度"
         sub="按「主体 + 模型」设定 Token 上限。主体为全校共享池或某个租户；删除一行即恢复继承。"
         actions={
-          <Button variant="primary" icon={<Plus />} onClick={() => setDraft(emptyDraft())}>
+          <Button
+            variant="primary"
+            icon={<Plus />}
+            onClick={() => setDraft(emptyDraft(scopeTenantID ?? ''))}
+          >
             新增额度
           </Button>
         }
@@ -127,6 +153,7 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
                         model_alias: q.model_alias,
                         daily_token_limit: q.daily_token_limit,
                         monthly_token_limit: q.monthly_token_limit,
+                        editing: true,
                       })
                     }
                     // The pool row is only writable by a global administrator.
@@ -152,7 +179,7 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
             title="暂无模型额度"
             description="没有配置时，所有租户对任意模型都不设单独上限，只受租户配额约束。"
             action={
-              <Button variant="primary" icon={<Plus />} onClick={() => setDraft(emptyDraft())}>
+              <Button variant="primary" icon={<Plus />} onClick={() => setDraft(emptyDraft(scopeTenantID ?? ''))}>
                 新增额度
               </Button>
             }
@@ -173,9 +200,23 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
               void save(draft)
             }}
           >
-            <Field label="主体" hint="全校共享池是每个租户用量都会计入的那一层。">
-              <select value={draft.tenant_id} onChange={e => setDraft({...draft, tenant_id: e.target.value})}>
-                <option value="">全校（共享池）</option>
+            <Field
+              label="主体"
+              hint={
+                draft.editing
+                  ? '主体不可修改：写入按「主体 + 模型」定位，改了主体只会新增一行。要换主体请删除后重建。'
+                  : '全校共享池是每个租户用量都会计入的那一层。'
+              }
+            >
+              <select
+                value={draft.tenant_id}
+                onChange={e => setDraft({...draft, tenant_id: e.target.value})}
+                disabled={draft.editing}
+              >
+                {/* The pool is only writable by a global administrator, so a
+                    scoped one is not offered it rather than shown an option
+                    that can only produce a 403. */}
+                {canWritePool && <option value="">全校（共享池）</option>}
                 {tenants.map(t => (
                   <option key={t.id} value={t.id}>
                     {'　'.repeat(Math.max(0, t.depth || 0))}
@@ -185,12 +226,20 @@ export function ModelQuotasPage({scopeTenantID}: {scopeTenantID?: string | null}
               </select>
             </Field>
 
-            <Field label="模型别名" hint="对外暴露的模型名，例如 campus-smart。">
+            <Field
+              label="模型别名"
+              hint={
+                draft.editing
+                  ? '别名不可修改：同一行改别名等于新增一行。要更正请删除后重建。'
+                  : '对外暴露的模型名，例如 campus-smart。'
+              }
+            >
               <input
                 className="mono"
                 value={draft.model_alias}
                 onChange={e => setDraft({...draft, model_alias: e.target.value})}
                 placeholder="campus-smart"
+                disabled={draft.editing}
               />
             </Field>
 

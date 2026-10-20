@@ -1,3 +1,4 @@
+import {useEffect, useState} from 'react'
 import {fmt} from '../../lib/format'
 
 /**
@@ -22,6 +23,8 @@ export function limitClass(n: number | null | undefined): string {
   return 'limitSet'
 }
 
+const toText = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v))
+
 /**
  * A tri-state limit input.
  *
@@ -30,9 +33,16 @@ export function limitClass(n: number | null | undefined): string {
  * states to reason about (unchecked with a number in it, etc.) for a value that
  * has three.
  *
- * The value is held as a string while the user types so that clearing the box
- * can mean "inherit" rather than snapping back to 0, which is the single most
- * likely way to lose the distinction.
+ * The box keeps its own text while the user types, and only reports the parsed
+ * number upwards. Rendering `String(value)` straight from the prop looked
+ * simpler but rewrote the box on every keystroke: a half-typed "10" was
+ * normalised, leading zeros were dropped and the caret jumped, so a cap like
+ * 1000000 could not be typed in one go.
+ *
+ * `type="text"` with a digits-only guard, not `type="number"`: a number input
+ * accepts "-", "e" and ".", all of which are meaningless for a token cap, and
+ * its spinner changes the value on a stray scroll wheel — which is exactly the
+ * kind of silent edit this screen must not allow.
  */
 export function LimitInput({
   value,
@@ -43,23 +53,32 @@ export function LimitInput({
   onChange: (v: number | null) => void
   placeholder?: string
 }) {
-  const text = value === null || value === undefined ? '' : String(value)
+  const [text, setText] = useState(() => toText(value))
+
+  // Adopt a value that came from somewhere else (opening another row, a reset
+  // after save, a server-side clamp) without disturbing what is being typed:
+  // if the box already represents this number, leave the box alone.
+  useEffect(() => {
+    setText(current => {
+      const asNumber = current === '' ? null : Number(current)
+      const incoming = value === null || value === undefined ? null : value
+      return asNumber === incoming ? current : toText(incoming)
+    })
+  }, [value])
+
   return (
     <input
-      type="number"
-      min="0"
+      type="text"
       inputMode="numeric"
+      autoComplete="off"
       className="mono"
       value={text}
       placeholder={placeholder ?? '留空 = 继承'}
       onChange={e => {
         const raw = e.target.value.trim()
-        if (raw === '') {
-          onChange(null)
-          return
-        }
-        const n = Number(raw)
-        onChange(Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0)
+        if (raw !== '' && !/^\d+$/.test(raw)) return // digits only: no sign, no exponent, no separator
+        setText(raw)
+        onChange(raw === '' ? null : Number(raw))
       }}
     />
   )

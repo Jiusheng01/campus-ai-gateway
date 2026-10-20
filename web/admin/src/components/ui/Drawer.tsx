@@ -23,18 +23,28 @@ export function Drawer({title, subtitle, onClose, children, footer, dismissable 
   const panelRef = useRef<HTMLDivElement>(null)
   const restoreTo = useRef<HTMLElement | null>(null)
 
+  // The latest props are read through refs so the effect below can run once on
+  // mount. Depending on `onClose` directly re-ran it on every parent render —
+  // and every caller passes an inline arrow, so every keystroke in a field
+  // produced a new identity, re-focused the panel and stole the caret. Typing
+  // "1000" became "1", "0", "0", "0" with a click in between each one.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const dismissableRef = useRef(dismissable)
+  dismissableRef.current = dismissable
+
   useEffect(() => {
     restoreTo.current = document.activeElement as HTMLElement | null
     panelRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissable) onClose()
+      if (e.key === 'Escape' && dismissableRef.current) onCloseRef.current()
     }
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
       restoreTo.current?.focus?.()
     }
-  }, [onClose, dismissable])
+  }, [])
 
   return (
     <div className="overlay" onMouseDown={e => e.target === e.currentTarget && dismissable && onClose()}>

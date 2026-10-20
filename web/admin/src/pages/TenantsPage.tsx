@@ -140,7 +140,16 @@ export function TenantsPage({scopeTenantID}: {scopeTenantID?: string | null}) {
                       <button className="link" onClick={() => void openUsage(t)}>
                         查看用量
                       </button>
-                      <button className="link" onClick={() => setDraft(t)}>
+                      {/* A scoped administrator cannot rewrite the tenant they
+                          are scoped to — that row holds the ceiling someone
+                          above them set. The API refuses it, so the button is
+                          disabled here instead of producing a 403. */}
+                      <button
+                        className="link"
+                        onClick={() => setDraft(t)}
+                        disabled={t.id === scopeTenantID}
+                        title={t.id === scopeTenantID ? '不能修改自己所属租户的配额，请让上级管理员调整' : undefined}
+                      >
                         编辑
                       </button>
                     </td>
@@ -189,7 +198,7 @@ export function TenantsPage({scopeTenantID}: {scopeTenantID?: string | null}) {
                     <Button size="sm" icon={<Gauge />} onClick={() => void openUsage(t)}>
                       查看用量
                     </Button>
-                    <Button size="sm" icon={<Pencil />} onClick={() => setDraft(t)}>
+                    <Button size="sm" icon={<Pencil />} onClick={() => setDraft(t)} disabled={t.id === scopeTenantID}>
                       编辑
                     </Button>
                   </footer>

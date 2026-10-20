@@ -57,6 +57,12 @@ jobs:
       - name: Check Admin UI
         run: npm --prefix web/admin run check
 
+      # Runs the component tests (jsdom, no browser download). They cover the
+      # drawer's focus handling and the three-state limit input, both of which
+      # are invisible to tsc and to the build.
+      - name: Test Admin UI
+        run: npm --prefix web/admin test
+
       - name: Build Admin UI
         run: npm --prefix web/admin run build
 
