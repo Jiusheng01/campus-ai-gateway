@@ -11,6 +11,7 @@ import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {ProviderForm, type ProviderDraft} from '../components/providers/ProviderForm'
 import {ProviderTestPanel} from '../components/providers/ProviderTestPanel'
+import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
 import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
 import {useResource} from '../lib/useResource'
 import {ms, when} from '../lib/format'
@@ -348,8 +349,8 @@ export function ProvidersPage({canPreviewContent = false}: {canPreviewContent?: 
               </div>
             )}
             {tab === 'basic' && <ProviderForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />}
-            {tab === 'models' && (
-              <p className="hint">候选模型列表将在下一个票中接入；当前可先在「对外模型」页查看已发布线路。</p>
+            {tab === 'models' && draft.id && (
+              <ProviderModelsPanel providerID={draft.id} onChanged={reload} />
             )}
             {tab === 'test' && draft.id && (
               <ProviderTestPanel provider={draft as Provider} canPreviewContent={canPreviewContent} onTested={reload} />

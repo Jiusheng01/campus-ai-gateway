@@ -1028,6 +1028,8 @@ input:focus, select:focus, textarea:focus {
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.inlineForm { display: flex; gap: 8px; align-items: center; }
+.inlineForm > input { flex: 1; min-width: 0; }
 /* Failover tuning (priority, weight, timeout) is collapsed by default: the
    defaults are what "add a line" means, and the controls are for the operator
    who has deliberately decided this line is not ordinary. */

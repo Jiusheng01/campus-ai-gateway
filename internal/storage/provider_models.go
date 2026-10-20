@@ -56,14 +56,47 @@ ORDER BY upstream_model ASC, id ASC
 	defer rows.Close()
 
 	var out []model.ProviderModel
+	index := make(map[string]int)
 	for rows.Next() {
 		var v model.ProviderModel
 		if err := rows.Scan(&v.ID, &v.ProviderID, &v.UpstreamModel, &v.Source, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
+		index[v.ID] = len(out)
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	// One query for every link, not one per candidate: the relationship comes
+	// from gateway_model_route, so disabled channels/models and manually entered
+	// Routes are not hidden by the Model Catalog's filters.
+	links, err := p.Pool.Query(ctx, `
+SELECT pm.id::text, r.id::text, m.id::text, m.alias, r.status
+FROM gateway_provider_model pm
+JOIN gateway_model_route r
+  ON r.provider_id = pm.provider_id AND r.upstream_model = pm.upstream_model
+JOIN gateway_model m ON m.id = r.model_id
+WHERE pm.provider_id=$1::uuid
+ORDER BY pm.upstream_model, m.alias, r.priority
+`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer links.Close()
+	for links.Next() {
+		var providerModelID string
+		var link model.ProviderModelLink
+		if err := links.Scan(&providerModelID, &link.RouteID, &link.ModelID, &link.Alias, &link.RouteStatus); err != nil {
+			return nil, err
+		}
+		if i, ok := index[providerModelID]; ok {
+			out[i].Links = append(out[i].Links, link)
+		}
+	}
+	return out, links.Err()
 }
 
 // SeedProviderModels adds names from a non-manual source, skipping any name the
