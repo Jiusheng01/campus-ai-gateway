@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
@@ -95,6 +96,76 @@ func TestLegacyRouteWriteUsesTheSameVersionAndStalesAGroupSave(t *testing.T) {
 		{ID: "", ProviderID: providers[0].ID, UpstreamModel: "up-1", Priority: 1, Weight: 100, TimeoutMS: 60000, Status: 1},
 	}); !errors.Is(err, ErrConfigVersionConflict) {
 		t.Fatalf("group save after legacy write = %v, want conflict", err)
+	}
+}
+
+func TestProviderDeleteBumpsSurvivingModelVersion(t *testing.T) {
+	ctx := context.Background()
+	pg, created, providers, _ := routeSetFixture(t)
+	before, _ := pg.ModelByID(ctx, created.ID)
+
+	result, err := pg.DeleteProvider(ctx, providers[0].ID)
+	if err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	if result.DeletedRoutes != 1 {
+		t.Fatalf("deleted routes = %d, want 1", result.DeletedRoutes)
+	}
+	after, err := pg.ModelByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("ModelByID after delete: %v", err)
+	}
+	if after.ConfigVersion != before.ConfigVersion+1 {
+		t.Fatalf("surviving model version = %d, want %d", after.ConfigVersion, before.ConfigVersion+1)
+	}
+	routes, err := pg.ListModelRoutes(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("ListModelRoutes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].ProviderID != providers[1].ID {
+		t.Fatalf("remaining routes = %+v", routes)
+	}
+}
+
+func TestProviderDeleteAndGroupSaveDoNotDeadlock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pg, created, providers, routes := routeSetFixture(t)
+	before, _ := pg.ModelByID(ctx, created.ID)
+	out := []model.ModelRoute{
+		{ID: routes[0].ID, ProviderID: providers[0].ID, UpstreamModel: "up-1", Priority: 1, Weight: 100, TimeoutMS: 60000, Status: 1},
+		{ID: routes[1].ID, ProviderID: providers[1].ID, UpstreamModel: "up-2", Priority: 2, Weight: 100, TimeoutMS: 60000, Status: 1},
+	}
+
+	var wg sync.WaitGroup
+	var deleteErr, groupErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, deleteErr = pg.DeleteProvider(ctx, providers[0].ID)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, groupErr = pg.ReplaceModelRoutes(ctx, created.ID, before.ConfigVersion, out)
+	}()
+	wg.Wait()
+	if ctx.Err() != nil {
+		t.Fatal("provider delete and group save did not finish within 10s")
+	}
+	if deleteErr != nil {
+		t.Fatalf("provider delete: %v", deleteErr)
+	}
+	if groupErr != nil && !errors.Is(groupErr, ErrConfigVersionConflict) {
+		t.Fatalf("group save: %v", groupErr)
+	}
+	// Whatever the ordering, no route may reference the deleted provider.
+	var dangling int
+	if err := pg.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM gateway_model_route WHERE provider_id=$1::uuid`, providers[0].ID).Scan(&dangling); err != nil {
+		t.Fatalf("count dangling routes: %v", err)
+	}
+	if dangling != 0 {
+		t.Fatalf("%d route(s) still reference the deleted provider", dangling)
 	}
 }
 
