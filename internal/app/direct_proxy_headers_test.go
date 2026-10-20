@@ -33,12 +33,12 @@ func TestServeDirectDoesNotForwardCredentialBearingResponseHeaders(t *testing.T)
 	t.Setenv("TEST_DIRECT_KEY_REFLECT", "sk-channel-secret")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_REFLECT", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -91,12 +91,12 @@ func TestServeDirectForwardsOnlyAllowlistedRequestHeaders(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_REQUEST_HEADERS", "sk-channel-credential")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_REQUEST_HEADERS", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
@@ -156,12 +156,12 @@ func TestAcceptEncodingIsForcedToIdentityNotForwarded(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_ACCEPT_ENCODING", "sk-channel-credential")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_ACCEPT_ENCODING", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip, br")
 	rec := httptest.NewRecorder()
@@ -191,12 +191,12 @@ func TestServeDirectReplacesClientAuthorizationWithChannelCredential(t *testing.
 	t.Setenv("TEST_DIRECT_KEY_CLIENT_AUTH", "sk-channel-credential")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_CLIENT_AUTH", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-tenant-api-key")
 	rec := httptest.NewRecorder()
@@ -225,12 +225,12 @@ func TestServeDirectDoesNotEchoTheUpstreamErrorBody(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_ERR", "sk-a")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_ERR", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -260,12 +260,12 @@ func TestServeDirectDoesNotEchoTheDialError(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_DEAD", "sk-a")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: deadURL + "/v1", UpstreamModel: "x", CredentialEnv: "TEST_DIRECT_KEY_DEAD", Priority: 1},
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -297,15 +297,15 @@ func TestServeModelTestDirectDoesNotEchoUpstreamDetail(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_TESTERR", "sk-test")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_TESTERR", Priority: 1},
 		},
 	}})
 
-	payload := []byte(`{"model":"campus-smart","messages":[{"role":"user","content":"ping"}]}`)
+	payload := []byte(`{"model":"demo-model","messages":[{"role":"user","content":"ping"}]}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/model-test", strings.NewReader(string(payload)))
-	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "campus-smart"}, payload, "req_test")
+	s.serveModelTestDirect(rec, req, modelTestRequest{Model: "demo-model"}, payload, "req_test")
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())

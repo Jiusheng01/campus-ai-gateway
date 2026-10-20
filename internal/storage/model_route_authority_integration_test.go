@@ -62,12 +62,12 @@ func TestCreateModelWritesFirstRoute(t *testing.T) {
 	ch := mustProvider(t, pg, "chan-create")
 
 	created, err := pg.CreateModel(ctx, model.ModelConfig{
-		Alias: "campus-smart", ProviderID: ch.ID, UpstreamModel: "qwen-max", Status: 1,
+		Alias: "demo-model", ProviderID: ch.ID, UpstreamModel: "qwen-max", Status: 1,
 	})
 	if err != nil {
 		t.Fatalf("CreateModel: %v", err)
 	}
-	if created.ID == "" || created.Alias != "campus-smart" || created.Status != 1 {
+	if created.ID == "" || created.Alias != "demo-model" || created.Status != 1 {
 		t.Fatalf("create returned %+v", created)
 	}
 	if created.ProviderID != "" || created.ProviderName != "" || created.UpstreamModel != "" {

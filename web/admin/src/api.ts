@@ -1,5 +1,7 @@
 export type CredentialSummary={source_type:string;configured:boolean;last4:string}
 export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;credential?:CredentialSummary;credential_secret?:string;status:number}
+/** What one channel delete actually removed; the counts are the confirmation, not a preview. */
+export type ProviderDeleteResult={deleted_routes:number;deleted_virtual_models:number;deleted_provider_models:number}
 export type ModelConfig={id:string;alias:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
 

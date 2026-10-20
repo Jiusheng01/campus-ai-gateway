@@ -30,13 +30,13 @@ func TestServeDirectStreamsSSEAndKeepsItsContentType(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_SSE", "sk-sse")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "qwen", BaseURL: upstream.URL + "/v1", UpstreamModel: "qwen-plus", CredentialEnv: "TEST_DIRECT_KEY_SSE", Priority: 1},
 		},
 	}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"campus-smart","stream":true}`))
+		strings.NewReader(`{"model":"demo-model","stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

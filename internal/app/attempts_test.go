@@ -26,14 +26,14 @@ func TestServeDirectRecordsTheAttemptChain(t *testing.T) {
 	t.Setenv("TEST_ATTEMPT_KEY_B", "k")
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "a", BaseURL: failing.URL, UpstreamModel: "a-model", CredentialEnv: "TEST_ATTEMPT_KEY_A", Priority: 1, Weight: 1, TimeoutMS: 5000},
 			{Provider: "b", BaseURL: served.URL, UpstreamModel: "b-model", CredentialEnv: "TEST_ATTEMPT_KEY_B", Priority: 1, Weight: 1, TimeoutMS: 5000},
 		},
 	}})
 
 	rec := newAttemptRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req = req.WithContext(withAttemptRecorder(req.Context(), rec))
 	s.serveDirect(httptest.NewRecorder(), req)
 
@@ -57,13 +57,13 @@ func TestServeDirectRecordsTheAttemptChain(t *testing.T) {
 func TestServeDirectRecordsATransportFailure(t *testing.T) {
 	t.Setenv("TEST_ATTEMPT_KEY_C", "k")
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {
+		"demo-model": {
 			{Provider: "dead", BaseURL: "http://127.0.0.1:1", UpstreamModel: "m", CredentialEnv: "TEST_ATTEMPT_KEY_C", Priority: 1, Weight: 1, TimeoutMS: 1000},
 		},
 	}})
 
 	rec := newAttemptRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"campus-smart"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo-model"}`))
 	req = req.WithContext(withAttemptRecorder(req.Context(), rec))
 	s.serveDirect(httptest.NewRecorder(), req)
 

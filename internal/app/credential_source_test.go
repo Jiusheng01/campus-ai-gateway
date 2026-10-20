@@ -64,12 +64,12 @@ func TestServeDirectSendsTheCredentialOfBothSourceTypes(t *testing.T) {
 			route.Priority = 1
 
 			s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-				"campus-smart": {route},
+				"demo-model": {route},
 			}})
 			s.credentialSealingKey = key
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-				strings.NewReader(`{"model":"campus-smart"}`))
+				strings.NewReader(`{"model":"demo-model"}`))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
@@ -104,7 +104,7 @@ func TestServeDirectFailsClosedOnAnUndecryptableInlineCredential(t *testing.T) {
 	defer upstream.Close()
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {{
+		"demo-model": {{
 			Provider:             "qwen",
 			BaseURL:              upstream.URL + "/v1",
 			UpstreamModel:        "x",
@@ -116,7 +116,7 @@ func TestServeDirectFailsClosedOnAnUndecryptableInlineCredential(t *testing.T) {
 	s.credentialSealingKey = serverKey
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"campus-smart"}`))
+		strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -144,7 +144,7 @@ func TestServeDirectFailsClosedOnAnUnconfiguredInlineCredential(t *testing.T) {
 	defer upstream.Close()
 
 	s := newDirectTestServer(t, routeTable{models: map[string][]directRoute{
-		"campus-smart": {{
+		"demo-model": {{
 			Provider:         "qwen",
 			BaseURL:          upstream.URL + "/v1",
 			UpstreamModel:    "x",
@@ -154,7 +154,7 @@ func TestServeDirectFailsClosedOnAnUnconfiguredInlineCredential(t *testing.T) {
 	}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"campus-smart"}`))
+		strings.NewReader(`{"model":"demo-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

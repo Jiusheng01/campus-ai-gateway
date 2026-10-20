@@ -276,14 +276,19 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", "PUT")
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	id := strings.TrimPrefix(r.URL.Path, "/admin/providers/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/admin/providers/")
-	if id == "" {
-		http.NotFound(w, r)
+	switch r.Method {
+	case http.MethodDelete:
+		s.deleteProvider(w, r, id, reqID)
+		return
+	case http.MethodPut:
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
 	var in model.Provider
@@ -306,6 +311,31 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.providerView(out))
+}
+
+// deleteProvider hard-deletes a channel and reports what the cascade removed.
+//
+// The response is 200 with counts rather than 204 because the counts are the
+// confirmation: they say how many Routes and Virtual Models actually went away,
+// which can differ from what the console previewed moments earlier. A provider
+// that does not exist — including an id that cannot name a row — is 404, the
+// same answer as an id that was already deleted.
+func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	out, err := s.pg.DeleteProvider(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	if err != nil {
+		log.Printf("providers: delete channel %s: %v", id, err)
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Provider could not be deleted", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

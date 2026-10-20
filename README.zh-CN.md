@@ -119,6 +119,19 @@ Docker Compose：
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
+**数据存在哪里。** 管理员、租户、业务 Key、渠道、模型、线路，以及审计与请求记录，都保存在 Docker 命名卷 `deploy_postgres_data` 里，不在仓库中。compose 文件没有顶层 `name:`，项目名取自 `deploy/` 目录（即 `deploy`）——**同机上的每个 checkout 默认共用同一个项目和同一组卷。** 因此第二个 clone 会带着第一个 checkout 创建的数据启动；那不是仓库里的 seed。要隔离某个 checkout，给它一个独立的项目名（Compose 会据此派生独立的卷）：
+
+```powershell
+$env:COMPOSE_PROJECT_NAME = "campus-gateway-sandbox"
+.\scripts\setup.ps1
+```
+
+```bash
+docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --build
+```
+
+要从空数据库重新开始，运行 `.\scripts\reset.ps1`（除非传 `-Force`，否则会要求确认）。它会连同**卷一起**删除整个栈，再走常规启动路径重新启动，由迁移重建空 schema。网关启动时不会删除任何数据，迁移里也没有 seed。
+
 然后打开 <http://127.0.0.1:8080/admin-ui>，在页面里创建第一个管理员。**项目不存在内置账号或默认密码。**
 
 第一跳全部在控制台内完成：**创建管理员 → 新增渠道（把厂商 API Key 粘进密码框）→ 在「模型」页的模型目录里一键开放模型 → 调用**。导航的「模型服务」组已收敛为「渠道 / 模型」：渠道页管接入与凭据来源，模型页默认是跨渠道的模型目录，找到某个模型后点「开放」即可供业务系统调用。Key 在保存时以 AES-256-GCM 加密入库，之后永不回显——控制台只告诉你「已配置」和尾 4 位。如果更愿意走环境变量，勾选「改为引用环境变量」并填入名称即可。

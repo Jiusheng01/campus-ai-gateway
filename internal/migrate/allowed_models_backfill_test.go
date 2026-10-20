@@ -81,7 +81,7 @@ func TestAllowedModelsBackfillKeepsEveryUnrestrictedRow(t *testing.T) {
 		{"unrestricted", `[]`},
 		{"legacy-null", `null`},
 		{"already-wildcard", `["*"]`},
-		{"restricted", `["campus-smart"]`},
+		{"restricted", `["demo-model"]`},
 	}
 	for _, s := range seed {
 		if _, err := conn.Exec(ctx,
@@ -103,7 +103,7 @@ func TestAllowedModelsBackfillKeepsEveryUnrestrictedRow(t *testing.T) {
 		"unrestricted":     `["*"]`,
 		"legacy-null":      `["*"]`,
 		"already-wildcard": `["*"]`,
-		"restricted":       `["campus-smart"]`,
+		"restricted":       `["demo-model"]`,
 	} {
 		var got string
 		if err := conn.QueryRow(context.Background(),

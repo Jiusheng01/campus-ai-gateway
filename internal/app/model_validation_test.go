@@ -9,16 +9,16 @@ import (
 // A create writes the model's first Route, so the channel and upstream model
 // are required there: a model created without one could never serve traffic.
 func TestValidateModelCreateRequiresFirstRouteBinding(t *testing.T) {
-	v := model.ModelConfig{Alias: "  campus-smart  ", Status: 1}
+	v := model.ModelConfig{Alias: "  demo-model  ", Status: 1}
 	if err := validateModel(&v, true); err == "" {
 		t.Fatal("creating a model without a first-route binding must be rejected")
 	}
-	if v.Alias != "campus-smart" {
+	if v.Alias != "demo-model" {
 		t.Fatalf("alias was not trimmed: %q", v.Alias)
 	}
 
 	ok := model.ModelConfig{
-		Alias: "campus-smart", ProviderID: "6ba7b811-9dad-11d1-80b4-00c04fd430c8", UpstreamModel: "qwen-max",
+		Alias: "demo-model", ProviderID: "6ba7b811-9dad-11d1-80b4-00c04fd430c8", UpstreamModel: "qwen-max",
 	}
 	if err := validateModel(&ok, true); err != "" {
 		t.Fatalf("a complete binding must pass: %s", err)
@@ -31,7 +31,7 @@ func TestValidateModelCreateRequiresFirstRouteBinding(t *testing.T) {
 // An update may carry only the model's identity and lifecycle state. That is
 // the path the console uses, and it must not touch any Route.
 func TestValidateModelUpdateAcceptsIdentityOnly(t *testing.T) {
-	v := model.ModelConfig{Alias: "campus-smart"}
+	v := model.ModelConfig{Alias: "demo-model"}
 	if err := validateModel(&v, false); err != "" {
 		t.Fatalf("an identity-only update must pass: %s", err)
 	}

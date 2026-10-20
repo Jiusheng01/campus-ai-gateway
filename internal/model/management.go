@@ -68,6 +68,17 @@ type Provider struct {
 	CredentialCiphertext string `json:"-"`
 }
 
+// ProviderDeleteResult reports what one Provider delete removed.
+//
+// The counts are the rows that actually went away, not a prediction: the
+// console shows them after the fact so an operator can see the cascade that
+// happened rather than the one they expected.
+type ProviderDeleteResult struct {
+	DeletedRoutes         int `json:"deleted_routes"`
+	DeletedVirtualModels  int `json:"deleted_virtual_models"`
+	DeletedProviderModels int `json:"deleted_provider_models"`
+}
+
 // ModelConfig is a Virtual Model: its client-facing identity and lifecycle
 // state. Channel and upstream model are not model state — they belong to the
 // model's Routes (ADR-0005).
