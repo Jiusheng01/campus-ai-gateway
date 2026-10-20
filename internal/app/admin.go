@@ -79,6 +79,9 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
+				s.invalidateRouteCache()
+			}
 			if s.pg == nil {
 				return
 			}
@@ -96,6 +99,23 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// routingWriteAffectsRoutes narrows cache invalidation to writes that can
+// change the routing table. A diagnostic test is a POST under a channel path
+// but does not change routing configuration.
+func routingWriteAffectsRoutes(method, path string) bool {
+	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
+		return false
+	}
+	if strings.HasSuffix(path, "/test") {
+		return false
+	}
+	return strings.HasPrefix(path, "/admin/providers") ||
+		path == "/admin/models" ||
+		strings.HasPrefix(path, "/admin/models/") ||
+		strings.HasPrefix(path, "/admin/model-routes/") ||
+		strings.HasPrefix(path, "/admin/model-catalog")
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +247,7 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"data_plane":     s.cfg.DataPlaneMode(),
 		"stats":          stats,
 		"provider_stats": providerStats,
+		"route_cache":    s.routeCacheState(),
 	}
 	// The per-provider circuits are only meaningful for the direct plane, which
 	// is the only one that breaks them. Exposing them lets an operator see why a

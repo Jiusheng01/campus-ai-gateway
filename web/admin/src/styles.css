@@ -1030,6 +1030,20 @@ input:focus, select:focus, textarea:focus {
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .inlineForm { display: flex; gap: 8px; align-items: center; }
 .inlineForm > input { flex: 1; min-width: 0; }
+.routeEditor { display: flex; flex-direction: column; gap: 10px; }
+.routeEditorRow {
+  display: grid;
+  grid-template-columns: 1.2fr 1.4fr .7fr .7fr .8fr .7fr auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+@media (max-width: 900px) {
+  .routeEditorRow { grid-template-columns: 1fr 1fr; }
+}
 /* Failover tuning (priority, weight, timeout) is collapsed by default: the
    defaults are what "add a line" means, and the controls are for the operator
    who has deliberately decided this line is not ordinary. */

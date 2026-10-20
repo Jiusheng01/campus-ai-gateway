@@ -141,56 +141,98 @@ func (p *transportPool) get(timeout time.Duration, policy egressPolicy) *http.Tr
 
 // routeTableCached returns the current routing table, rebuilding it at most
 // once per routeCacheTTL.
+//
+// Invalidation advances a generation. A rebuild captures the generation before
+// it reads, and publishes its result only if the generation is unchanged. A
+// rebuild that overlapped a write is therefore discarded instead of
+// overwriting the new configuration with an older snapshot.
 func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
-	s.routeMu.Lock()
-	if s.routeCache.models != nil && time.Since(s.routeAt) < routeCacheTTL {
-		cached := s.routeCache
-		s.routeMu.Unlock()
-		return cached, nil
-	}
-	s.routeMu.Unlock()
-
-	built, err := s.buildRouteTable(ctx)
-	if err != nil {
-		// Keep serving the previous table: a transient database error must not
-		// take business traffic down with it.
+	var built routeTable
+	for attempt := 0; attempt < 3; attempt++ {
 		s.routeMu.Lock()
-		previous := s.routeCache
-		s.routeMu.Unlock()
-		if previous.models != nil {
-			return previous, nil
+		if s.routeCache.models != nil && time.Since(s.routeAt) < routeCacheTTL {
+			cached := s.routeCache
+			s.routeMu.Unlock()
+			return cached, nil
 		}
-		return routeTable{}, err
-	}
+		generation := s.routeGen
+		builder := s.routeBuildFn
+		s.routeMu.Unlock()
 
-	s.routeMu.Lock()
-	s.routeCache = built
-	s.routeAt = time.Now()
-	s.routeMu.Unlock()
+		var err error
+		if builder != nil {
+			built, err = builder(ctx)
+		} else {
+			built, err = s.buildRouteTable(ctx)
+		}
+		if err != nil {
+			// Keep serving the previous table: a transient database error must not
+			// take business traffic down with it.
+			s.routeMu.Lock()
+			s.routeBuildErr = "route_snapshot_failed"
+			previous := s.routeCache
+			s.routeMu.Unlock()
+			if previous.models != nil {
+				return previous, nil
+			}
+			return routeTable{}, err
+		}
+
+		s.routeMu.Lock()
+		if s.routeGen != generation {
+			s.routeMu.Unlock()
+			continue
+		}
+		s.routeCache = built
+		s.routeAt = time.Now()
+		s.routeCacheGen = generation
+		s.routeBuildErr = ""
+		s.routeMu.Unlock()
+		return built, nil
+	}
+	// Continuous writes kept invalidating the build. Return the last complete
+	// snapshot without caching it; the next request will try again.
 	return built, nil
 }
 
-// buildRouteTable reads channels, models and lines, then hands them to
-// assembleRouteTable. Keeping the reads and the decisions apart is what makes
+// invalidateRouteCache makes the next request rebuild from the database. It is
+// called after a successful routing-affecting management write.
+func (s *Server) invalidateRouteCache() {
+	s.routeMu.Lock()
+	s.routeGen++
+	s.routeAt = time.Time{}
+	s.routeMu.Unlock()
+}
+
+type routeCacheStatus struct {
+	BuiltAt       *time.Time `json:"built_at"`
+	AgeMS         int64      `json:"age_ms"`
+	Stale         bool       `json:"stale"`
+	LastErrorKind string     `json:"last_error_kind,omitempty"`
+	Generation    uint64     `json:"generation"`
+}
+
+func (s *Server) routeCacheState() routeCacheStatus {
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	out := routeCacheStatus{LastErrorKind: s.routeBuildErr, Generation: s.routeGen, Stale: s.routeBuildErr != "" && s.routeCache.models != nil}
+	if !s.routeAt.IsZero() {
+		at := s.routeAt.UTC()
+		out.BuiltAt = &at
+		out.AgeMS = time.Since(s.routeAt).Milliseconds()
+	}
+	return out
+}
+
+// buildRouteTable reads one consistent snapshot, then hands it to
+// assembleRouteTable. Keeping the read and the decisions apart is what makes
 // the decisions testable without a database.
 func (s *Server) buildRouteTable(ctx context.Context) (routeTable, error) {
-	providers, err := s.pg.ListProviders(ctx)
+	snapshot, err := s.pg.RouteConfigSnapshot(ctx)
 	if err != nil {
 		return routeTable{}, err
 	}
-	models, err := s.pg.ListModels(ctx)
-	if err != nil {
-		return routeTable{}, err
-	}
-	routesByModel := make(map[string][]model.ModelRoute, len(models))
-	for _, m := range models {
-		lines, err := s.pg.ListModelRoutes(ctx, m.ID)
-		if err != nil {
-			return routeTable{}, err
-		}
-		routesByModel[m.ID] = lines
-	}
-	return assembleRouteTable(providers, models, routesByModel), nil
+	return assembleRouteTable(snapshot.Providers, snapshot.Models, snapshot.Routes), nil
 }
 
 // assembleRouteTable keeps only the entries that could actually serve a

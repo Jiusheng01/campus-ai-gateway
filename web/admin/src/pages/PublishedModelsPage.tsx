@@ -8,6 +8,8 @@ import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards} from '../components/ui/Skeleton'
 import {Drawer} from '../components/ui/Drawer'
 import {Detail} from '../components/ui/Detail'
+import {Modal} from '../components/ui/Modal'
+import {RouteEditor} from '../components/models/RouteEditor'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -26,6 +28,7 @@ export function PublishedModelsPage() {
   const [detail, setDetail] = useState<ModelDetail | null>(null)
   const [detailBusy, setDetailBusy] = useState('')
   const [detailError, setDetailError] = useState('')
+  const [editingRoutes, setEditingRoutes] = useState(false)
 
   const open = async (m: ModelConfig) => {
     setDetailBusy(m.id)
@@ -127,7 +130,11 @@ export function PublishedModelsPage() {
                 ['服务类型', '未知（MS1 未建立类型契约）'],
               ]}
             />
-            <Panel title="线路" sub="线路是唯一的运行时路由权威。">
+            <Panel
+              title="线路"
+              sub="线路是唯一的运行时路由权威。"
+              actions={<Button size="sm" onClick={() => setEditingRoutes(true)}>编辑线路</Button>}
+            >
               {detail.routes.length ? (
                 <div className="routeChain">
                   {detail.routes.map((r: ModelRoute) => (
@@ -152,10 +159,26 @@ export function PublishedModelsPage() {
               )}
             </Panel>
             <p className="responseText muted">
-              <FlaskConical aria-hidden /> 模型测试与路由编辑将在后续票中接入此详情。
+              <FlaskConical aria-hidden /> 模型测试与授权将在后续票中接入此详情。
             </p>
           </div>
         </Drawer>
+      )}
+
+      {editingRoutes && detail && (
+        <Modal
+          title={`编辑线路：${detail.model.alias}`}
+          subtitle="整组保存，带配置版本校验。"
+          onClose={() => setEditingRoutes(false)}
+        >
+          <RouteEditor
+            modelID={detail.model.id}
+            onSaved={() => {
+              void open(detail.model)
+              reload()
+            }}
+          />
+        </Modal>
       )}
 
       {detailError && !detail && (

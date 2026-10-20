@@ -398,6 +398,15 @@ WHERE m.id = ANY($1::uuid[])
 			return out, err
 		}
 		out.DeletedVirtualModels = int(tag.RowsAffected())
+
+		// A model that survives the cascade had a Route removed. Its version
+		// advances so a concurrent group-save sees that the set changed.
+		if _, err := tx.Exec(ctx, `
+UPDATE gateway_model m SET config_version=config_version+1, updated_at=NOW()
+WHERE m.id = ANY($1::uuid[])
+  AND EXISTS (SELECT 1 FROM gateway_model_route r WHERE r.model_id = m.id)`, affected); err != nil {
+			return out, err
+		}
 	}
 
 	// The table has ON DELETE CASCADE, but the rows are deleted explicitly: the

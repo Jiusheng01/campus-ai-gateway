@@ -47,10 +47,16 @@ type Server struct {
 	// reaches business traffic within seconds without putting three queries on
 	// the hot path and without every write handler having to remember to
 	// invalidate anything.
-	routeMu    sync.Mutex
-	routeCache routeTable
-	routeAt    time.Time
-	transport  *transportPool
+	routeMu       sync.Mutex
+	routeCache    routeTable
+	routeAt       time.Time
+	routeGen      uint64
+	routeCacheGen uint64
+	routeBuildErr string
+	// routeBuildFn is a test seam for overlapping a slow rebuild with a write.
+	// Production leaves it nil and buildRouteTable is used.
+	routeBuildFn func(context.Context) (routeTable, error)
+	transport    *transportPool
 
 	// selector advances the smooth-weighted-round-robin rotation that picks
 	// which line of a priority band starts a request. In-memory scheduling
