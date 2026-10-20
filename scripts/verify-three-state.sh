@@ -14,6 +14,37 @@ BASE=http://127.0.0.1:8080
 PY="C:/Users/le/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
 FAILS=0
 
+# A dedicated alias keeps the script from touching a real model's caps. Rows for
+# it are removed on exit as well as at the end of section 7, so a failed check
+# halfway through does not leave residue in the campus pool.
+PROBE=e2e-three-state-probe
+TOKEN= ROOT= CHILD= GRAND=
+SCOPED_USER_SEEDED=0
+
+cleanup_scoped_user() {
+  # The scoped administrator is seeded into the database, not created through
+  # the API, so nothing else removes it. Leaving the account behind would keep
+  # a tenant_admin with the campus-admin password alive after the test.
+  docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -q -c \
+    "DELETE FROM gateway_admin_user WHERE username='ops-cs'" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  cleanup_scoped_user
+  [ -n "$TOKEN" ] || return 0
+  local t
+  for t in "$CHILD" "$GRAND"; do
+    [ -n "$t" ] || continue
+    curl -s --noproxy '*' -o /dev/null -X DELETE \
+      "$BASE/admin/model-quotas?tenant_id=$t&model_alias=$PROBE" \
+      -H "Authorization: Bearer $TOKEN"
+  done
+  curl -s --noproxy '*' -o /dev/null -X DELETE \
+    "$BASE/admin/model-quotas?model_alias=$PROBE" \
+    -H "Authorization: Bearer $TOKEN"
+}
+trap cleanup EXIT
+
 json() { "$PY" -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1],{'d':d}))" "$1"; }
 
 check() { # check <label> <expected> <actual>
@@ -94,20 +125,27 @@ check "leaf reset to inherit" 200 "$(code)"
 U=$(req GET "/admin/tenants/$GRAND/usage" "$TOKEN")
 check "usage HTTP" 200 "$(code)"
 check "grandchild daily resolves to root's 5,000,000" 5000000 "$(echo "$U" | json "d['effective']['daily_token_limit']")"
-check "grandchild rpm resolves to child's 0 (unlimited)" 0 "$(echo "$U" | json "d['effective']['rpm_limit']")"
+# The child declared rpm 0 ("this level adds no cap"). That does not lift the
+# root's 600: enforcement is inclusive, so the effective view must report 600.
+check "grandchild rpm keeps root's 600" 600 "$(echo "$U" | json "d['effective']['rpm_limit']")"
 check "grandchild monthly is unlimited" 0 "$(echo "$U" | json "d['effective']['monthly_token_limit']")"
 
+# A descendant may tighten a ceiling but never widen one. Declaring a larger
+# number must leave the root's cap in force, in both enforcement and display.
+req PUT "/admin/tenants/$GRAND/allocation" "$TOKEN" '{"daily_token_limit":999999999}' >/dev/null
+check "leaf may declare a larger cap" 200 "$(code)"
+U=$(req GET "/admin/tenants/$GRAND/usage" "$TOKEN")
+check "root's 5,000,000 still wins" 5000000 "$(echo "$U" | json "d['effective']['daily_token_limit']")"
+req PUT "/admin/tenants/$GRAND/allocation" "$TOKEN" '{}' >/dev/null
+
 echo "== 4. per-model quota =="
-OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"gpt-4o\",\"daily_token_limit\":100000}")
+OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"$PROBE\",\"daily_token_limit\":100000}")
 check "PUT model quota" 200 "$(code)"
 check "quota daily limit" 100000 "$(echo "$OUT" | json "d['daily_token_limit']")"
-check "quota listed" 1 "$(req GET /admin/model-quotas "$TOKEN" | json "1 if any(q['tenant_id']=='$CHILD' for q in d['data']) else 0")"
-OUT=$(req PUT /admin/model-quotas "$TOKEN" '{"tenant_id":null,"model_alias":"gpt-4o","daily_token_limit":9000000}')
+check "quota listed" 1 "$(req GET /admin/model-quotas "$TOKEN" | json "1 if any(q['tenant_id']=='$CHILD' and q['model_alias']=='$PROBE' for q in d['data']) else 0")"
+OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":null,\"model_alias\":\"$PROBE\",\"daily_token_limit\":9000000}")
 check "campus pool quota" 200 "$(code)"
 check "pool row has no tenant" None "$(echo "$OUT" | json "d['tenant_id']")"
-req DELETE "/admin/model-quotas?tenant_id=$CHILD&model_alias=gpt-4o" "$TOKEN" >/dev/null
-check "DELETE model quota" 200 "$(code)"
-check "quota gone" 0 "$(req GET /admin/model-quotas "$TOKEN" | json "1 if any(q['tenant_id']=='$CHILD' for q in d['data']) else 0")"
 
 echo "== 5. validation =="
 OUT=$(req PUT "/admin/tenants/$CHILD/allocation" "$TOKEN" '{"tpm_limit":-1}')
@@ -115,7 +153,7 @@ check "negative tpm rejected" 400 "$(code)"
 check "message names tpm_limit" 1 "$(echo "$OUT" | json "1 if 'tpm_limit' in d['error']['message'] else 0")"
 OUT=$(req PUT /admin/model-quotas "$TOKEN" '{"model_alias":"","daily_token_limit":1}')
 check "empty alias rejected" 400 "$(code)"
-OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"gpt-4o\"}")
+OUT=$(req PUT /admin/model-quotas "$TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"$PROBE\"}")
 check "quota with no limit rejected" 400 "$(code)"
 
 echo "== 5b. error semantics =="
@@ -146,6 +184,7 @@ OPS=$(docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -tAc \
 if [ -z "$OPS" ]; then
   echo "  SKIP  could not seed ops-cs; scoped admin not exercised"
 else
+  SCOPED_USER_SEEDED=1
   OUT=$(req PATCH "/admin/users/$OPS" "$TOKEN" "{\"roles\":[\"tenant_admin\"],\"scope_tenant_id\":\"$CHILD\"}")
   check "promote to scoped tenant_admin" 200 "$(code)"
   check "scope recorded" "$CHILD" "$(echo "$OUT" | json "d['data']['scope_tenant_id']")"
@@ -163,10 +202,39 @@ else
   check "scoped may not touch an ancestor" 403 "$(code)"
   req GET /admin/status "$OPS_TOKEN" >/dev/null
   check "scoped has no dashboard" 403 "$(code)"
-  req PUT /admin/model-quotas "$OPS_TOKEN" '{"tenant_id":null,"model_alias":"gpt-4o","daily_token_limit":1}' >/dev/null
+  req PUT /admin/model-quotas "$OPS_TOKEN" "{\"tenant_id\":null,\"model_alias\":\"$PROBE\",\"daily_token_limit\":1}" >/dev/null
   check "scoped may not write the campus pool" 403 "$(code)"
+  # The scoped administrator's own rows are the ceilings their parent set.
+  # Replacing or deleting one would raise the effective value, so both must be
+  # refused while the descendant write below is allowed.
+  req PUT /admin/model-quotas "$OPS_TOKEN" "{\"tenant_id\":\"$CHILD\",\"model_alias\":\"$PROBE\",\"daily_token_limit\":1}" >/dev/null
+  check "scoped may not write its own model quota" 403 "$(code)"
+  req DELETE "/admin/model-quotas?tenant_id=$CHILD&model_alias=$PROBE" "$OPS_TOKEN" >/dev/null
+  check "scoped may not delete its own model quota" 403 "$(code)"
+  check "own quota survived the refused delete" 1 "$(req GET /admin/model-quotas "$OPS_TOKEN" | json "1 if any(q['tenant_id']=='$CHILD' and q['model_alias']=='$PROBE' for q in d['data']) else 0")"
+  req PUT /admin/model-quotas "$OPS_TOKEN" "{\"tenant_id\":\"$GRAND\",\"model_alias\":\"$PROBE\",\"daily_token_limit\":50000}" >/dev/null
+  check "scoped may write a descendant's model quota" 200 "$(code)"
   req GET /admin/users "$OPS_TOKEN" >/dev/null
   check "scoped cannot manage users" 403 "$(code)"
+fi
+
+echo "== 7. cleanup =="
+# Section 4 deliberately leaves the pool and child rows in place so the scoped
+# administrator checks above can try to touch them. Remove every probe row here
+# and assert it is gone; leaving the campus pool row behind would cap a real
+# model for every tenant after the script ended.
+req DELETE "/admin/model-quotas?tenant_id=$CHILD&model_alias=$PROBE" "$TOKEN" >/dev/null
+check "DELETE child probe quota" 200 "$(code)"
+req DELETE "/admin/model-quotas?tenant_id=$GRAND&model_alias=$PROBE" "$TOKEN" >/dev/null
+check "DELETE grandchild probe quota" 200 "$(code)"
+OUT=$(req DELETE "/admin/model-quotas?model_alias=$PROBE" "$TOKEN")
+check "DELETE campus pool probe quota" 200 "$(code)"
+check "pool probe row was removed" True "$(echo "$OUT" | json "d['removed']")"
+check "no probe rows remain" 0 "$(req GET /admin/model-quotas "$TOKEN" | json "1 if any(q['model_alias']=='$PROBE' for q in d['data']) else 0")"
+if [ "$SCOPED_USER_SEEDED" = 1 ]; then
+  cleanup_scoped_user
+  check "scoped test account removed" 0 "$(docker exec -i deploy-postgres-1 psql -U campus -d campus_gateway -tAc \
+    "SELECT count(*) FROM gateway_admin_user WHERE username='ops-cs'" | tr -d '[:space:]')"
 fi
 
 echo

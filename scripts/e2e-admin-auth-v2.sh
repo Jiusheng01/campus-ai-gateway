@@ -284,7 +284,7 @@ check "trusted-header 下 /admin/auth-config login_enabled=false" \
   "$(body $TH/admin/auth-config | grep -o '"login_enabled":false' | head -1)" '"login_enabled":false'
 check "trusted-header 下 /admin/auth/refresh 不可用" "$(code -X POST $TH/admin/auth/refresh)" "503"
 
-title "17. 五角色 RBAC 回归（trusted-header）"
+title "17. 六角色 RBAC 回归（trusted-header）"
 rbac() {
   local role="$1" path="$2" method="$3" want="$4"
   local got
@@ -294,9 +294,9 @@ rbac() {
 }
 rbac super_admin    /admin/status        GET  200
 rbac gateway_admin  /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
-# Phase 1 (P1-02): the global tenant_admin grant was withdrawn. The role now
-# fails closed at the RBAC layer — 403 before the handler — instead of reaching
-# the handler and being refused for its body (the old 400).
+# A trusted-header tenant_admin arrives without a scope, so it has no subtree to
+# administer. The role must fail closed at the RBAC layer — 403 before the
+# handler — rather than falling back to the old global grant.
 rbac tenant_admin   /admin/tenants/00000000-0000-0000-0000-000000000000 PUT 403
 rbac auditor        /admin/security-events GET 200
 rbac operator       /admin/model-test    POST 400
