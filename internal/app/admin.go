@@ -118,6 +118,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleProviderModelByID(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/providers/"):
 		s.handleProviderByID(w, r)
+	// The Model Catalog is the entry point over Provider Models. It is a
+	// management view, so it lives under /admin and is never tenant-reachable.
+	case r.URL.Path == "/admin/model-catalog/open":
+		s.handleOpenCatalogModel(w, r)
+	case r.URL.Path == "/admin/model-catalog":
+		s.handleModelCatalog(w, r)
 	case r.URL.Path == "/admin/models":
 		s.handleModels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/models/") && strings.HasSuffix(r.URL.Path, "/routes"):

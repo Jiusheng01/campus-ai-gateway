@@ -31,3 +31,37 @@ const (
 	// ProviderModelSourceManual is a name the operator added.
 	ProviderModelSourceManual = "manual"
 )
+
+// CatalogProvider is one channel offering a Catalog Model. Opened says client
+// traffic can already reach this channel for the name, which is narrower than
+// the model's own Opened flag: a Virtual Model may exist with a Route to
+// another channel only.
+type CatalogProvider struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ProviderModelID string `json:"provider_model_id"`
+	Opened          bool   `json:"opened"`
+	ModelID         string `json:"model_id,omitempty"`
+	RouteID         string `json:"route_id,omitempty"`
+}
+
+// CatalogModel is one row of the Model Catalog: a Provider Model name grouped
+// across every channel that offers it (ADR-0018). Opened reports whether a
+// Virtual Model with this alias exists; Providers reports which channels are
+// already routed under it.
+type CatalogModel struct {
+	UpstreamModel string            `json:"upstream_model"`
+	Opened        bool              `json:"opened"`
+	Providers     []CatalogProvider `json:"providers"`
+}
+
+// CatalogOpenResult is the outcome of opening one Provider Model. Created is
+// true only when the Virtual Model did not exist; RouteCreated is true only
+// when the (model, provider, upstream) binding was new. Both false means the
+// open was a repeat and changed nothing.
+type CatalogOpenResult struct {
+	Model        ModelConfig `json:"model"`
+	Route        ModelRoute  `json:"route"`
+	Created      bool        `json:"created"`
+	RouteCreated bool        `json:"route_created"`
+}

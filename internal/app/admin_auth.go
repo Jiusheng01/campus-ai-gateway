@@ -206,6 +206,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 		switch {
 		case strings.HasPrefix(path, "/admin/providers"),
 			strings.HasPrefix(path, "/admin/models"),
+			strings.HasPrefix(path, "/admin/model-catalog"),
 			strings.HasPrefix(path, "/admin/model-routes"),
 			path == "/admin/model-test",
 			path == "/admin/model-test-options",

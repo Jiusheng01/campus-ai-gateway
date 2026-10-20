@@ -52,17 +52,24 @@ export function RouteForm({
         <input className="mono" value={v.upstream_model || ''} onChange={e => setV({...v, upstream_model: e.target.value})} />
       </Field>
 
-      <div className="formGrid">
-        <Field label="优先级" hint="数字越小越优先，用于决定主线路。">
-          <input type="number" min="1" value={v.priority ?? 1} onChange={e => setV({...v, priority: +e.target.value})} />
-        </Field>
-        <Field label="流量权重">
-          <input type="number" min="0" value={v.weight ?? 100} onChange={e => setV({...v, weight: +e.target.value})} />
-        </Field>
-        <Field label="超时时间（ms）">
-          <input type="number" min="1" value={v.timeout_ms ?? 60000} onChange={e => setV({...v, timeout_ms: +e.target.value})} />
-        </Field>
-      </div>
+      {/* Failover tuning is a second question. The defaults (primary band, equal
+          weight, 60 s) are what an operator opening a model needs; changing
+          them is a deliberate act, so the controls stay collapsed until asked
+          for rather than filling the first screen. */}
+      <details className="formAdvanced">
+        <summary>高级：优先级 / 流量权重 / 超时</summary>
+        <div className="formGrid">
+          <Field label="优先级" hint="数字越小越优先，用于决定主线路。">
+            <input type="number" min="1" value={v.priority ?? 1} onChange={e => setV({...v, priority: +e.target.value})} />
+          </Field>
+          <Field label="流量权重">
+            <input type="number" min="0" value={v.weight ?? 100} onChange={e => setV({...v, weight: +e.target.value})} />
+          </Field>
+          <Field label="超时时间（ms）">
+            <input type="number" min="1" value={v.timeout_ms ?? 60000} onChange={e => setV({...v, timeout_ms: +e.target.value})} />
+          </Field>
+        </div>
+      </details>
 
       <Field label="状态">
         <select value={v.status ?? 1} onChange={e => setV({...v, status: +e.target.value})}>
