@@ -1,6 +1,27 @@
-export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;status:number}
-export type ModelConfig={id:string;alias:string;provider_id:string;provider_name:string;upstream_model:string;status:number}
+export type CredentialSummary={source_type:string;configured:boolean;last4:string}
+export type Provider={id:string;name:string;base_url:string;protocol:string;credential_env:string;credential?:CredentialSummary;credential_secret?:string;status:number}
+export type ModelConfig={id:string;alias:string;status:number}
 export type ModelRoute={id:string;model_id:string;model_alias:string;provider_id:string;provider_name:string;upstream_model:string;priority:number;weight:number;timeout_ms:number;status:number}
+
+/** ProviderModel is one entry in a channel's own list of upstream names. */
+export type ProviderModel={id:string;provider_id:string;upstream_model:string;source:'preset'|'fetched'|'manual';status:number}
+
+/**
+ * CatalogProvider is one channel offering an upstream model.
+ *
+ * `opened` is narrower than the row's: a Virtual Model may exist and already
+ * route to another channel, in which case opening this one appends a Route.
+ */
+export type CatalogProvider={id:string;name:string;provider_model_id:string;opened:boolean;model_id?:string;route_id?:string}
+
+/** One Model Catalog row: an upstream name grouped across the channels offering it. */
+export type CatalogModel={upstream_model:string;opened:boolean;providers:CatalogProvider[]}
+
+/**
+ * CatalogOpenResult reports what the open action changed. Both flags false is
+ * the idempotent repeat — the model and Route already covered this binding.
+ */
+export type CatalogOpenResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean}
 export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];route_group:string;usage_requests:number;usage_tokens:number}

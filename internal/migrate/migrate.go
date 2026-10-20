@@ -21,11 +21,14 @@
 //     taken over the body with line endings normalised, so the same commit
 //     yields the same checksum from a Windows checkout and a Linux one: a
 //     difference in newline style is not an edit to the migration.
-//   - A database that predates the table is replayed from the beginning —
-//     the migrations are written to be replay-safe — and the replayed schema
-//     is verified against the end-state baseline before anything is recorded,
-//     so bringing an old deployment up to date is one command and a drifted
-//     database is reported rather than quietly marked as migrated.
+//   - A database that predates the table is replayed from the beginning. Every
+//     migration is idempotent when applied forward, but a historical file can
+//     still stop replaying against an end-state database (0014 retires a column
+//     0002 indexed); applyBootstrap explains why that is tolerated and what
+//     keeps the tolerance sound. The replayed schema is verified against the
+//     end-state baseline before anything is recorded, so bringing an old
+//     deployment up to date is one command and a drifted database is reported
+//     rather than quietly marked as migrated.
 //   - Concurrent runs serialise on a PostgreSQL advisory lock, so two
 //     containers starting at once cannot interleave.
 package migrate
@@ -499,27 +502,51 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration) error {
 //  1. applyWithoutRecording replays each migration in its own committed
 //     transaction. The migrations are replay-safe (CREATE ... IF NOT EXISTS,
 //     ALTER ... ADD COLUMN IF NOT EXISTS), so against a database that already
-//     has the objects this is a no-op, and against an empty one it builds the
-//     full schema.
+//     has the objects each statement is a no-op, and against an empty one the
+//     replay builds the full schema. Replay-safety covers the statements in
+//     isolation; it cannot cover a statement that names an object a *later*
+//     migration retired, which is why step 2 runs even after a replay failure.
 //  2. verifyFinalSchema reads the catalog from the bare connection and fails
 //     closed when any table, column, type, nullability, unique constraint,
 //     foreign key or index is missing or drifted — naming every gap.
 //  3. recordAll writes the bookkeeping rows for the whole set in one
 //     transaction, only after verification passed.
 //
-// Fail-closed is preserved even though step 1 commits: step 1 only replays
-// idempotent DDL, so a drifted database is left exactly as it was — the
-// existing objects no-op, verification still fails, and no bookkeeping row is
-// ever written. The deployment therefore never trusts a half-verified schema,
-// and the next run retries rather than recording a history the database does
-// not have.
+// How strict the replay must be depends on whether the database was already
+// usable. A historical file can stop replaying cleanly once a later migration
+// retires something it referenced: 0002 creates an index on
+// gateway_model.provider_id and 0014 drops that column (ADR-0005), so replaying
+// the whole set against a database that is already at the end state stops on
+// that index with "column does not exist". Aborting there would make two
+// recoverable states — a current database whose bookkeeping table was lost, and
+// a bootstrap whose earlier verification failed — permanently unbootstrappable.
+//
+// So a replay failure is fatal unless verifyFinalSchema succeeded *before* the
+// replay. That is the precise test: a database that already satisfied the
+// contract is a database whose schema this binary can use, and the files that
+// failed are the ones that describe objects since retired; a database that did
+// not satisfy it is relying on the replay, and a file that does not apply is a
+// real gap that must stop the run — recording it would claim a history the
+// database does not have.
+//
+// That tolerance has a maintenance dependency: it is only sound while
+// verifyFinalSchema is updated with every new migration. A migration that
+// retires or renames something without the contract learning about it would let
+// a drifted database pass the gate and be recorded as fully migrated. The
+// contract check, not a clean replay, is what makes the outcome trustworthy.
 func applyBootstrap(ctx context.Context, conn *pgx.Conn, files []Migration) error {
-	if err := applyWithoutRecording(ctx, conn, files); err != nil {
-		return err
-	}
+	wasCurrent := verifyFinalSchema(ctx, conn) == nil
+
+	replayFailures := applyWithoutRecording(ctx, conn, files)
+	// Verification is the gate, and it runs whether or not the replay failed:
+	// it is what decides whether this database may be recorded at all.
 	if err := verifyFinalSchema(ctx, conn); err != nil {
 		return err
 	}
+	if len(replayFailures) > 0 && !wasCurrent {
+		return replayFailures[0]
+	}
+
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin record bootstrap: %w", err)
@@ -536,23 +563,34 @@ func applyBootstrap(ctx context.Context, conn *pgx.Conn, files []Migration) erro
 
 // applyWithoutRecording replays every migration in its own committed
 // transaction, without writing any bookkeeping. It is the replay half of the
-// bootstrap: the migrations are replay-safe, so this is safe to run against a
-// database that already has some or all of the objects.
-func applyWithoutRecording(ctx context.Context, conn *pgx.Conn, files []Migration) error {
+// bootstrap: each file is idempotent when applied forward, so running it against
+// a database that already has some or all of the objects does nothing. A file
+// that names an object a later migration retired can still fail; the caller
+// decides whether that failure matters by verifying the end state.
+//
+// A file that fails is rolled back and recorded in the returned slice, and the
+// replay continues with the next one. Continuing is deliberate: a database
+// missing several migrations is repaired by the files it *can* still apply, and
+// a database that is simply already current is unaffected by the rest. Whether
+// the result is usable is not decided here — the caller verifies the end state.
+func applyWithoutRecording(ctx context.Context, conn *pgx.Conn, files []Migration) []error {
+	var failures []error
 	for _, m := range files {
 		tx, err := conn.Begin(ctx)
 		if err != nil {
-			return fmt.Errorf("begin %s: %w", m.Filename, err)
+			failures = append(failures, fmt.Errorf("begin %s: %w", m.Filename, err))
+			continue
 		}
 		if _, err := tx.Exec(ctx, m.Body); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("apply %s: %w", m.Filename, err)
+			failures = append(failures, fmt.Errorf("apply %s: %w", m.Filename, err))
+			continue
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit %s: %w", m.Filename, err)
+			failures = append(failures, fmt.Errorf("commit %s: %w", m.Filename, err))
 		}
 	}
-	return nil
+	return failures
 }
 
 // recordAll writes the bookkeeping rows for the whole bootstrap in one

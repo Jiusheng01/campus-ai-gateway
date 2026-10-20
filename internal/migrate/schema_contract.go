@@ -156,13 +156,37 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			},
 		},
 		{
+			Name: "gateway_credential",
+			Columns: []contractColumn{
+				{"id", "uuid", true},
+				{"name", "character varying", true},
+				{"source_type", "character varying", true},
+				{"secret_ref", "character varying", false},
+				{"ciphertext", "text", false},
+				{"created_at", "timestamp with time zone", true},
+				{"updated_at", "timestamp with time zone", true},
+			},
+		},
+		{
 			Name: "gateway_provider",
 			Columns: []contractColumn{
 				{"id", "uuid", true},
 				{"name", "character varying", true},
 				{"base_url", "text", true},
 				{"protocol", "character varying", true},
-				{"credential_env", "character varying", true},
+				{"credential_id", "uuid", true},
+				{"status", "smallint", true},
+				{"created_at", "timestamp with time zone", true},
+				{"updated_at", "timestamp with time zone", true},
+			},
+		},
+		{
+			Name: "gateway_provider_model",
+			Columns: []contractColumn{
+				{"id", "uuid", true},
+				{"provider_id", "uuid", true},
+				{"upstream_model", "character varying", true},
+				{"source", "character varying", true},
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -173,8 +197,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 			Columns: []contractColumn{
 				{"id", "uuid", true},
 				{"alias", "character varying", true},
-				{"provider_id", "uuid", true},
-				{"upstream_model", "character varying", true},
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -273,8 +295,12 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_request_log", "id", "p"},
 		{"gateway_request_log", "request_id", "u"},
 		{"gateway_request_attempt", "id", "p"},
+		{"gateway_credential", "id", "p"},
+		{"gateway_credential", "name", "u"},
 		{"gateway_provider", "id", "p"},
 		{"gateway_provider", "name", "u"},
+		{"gateway_provider_model", "id", "p"},
+		{"gateway_provider_model", "provider_id,upstream_model", "u"},
 		{"gateway_model", "id", "p"},
 		{"gateway_model", "alias", "u"},
 		{"gateway_model_route", "id", "p"},
@@ -286,7 +312,8 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 
 	fks = []contractFK{
 		{"gateway_api_key", "tenant_id", "gateway_tenant", "id", "a"},
-		{"gateway_model", "provider_id", "gateway_provider", "id", "a"},
+		{"gateway_provider", "credential_id", "gateway_credential", "id", "a"},
+		{"gateway_provider_model", "provider_id", "gateway_provider", "id", "c"},
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
@@ -296,7 +323,6 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_api_key", "idx_gateway_api_key_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_api_key_tenant ON gateway_api_key(tenant_id)`},
 		{"gateway_request_log", "idx_request_log_created", false, []string{"created_at DESC"}, `CREATE INDEX idx_request_log_created ON gateway_request_log(created_at DESC)`},
 		{"gateway_request_attempt", "idx_request_attempt_request", false, []string{"request_id"}, `CREATE INDEX idx_request_attempt_request ON gateway_request_attempt(request_id)`},
-		{"gateway_model", "idx_gateway_model_provider", false, []string{"provider_id"}, `CREATE INDEX idx_gateway_model_provider ON gateway_model(provider_id)`},
 		{"gateway_provider", "idx_gateway_provider_status", false, []string{"status"}, `CREATE INDEX idx_gateway_provider_status ON gateway_provider(status)`},
 		{"gateway_model", "idx_gateway_model_status", false, []string{"status"}, `CREATE INDEX idx_gateway_model_status ON gateway_model(status)`},
 		{"gateway_model_route", "uq_gateway_model_route_binding", true, []string{"model_id", "provider_id", "upstream_model"}, `CREATE UNIQUE INDEX uq_gateway_model_route_binding ON gateway_model_route(model_id, provider_id, upstream_model)`},
@@ -338,8 +364,10 @@ func finalColumnLengths() map[string]int {
 		"gateway_request_attempt.request_id": 64, "gateway_request_attempt.provider": 128,
 		"gateway_request_attempt.upstream_model": 128, "gateway_request_attempt.outcome": 16,
 		"gateway_request_attempt.error_kind": 32,
-		"gateway_provider.name":              128, "gateway_provider.protocol": 32, "gateway_provider.credential_env": 128,
-		"gateway_model.alias": 128, "gateway_model.upstream_model": 128,
+		"gateway_credential.name":            128, "gateway_credential.source_type": 16, "gateway_credential.secret_ref": 128,
+		"gateway_provider.name": 128, "gateway_provider.protocol": 32,
+		"gateway_provider_model.upstream_model": 128, "gateway_provider_model.source": 16,
+		"gateway_model.alias":                128,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
 		"gateway_admin_audit_log.resource": 256, "gateway_admin_audit_log.client_ip": 64,
@@ -376,8 +404,11 @@ func finalColumnDefaults() map[string]string {
 		"gateway_request_attempt.id":         "nextval('gateway_request_attempt_id_seq'::regclass)",
 		"gateway_request_attempt.latency_ms": "0", "gateway_request_attempt.created_at": "now()",
 
+		"gateway_credential.id": "gen_random_uuid()", "gateway_credential.created_at": "now()", "gateway_credential.updated_at": "now()",
 		"gateway_provider.id": "gen_random_uuid()", "gateway_provider.protocol": "'openai-chat'::character varying",
 		"gateway_provider.status": "1", "gateway_provider.created_at": "now()", "gateway_provider.updated_at": "now()",
+		"gateway_provider_model.id": "gen_random_uuid()", "gateway_provider_model.status": "1",
+		"gateway_provider_model.created_at": "now()", "gateway_provider_model.updated_at": "now()",
 		"gateway_model.id": "gen_random_uuid()", "gateway_model.status": "1",
 		"gateway_model.created_at": "now()", "gateway_model.updated_at": "now()",
 
@@ -443,6 +474,13 @@ var droppedColumns = []droppedColumnRef{
 	{"gateway_api_key", "rpm_limit"},
 	{"gateway_api_key", "tpm_limit"},
 	{"gateway_api_key", "max_concurrency"},
+	// Retired by 0014: the single-binding routing columns that gateway_model_route
+	// replaced, so Route is the only routing authority (ADR-0005).
+	{"gateway_model", "provider_id"},
+	{"gateway_model", "upstream_model"},
+	// Retired by 0015: the Provider now references a first-class Credential, so
+	// the environment-variable name lives on that row (ADR-0017).
+	{"gateway_provider", "credential_env"},
 }
 
 // verifyFinalSchema checks the connected database against the contract. It

@@ -1,10 +1,10 @@
 import {
   BarChart3,
+  Boxes,
   FileClock,
   KeyRound,
   LayoutDashboard,
   Network,
-  Route,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -77,7 +77,7 @@ export const navGroups: NavGroup[] = [
     label: '模型服务',
     items: [
       {id: 'providers', label: '渠道', icon: Network, roles: ['super_admin', 'gateway_admin']},
-      {id: 'models', label: '模型与路由', icon: Route, roles: ['super_admin', 'gateway_admin']},
+      {id: 'models', label: '模型', icon: Boxes, roles: ['super_admin', 'gateway_admin']},
     ],
   },
   {
@@ -112,7 +112,7 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   audit: {title: '审计日志', subtitle: '管理员对控制面的操作记录'},
   security: {title: '安全事件', subtitle: '鉴权、权限与配额拒绝事件'},
   providers: {title: '渠道', subtitle: '管理模型渠道的接入与凭据来源'},
-  models: {title: '模型与路由', subtitle: '管理对外模型与上游线路'},
+  models: {title: '模型', subtitle: '查看各渠道提供的模型，一键开放给业务系统'},
   users: {title: '用户', subtitle: '管理注册用户和管理员角色'},
   tenants: {title: '租户', subtitle: '管理租户与配额边界'},
   settings: {title: '系统设置', subtitle: '认证方式与运行参数'},

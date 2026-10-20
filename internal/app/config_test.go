@@ -1,10 +1,50 @@
 package app
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Credential sealing follows the AdminSessionKey pattern: an explicitly
+// configured CREDENTIAL_ENCRYPTION_KEY is used as-is (hashed to AES-256's 32
+// bytes), and when it is absent a domain-separated key is derived from
+// API_KEY_HMAC_SECRET so local development needs no extra variable. The second
+// return value is what drives the startup warning.
+func TestCredentialSealingKeyConfiguredAndDerived(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "")
+
+	derivedCfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	derivedKey, derived := derivedCfg.CredentialSealingKey()
+	if !derived {
+		t.Fatal("an absent CREDENTIAL_ENCRYPTION_KEY must report the derived fallback so startup can warn")
+	}
+	if len(derivedKey) != 32 {
+		t.Fatalf("derived key is %d bytes, want 32 for AES-256", len(derivedKey))
+	}
+
+	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "an-explicitly-configured-operator-secret")
+	configuredCfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	configuredKey, configuredDerived := configuredCfg.CredentialSealingKey()
+	if configuredDerived {
+		t.Fatal("a configured CREDENTIAL_ENCRYPTION_KEY must not report the fallback")
+	}
+	if len(configuredKey) != 32 {
+		t.Fatalf("configured key is %d bytes, want 32 for AES-256", len(configuredKey))
+	}
+	if bytes.Equal(derivedKey, configuredKey) {
+		t.Fatal("the configured key must not equal the derived fallback")
+	}
+}
 
 // loadConfigWithRegistration writes the minimum environment LoadConfig needs and
 // then the value under test, so the assertions run against the real

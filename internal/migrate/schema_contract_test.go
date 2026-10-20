@@ -261,6 +261,40 @@ func TestApplyBootstrapsFullLegacySchema(t *testing.T) {
 	}
 }
 
+// A database already at the end state can re-enter bookkeeping even though a
+// historical file no longer replays cleanly.
+//
+// 0014 retires the columns 0002 indexes, so replaying the whole set against a
+// current database stops at that index with "column does not exist". The
+// bootstrap must not treat that as fatal: the contract is the gate, and losing
+// schema_migrations on a current database would otherwise be unrecoverable.
+func TestApplyBootstrapsCurrentSchemaDespiteRetiredColumnReference(t *testing.T) {
+	url := isolatedDatabase(t)
+	applyFilesRaw(t, url, repoMigrations, len(listMigrationFiles(t, repoMigrations)))
+
+	// The premise: the set can no longer be replayed verbatim. If this ever
+	// succeeds the tolerance below is untested and the comments that explain it
+	// are stale.
+	conn := connect(t, url)
+	_, replayErr := conn.Exec(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_gateway_model_provider ON gateway_model(provider_id)`)
+	_ = conn.Close(context.Background())
+	if replayErr == nil {
+		t.Fatal("premise: replaying 0002's model index against the current schema must fail")
+	}
+
+	result, err := Apply(context.Background(), url, repoMigrations)
+	if err != nil {
+		t.Fatalf("a database already at the end state must still be bootstrappable: %v", err)
+	}
+	if !result.Bootstrapped {
+		t.Fatal("a database without bookkeeping must report a bootstrap")
+	}
+	if result.Recorded != len(listMigrationFiles(t, repoMigrations)) {
+		t.Fatalf("recorded %d, want %d", result.Recorded, len(listMigrationFiles(t, repoMigrations)))
+	}
+}
+
 // P1-01 §13: dropping a runtime index after a successful apply must be caught
 // by the contract check.
 func TestFinalSchemaDetectsDroppedIndex(t *testing.T) {
@@ -312,28 +346,55 @@ func TestFinalSchemaRejectsWrongUsernameIndexDefinition(t *testing.T) {
 	}
 }
 
-// declaredIndexPattern matches the index names the migration files create. The
-// name is the only thing this reads; the definition is checked against the live
-// catalog below, which is where a wrong expression would show up.
-var declaredIndexPattern = regexp.MustCompile(`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)`)
+// indexStatementPattern matches every index DDL statement the migration files
+// use: a CREATE (optionally UNIQUE) INDEX, or a DROP INDEX. The name is the only
+// thing read here; the definition is checked against the live catalog below,
+// which is where a wrong expression would show up.
+//
+// CREATE and DROP share one pattern so the two can be applied in the order they
+// appear in the file. A name a later migration re-creates is live again, and a
+// set-subtraction that ignored order would get that wrong.
+var indexStatementPattern = regexp.MustCompile(
+	`(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+|IF\s+EXISTS\s+)?([a-z0-9_]+)`)
 
-// declaredIndexNames returns every index the migration set declares, in
-// filename order.
+// declaredIndexNames returns every index the migration set leaves behind, in
+// filename order: the names live after every file has been read, where a DROP
+// retires a name and a later CREATE brings it back. Retired indexes are
+// subtracted, so an index the contract no longer expects does not have to stay
+// in the contract just because a historical file created it.
 func declaredIndexNames(t *testing.T) []string {
 	t.Helper()
 	files := listMigrationFiles(t, repoMigrations)
 	sort.Strings(files)
-	var out []string
+	var order []string
+	live := map[string]bool{}
 	for _, name := range files {
 		body, err := os.ReadFile(filepath.Join(repoMigrations, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		for _, m := range declaredIndexPattern.FindAllStringSubmatch(string(body), -1) {
-			out = append(out, m[1])
+		for _, m := range indexStatementPattern.FindAllStringSubmatch(string(body), -1) {
+			verb, idx := strings.ToUpper(strings.Fields(m[1])[0]), m[2]
+			if verb == "DROP" {
+				if live[idx] {
+					delete(live, idx)
+					kept := order[:0]
+					for _, s := range order {
+						if s != idx {
+							kept = append(kept, s)
+						}
+					}
+					order = kept
+				}
+				continue
+			}
+			if !live[idx] {
+				live[idx] = true
+				order = append(order, idx)
+			}
 		}
 	}
-	return out
+	return order
 }
 
 // TestFinalSchemaDetectsEveryDeclaredRuntimeIndex keeps the contract and the
@@ -384,6 +445,98 @@ func TestFinalSchemaDetectsEveryDeclaredRuntimeIndex(t *testing.T) {
 				t.Fatalf("restore %s: %v", idx.Name, err)
 			}
 		})
+	}
+}
+
+// ADR-0005 contract (migration 0014): gateway_model keeps only its client-facing
+// identity, so the legacy routing columns are gone once the migration set has
+// run. A database that still carries one — an unapplied or reverted 0014 — must
+// fail closed, because those columns are a second writable routing source and
+// the whole point of retiring them is that there is only one.
+func TestFinalSchemaDroppedLegacyModelRoutingColumns(t *testing.T) {
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	defer conn.Close(context.Background())
+
+	for _, col := range []string{"provider_id", "upstream_model"} {
+		var present bool
+		if err := conn.QueryRow(context.Background(),
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'gateway_model' AND column_name = $1)`, col).Scan(&present); err != nil {
+			t.Fatal(err)
+		}
+		if present {
+			t.Fatalf("gateway_model.%s must be dropped by the migration set (ADR-0005)", col)
+		}
+	}
+
+	for _, reintroduced := range []string{"provider_id UUID", "upstream_model VARCHAR(128)"} {
+		if _, err := conn.Exec(context.Background(),
+			`ALTER TABLE gateway_model ADD COLUMN `+reintroduced); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckFinalSchema(context.Background(), conn); err == nil {
+			t.Fatalf("a reintroduced gateway_model.%s must fail the contract", reintroduced)
+		}
+		if _, err := conn.Exec(context.Background(),
+			`ALTER TABLE gateway_model DROP COLUMN `+strings.Fields(reintroduced)[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// ADR-0017 (migration 0015): a Provider references a first-class Credential, so
+// gateway_credential exists, gateway_provider.credential_id points at it, and the
+// gateway_provider.credential_env column is gone. A database that reintroduces
+// the column has a second place a credential can be named, so it must fail
+// closed.
+func TestFinalSchemaHasTheCredentialEntityAndNoCredentialEnv(t *testing.T) {
+	url := isolatedDatabase(t)
+	if _, err := Apply(context.Background(), url, repoMigrations); err != nil {
+		t.Fatalf("baseline apply: %v", err)
+	}
+	conn := connect(t, url)
+	defer conn.Close(context.Background())
+
+	var hasCredentialTable bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'gateway_credential')`).Scan(&hasCredentialTable); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCredentialTable {
+		t.Fatal("gateway_credential must exist after the migration set runs")
+	}
+
+	var hasCredentialID bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'gateway_provider' AND column_name = 'credential_id')`).Scan(&hasCredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCredentialID {
+		t.Fatal("gateway_provider.credential_id must exist after the migration set runs")
+	}
+
+	var hasCredentialEnv bool
+	if err := conn.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'gateway_provider' AND column_name = 'credential_env')`).Scan(&hasCredentialEnv); err != nil {
+		t.Fatal(err)
+	}
+	if hasCredentialEnv {
+		t.Fatal("gateway_provider.credential_env must be dropped by 0015")
+	}
+
+	if _, err := conn.Exec(context.Background(),
+		`ALTER TABLE gateway_provider ADD COLUMN credential_env VARCHAR(128)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckFinalSchema(context.Background(), conn); err == nil {
+		t.Fatal("a reintroduced gateway_provider.credential_env must fail the contract")
 	}
 }
 

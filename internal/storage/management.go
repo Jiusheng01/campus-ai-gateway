@@ -3,17 +3,27 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
 )
 
+// providerColumns is the provider projection every read and write shares. The
+// Credential is joined rather than stored on the provider: its source and secret
+// are one row, so a provider edit cannot leave the two disagreeing.
+const providerColumns = `p.id::text, p.name, p.base_url, p.protocol, p.status, p.created_at, p.updated_at,
+	c.id::text, c.source_type, COALESCE(c.secret_ref,''), COALESCE(c.ciphertext,'')`
+
 func (p *Postgres) ListProviders(ctx context.Context) ([]model.Provider, error) {
 	rows, err := p.Pool.Query(ctx, `
-SELECT id::text, name, base_url, protocol, credential_env, status, created_at, updated_at
-FROM gateway_provider
-ORDER BY created_at DESC
+SELECT `+providerColumns+`
+FROM gateway_provider p
+JOIN gateway_credential c ON c.id = p.credential_id
+ORDER BY p.created_at DESC
 `)
 	if err != nil {
 		return nil, err
@@ -23,43 +33,194 @@ ORDER BY created_at DESC
 	var out []model.Provider
 	for rows.Next() {
 		var v model.Provider
-		if err := rows.Scan(&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.CredentialEnv, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt,
+			&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext); err != nil {
 			return nil, err
 		}
+		v.CredentialEnv = v.CredentialSecretRef
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
 
 func (p *Postgres) CreateProvider(ctx context.Context, v model.Provider) (model.Provider, error) {
-	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_provider(name, base_url, protocol, credential_env, status)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id::text, name, base_url, protocol, credential_env, status, created_at, updated_at
-`, v.Name, v.BaseURL, v.Protocol, v.CredentialEnv, v.Status).Scan(
-		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.CredentialEnv, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-	)
-	return v, err
+	return p.CreateProviderWithPresetModels(ctx, v, nil)
 }
 
-func (p *Postgres) UpdateProvider(ctx context.Context, id string, v model.Provider) (model.Provider, error) {
-	err := p.Pool.QueryRow(ctx, `
-UPDATE gateway_provider
-SET name=$2, base_url=$3, protocol=$4, credential_env=$5, status=$6, updated_at=NOW()
-WHERE id=$1::uuid
-RETURNING id::text, name, base_url, protocol, credential_env, status, created_at, updated_at
-`, id, v.Name, v.BaseURL, v.Protocol, v.CredentialEnv, v.Status).Scan(
-		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.CredentialEnv, &v.Status, &v.CreatedAt, &v.UpdatedAt,
+// CreateProviderWithPresetModels creates the channel and seeds its Provider
+// Model list in one transaction.
+//
+// The seed is part of the create rather than a second call the handler makes
+// afterwards: a channel that exists without the list it was supposed to come
+// with is exactly the half-configured state this work is meant to remove, and a
+// second call leaves a window where it can fail while the channel stays.
+func (p *Postgres) CreateProviderWithPresetModels(ctx context.Context, v model.Provider, presetModels []string) (model.Provider, error) {
+	if err := normaliseNewProviderCredential(&v); err != nil {
+		return v, err
+	}
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+WITH new_credential AS (
+	INSERT INTO gateway_credential (name, source_type, secret_ref, ciphertext)
+	VALUES ('channel:' || gen_random_uuid()::text, $1, NULLIF($2,''), NULLIF($3,''))
+	RETURNING id
+)
+INSERT INTO gateway_provider (name, base_url, protocol, credential_id, status)
+SELECT $4, $5, $6, new_credential.id, $7 FROM new_credential
+RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, credential_id::text
+`, v.CredentialSource, v.CredentialSecretRef, v.CredentialCiphertext,
+		v.Name, v.BaseURL, v.Protocol, v.Status).Scan(
+		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.CredentialID,
 	)
-	return v, err
+	if err != nil {
+		return v, err
+	}
+	if err := seedProviderModels(ctx, tx, v.ID, presetModels, model.ProviderModelSourcePreset); err != nil {
+		return v, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return v, err
+	}
+	v.CredentialEnv = v.CredentialSecretRef
+	return v, nil
 }
+
+// UpdateProvider edits the provider and, when the caller supplies a credential
+// source, its Credential. An update with no source leaves the Credential alone:
+// that is how "leave the key field blank" edits the channel without touching the
+// secret.
+func (p *Postgres) UpdateProvider(ctx context.Context, id string, v model.Provider) (model.Provider, error) {
+	if err := normaliseUpdatedProviderCredential(&v); err != nil {
+		return v, err
+	}
+
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+UPDATE gateway_provider
+SET name=$2, base_url=$3, protocol=$4, status=$5, updated_at=NOW()
+WHERE id=$1::uuid
+RETURNING id::text, name, base_url, protocol, status, created_at, updated_at, credential_id::text
+`, id, v.Name, v.BaseURL, v.Protocol, v.Status).Scan(
+		&v.ID, &v.Name, &v.BaseURL, &v.Protocol, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.CredentialID,
+	)
+	if err != nil {
+		return v, err
+	}
+
+	switch v.CredentialSource {
+	case model.CredentialSourceEnv:
+		if _, err := tx.Exec(ctx, `
+UPDATE gateway_credential
+SET source_type='env', secret_ref=$2, ciphertext=NULL, updated_at=NOW()
+WHERE id=$1::uuid`, v.CredentialID, v.CredentialSecretRef); err != nil {
+			return v, err
+		}
+	case model.CredentialSourceInline:
+		if _, err := tx.Exec(ctx, `
+UPDATE gateway_credential
+SET source_type='inline', secret_ref=NULL, ciphertext=$2, updated_at=NOW()
+WHERE id=$1::uuid`, v.CredentialID, v.CredentialCiphertext); err != nil {
+			return v, err
+		}
+	}
+
+	// Read the credential back rather than assuming it: the caller needs the
+	// actual source after a no-change update so the response summary is right.
+	if err := tx.QueryRow(ctx, `
+SELECT id::text, source_type, COALESCE(secret_ref,''), COALESCE(ciphertext,'')
+FROM gateway_credential
+WHERE id=$1::uuid`, v.CredentialID).Scan(
+		&v.CredentialID, &v.CredentialSource, &v.CredentialSecretRef, &v.CredentialCiphertext,
+	); err != nil {
+		return v, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return v, err
+	}
+	v.CredentialEnv = v.CredentialSecretRef
+	return v, nil
+}
+
+// normaliseNewProviderCredential turns the write fields into exactly one source.
+// It accepts credential_env on its own so the pre-Credential clients keep
+// working, and it refuses a provider with no credential at all: a channel that
+// cannot authenticate has no use.
+func normaliseNewProviderCredential(v *model.Provider) error {
+	source := strings.TrimSpace(v.CredentialSource)
+	if source == "" {
+		ref := strings.TrimSpace(v.CredentialEnv)
+		if ref == "" {
+			return errors.New("a provider requires a credential_secret or credential_env")
+		}
+		source = model.CredentialSourceEnv
+		v.CredentialSecretRef = ref
+	}
+	switch source {
+	case model.CredentialSourceEnv:
+		ref := strings.TrimSpace(v.CredentialSecretRef)
+		if ref == "" {
+			ref = strings.TrimSpace(v.CredentialEnv)
+		}
+		if ref == "" {
+			return errors.New("an env credential requires a variable name")
+		}
+		v.CredentialSource = model.CredentialSourceEnv
+		v.CredentialSecretRef = ref
+		v.CredentialEnv = ref
+		v.CredentialCiphertext = ""
+	case model.CredentialSourceInline:
+		ciphertext := strings.TrimSpace(v.CredentialCiphertext)
+		if ciphertext == "" {
+			return errors.New("an inline credential requires a sealed value")
+		}
+		v.CredentialSource = model.CredentialSourceInline
+		v.CredentialSecretRef = ""
+		v.CredentialEnv = ""
+		v.CredentialCiphertext = ciphertext
+	default:
+		return fmt.Errorf("unknown credential source %q", source)
+	}
+	return nil
+}
+
+// normaliseUpdatedProviderCredential is the update rule: no credential means
+// "keep the existing one", while a credential_env on its own keeps the old
+// environment-variable client working.
+func normaliseUpdatedProviderCredential(v *model.Provider) error {
+	if strings.TrimSpace(v.CredentialSource) == "" {
+		ref := strings.TrimSpace(v.CredentialEnv)
+		if ref == "" {
+			v.CredentialSecretRef = ""
+			v.CredentialCiphertext = ""
+			return nil
+		}
+		v.CredentialSource = model.CredentialSourceEnv
+		v.CredentialSecretRef = ref
+	}
+	return normaliseNewProviderCredential(v)
+}
+
+// modelColumns is the projection every model read and write acknowledgement
+// shares. A model is only its client-facing identity and lifecycle state: the
+// channel and upstream model belong to its Routes (ADR-0005), so there is no
+// routing column here to fall out of step with them.
+const modelColumns = `id::text, alias, status, created_at, updated_at`
 
 func (p *Postgres) ListModels(ctx context.Context) ([]model.ModelConfig, error) {
 	rows, err := p.Pool.Query(ctx, `
-SELECT m.id::text, m.alias, m.provider_id::text, p.name, m.upstream_model, m.status, m.created_at, m.updated_at
-FROM gateway_model m
-JOIN gateway_provider p ON p.id=m.provider_id
-ORDER BY m.created_at DESC
+SELECT `+modelColumns+`
+FROM gateway_model
+ORDER BY created_at DESC
 `)
 	if err != nil {
 		return nil, err
@@ -69,7 +230,7 @@ ORDER BY m.created_at DESC
 	var out []model.ModelConfig
 	for rows.Next() {
 		var v model.ModelConfig
-		if err := rows.Scan(&v.ID, &v.Alias, &v.ProviderID, &v.ProviderName, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -77,6 +238,11 @@ ORDER BY m.created_at DESC
 	return out, rows.Err()
 }
 
+// CreateModel creates the model and writes its first Route in one transaction.
+//
+// The caller supplies the channel and upstream model for that first line; there
+// is no routing column on the model to write them to. A model without a Route
+// cannot serve traffic, so the two are always created together.
 func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.ModelConfig, error) {
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -85,12 +251,10 @@ func (p *Postgres) CreateModel(ctx context.Context, v model.ModelConfig) (model.
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-INSERT INTO gateway_model(alias, provider_id, upstream_model, status)
-VALUES ($1, $2::uuid, $3, $4)
-RETURNING id::text, alias, provider_id::text, upstream_model, status, created_at, updated_at
-`, v.Alias, v.ProviderID, v.UpstreamModel, v.Status).Scan(
-		&v.ID, &v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-	)
+INSERT INTO gateway_model(alias, status)
+VALUES ($1, $2)
+RETURNING `+modelColumns+`
+`, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
@@ -100,75 +264,34 @@ VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 `, v.ID, v.ProviderID, v.UpstreamModel); err != nil {
 		return v, err
 	}
-	if err := tx.QueryRow(ctx, "SELECT name FROM gateway_provider WHERE id=$1::uuid", v.ProviderID).Scan(&v.ProviderName); err != nil {
-		return v, err
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
+	// The routing fields on the input describe the Route that was just written,
+	// not anything stored on the model, so the acknowledgement does not repeat
+	// them back as model state.
+	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""
 	return v, nil
 }
 
+// UpdateModel updates the model's identity and lifecycle state only.
+//
+// It deliberately touches no Route. An earlier implementation picked a Route
+// (the best enabled one, then the first one) and overwrote its channel and
+// upstream model, which made a model edit a second routing authority. Routes are
+// now edited one at a time through the Route API; a binding supplied to this
+// function is ignored rather than applied.
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
-	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return v, err
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `
+	err := p.Pool.QueryRow(ctx, `
 UPDATE gateway_model
 SET alias=$2, status=$3, updated_at=NOW()
 WHERE id=$1::uuid
-`, id, v.Alias, v.Status); err != nil {
-		return v, err
-	}
-
-	var routeID string
-	err = tx.QueryRow(ctx, `
-SELECT id::text
-FROM gateway_model_route
-WHERE model_id=$1::uuid
-ORDER BY CASE WHEN status=1 THEN 0 ELSE 1 END, priority ASC, weight DESC, created_at ASC
-LIMIT 1
-FOR UPDATE
-`, id).Scan(&routeID)
-	if err == pgx.ErrNoRows {
-		if _, err := tx.Exec(ctx, `
-INSERT INTO gateway_model_route(model_id, provider_id, upstream_model, priority, weight, timeout_ms, status)
-VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
-`, id, v.ProviderID, v.UpstreamModel); err != nil {
-			return v, err
-		}
-	} else if err != nil {
-		return v, err
-	} else {
-		if _, err := tx.Exec(ctx, `
-UPDATE gateway_model_route
-SET provider_id=$2::uuid, upstream_model=$3, updated_at=NOW()
-WHERE id=$1::uuid
-`, routeID, v.ProviderID, v.UpstreamModel); err != nil {
-			return v, err
-		}
-	}
-
-	if err := syncLegacyModelRoute(ctx, tx, id); err != nil {
-		return v, err
-	}
-	err = tx.QueryRow(ctx, `
-SELECT m.id::text, m.alias, m.provider_id::text, p.name, m.upstream_model, m.status, m.created_at, m.updated_at
-FROM gateway_model m
-JOIN gateway_provider p ON p.id=m.provider_id
-WHERE m.id=$1::uuid
-`, id).Scan(
-		&v.ID, &v.Alias, &v.ProviderID, &v.ProviderName, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.UpdatedAt,
-	)
+RETURNING `+modelColumns+`
+`, id, v.Alias, v.Status).Scan(&v.ID, &v.Alias, &v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return v, err
-	}
+	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""
 	return v, nil
 }
 

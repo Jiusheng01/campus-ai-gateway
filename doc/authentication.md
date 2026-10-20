@@ -17,12 +17,14 @@ http://127.0.0.1:8080/admin-ui
 - 总览（KPI、基础设施状态、最近请求）
 - 数据看板（流量 / Token / 延迟趋势、渠道状态）
 - 渠道管理
-- 模型与路由（线路 / 故障切换、模型连通测试）
+- 模型（默认是跨渠道的模型目录；「对外模型与线路」是高级视图，含线路 / 故障切换与模型连通测试）
 - 租户 / API 密钥管理
 - 用户（super_admin）
 - 使用日志筛选、分页、CSV 与详情
 - 审计日志与安全事件
 - 个人资料、安全与访问（修改密码、登录设备、退出登录）
+
+导航的「模型服务」组收敛为「渠道 / 模型」：渠道页管接入与凭据来源，模型页默认是跨渠道的模型目录。
 
 默认：
 
@@ -170,13 +172,15 @@ Campus AI Gateway RBAC
 | 角色 | 可访问范围 |
 | --- | --- |
 | `super_admin` | 全部管理接口，包括用户与角色管理（`/admin/users`）、租户与 API Key 管理 |
-| `gateway_admin` | `/admin/providers*`、`/admin/models*`、`/admin/model-routes*`、`/admin/model-test`、`/admin/model-test-options`、`/admin/status`、`/admin/status/trend` |
+| `gateway_admin` | `/admin/providers*`、`/admin/models*`、`/admin/model-catalog*`、`/admin/model-routes*`、`/admin/model-test`、`/admin/model-test-options`、`/admin/status`、`/admin/status/trend` |
 | `operator` | `GET /admin/status`、`GET /admin/status/trend`、`GET /admin/model-test-options`、`POST /admin/model-test`。连通测试是诊断而非编辑：operator 可以跑测试并从收窄的选项列表里选模型，但不能读写模型配置本身 |
 | `auditor` | 仅 `GET`：`/admin/status`、`/admin/status/trend`、`/admin/request-logs*`、`/admin/admin-audit`、`/admin/security-events` |
 | `tenant_admin` | 不授予任何权限。它本意是"某个租户自己的管理员"，但租户内部的成员模型还没做——以全局形态放开就会无范围地覆盖所有租户与 API Key。在正确的授权范围存在之前，这个角色**什么都不授予**（等同 member），而不是授予全部；持有该角色的账号可由 super_admin 重新分配 |
 | `member` | 仅自助接口，无任何管理权限 |
 
 `/admin/status/trend` 与 `/admin/status` 被显式分开列出，而不是用前缀规则覆盖：这样以后该路径下新增的端点必须自己说明授权理由。
+
+**编辑渠道意味着能令该渠道的 Credential 被解密**（ADR-0017）：内联来源下，`gateway_admin` 可以改写 `base_url` 把凭据发往自己控制的地址，也可以改写来源使数据面解密后使用它。读取接口仍不返回明文或密文，但这道写权限应当按「可接触密钥」授予，而不是按普通配置编辑处理。
 
 ---
 

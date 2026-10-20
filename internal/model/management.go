@@ -2,26 +2,93 @@ package model
 
 import "time"
 
-type Provider struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	BaseURL       string    `json:"base_url"`
-	Protocol      string    `json:"protocol"`
-	CredentialEnv string    `json:"credential_env"`
-	Status        int       `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+// Credential is the gateway-held access identity for a Provider (ADR-0017). It
+// is not the API Key the gateway issues to a Tenant.
+//
+// SourceType decides where the secret comes from: CredentialSourceEnv means
+// SecretRef names a process environment variable, and CredentialSourceInline
+// means Ciphertext holds a value sealed with AES-256-GCM. At most one of
+// SecretRef and Ciphertext is set.
+type Credential struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	SourceType string    `json:"source_type"`
+	SecretRef  string    `json:"secret_ref,omitempty"`
+	Ciphertext string    `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// The two sources a Credential can have.
+const (
+	// CredentialSourceEnv resolves the secret from the process environment.
+	CredentialSourceEnv = "env"
+	// CredentialSourceInline holds a sealed value in the database.
+	CredentialSourceInline = "inline"
+)
+
+// CredentialSummary is what the management API returns about a Provider's
+// Credential: enough for the console to say "configured, ending in 1234", and
+// never the secret itself (ADR-0017). Last4 is empty when the value cannot be
+// read — an empty environment variable or a ciphertext this process cannot
+// decrypt — rather than leaking more of it.
+type CredentialSummary struct {
+	SourceType string `json:"source_type"`
+	Configured bool   `json:"configured"`
+	Last4      string `json:"last4"`
+}
+
+type Provider struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url"`
+	Protocol string `json:"protocol"`
+	// CredentialEnv is the environment-variable name for an env-sourced
+	// Credential. It is a NAME, not a secret, so it is returned to the console;
+	// it is empty for an inline Credential. It remains the write field for the
+	// environment-variable source so existing clients keep working.
+	CredentialEnv string `json:"credential_env"`
+	// CredentialSecret is the write-only inline credential. It is accepted on
+	// create and update, sealed before it reaches storage, and never populated on
+	// a read. It is named for the Credential it becomes: the gateway-issued API
+	// Key is a different concept.
+	CredentialSecret string `json:"credential_secret,omitempty"`
+	// Credential is the read-only summary. It is filled by the management API.
+	Credential *CredentialSummary `json:"credential,omitempty"`
+	Status     int                `json:"status"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+
+	// The resolution data the data plane needs. These fields are deliberately
+	// never serialized: Ciphertext is the sealed secret, and SecretRef is carried
+	// separately so the data plane does not have to special-case CredentialEnv.
+	CredentialID         string `json:"-"`
+	CredentialSource     string `json:"-"`
+	CredentialSecretRef  string `json:"-"`
+	CredentialCiphertext string `json:"-"`
+}
+
+// ModelConfig is a Virtual Model: its client-facing identity and lifecycle
+// state. Channel and upstream model are not model state — they belong to the
+// model's Routes (ADR-0005).
+//
+// ProviderID and UpstreamModel survive on this type only as the *write* binding
+// for a create, where they name the channel and upstream model of the first
+// Route to write. An update accepts neither: editing a model changes its alias
+// and status only. Reads never populate them, and they are omitted from the JSON
+// when empty, so a model response carries no routing field to mistake for a
+// second source of truth. ProviderName is never written by a client and is
+// cleared on every acknowledgement.
 type ModelConfig struct {
-	ID            string    `json:"id"`
-	Alias         string    `json:"alias"`
-	ProviderID    string    `json:"provider_id"`
-	ProviderName  string    `json:"provider_name"`
-	UpstreamModel string    `json:"upstream_model"`
-	Status        int       `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+	Alias     string    `json:"alias"`
+	Status    int       `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	ProviderID    string `json:"provider_id,omitempty"`
+	ProviderName  string `json:"provider_name,omitempty"`
+	UpstreamModel string `json:"upstream_model,omitempty"`
 }
 
 type ModelRoute struct {
@@ -62,32 +129,32 @@ type Tenant struct {
 }
 
 type TenantUsageStats struct {
-	TenantID       string `json:"tenant_id"`
-	DailyRequests  int64  `json:"daily_requests"`
-	MonthlyRequests int64 `json:"monthly_requests"`
-	DailyTokens    int64  `json:"daily_tokens"`
-	MonthlyTokens  int64  `json:"monthly_tokens"`
+	TenantID        string `json:"tenant_id"`
+	DailyRequests   int64  `json:"daily_requests"`
+	MonthlyRequests int64  `json:"monthly_requests"`
+	DailyTokens     int64  `json:"daily_tokens"`
+	MonthlyTokens   int64  `json:"monthly_tokens"`
 }
 
 type APIKeyAdmin struct {
-	ID             string     `json:"id"`
-	TenantID       string     `json:"tenant_id"`
-	TenantCode     string     `json:"tenant_code"`
-	TenantName     string     `json:"tenant_name"`
-	Name           string     `json:"name"`
-	KeyPrefix      string     `json:"key_prefix"`
-	Status         int        `json:"status"`
-	ExpireAt       *time.Time `json:"expire_at,omitempty"`
-	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
-	AllowedModels  []string   `json:"allowed_models"`
-	AllowedIPs     []string   `json:"allowed_ips"`
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	TenantCode    string     `json:"tenant_code"`
+	TenantName    string     `json:"tenant_name"`
+	Name          string     `json:"name"`
+	KeyPrefix     string     `json:"key_prefix"`
+	Status        int        `json:"status"`
+	ExpireAt      *time.Time `json:"expire_at,omitempty"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	AllowedModels []string   `json:"allowed_models"`
+	AllowedIPs    []string   `json:"allowed_ips"`
 	// RouteGroup is reserved. Neither data plane consults it, and the console
 	// no longer offers it for editing, because an input that stores a value
 	// nothing reads tells the operator a constraint is in force when it is not.
 	// It is still accepted on write so that editing an existing key cannot fail
 	// on a field the operator never touched.
-	RouteGroup     string     `json:"route_group"`
-	CreatedAt      time.Time  `json:"created_at"`
+	RouteGroup string    `json:"route_group"`
+	CreatedAt  time.Time `json:"created_at"`
 	// Usage is the key's cumulative consumption, aggregated from the request
 	// log rather than stored on the key. Keeping it derived means the number
 	// cannot drift from the log it claims to summarise, and a revoked key
@@ -161,9 +228,9 @@ type DashboardStats struct {
 }
 
 type ProviderStats struct {
-	Provider    string  `json:"provider"`
-	Requests    int64   `json:"requests"`
-	SuccessRate float64 `json:"success_rate"`
+	Provider     string  `json:"provider"`
+	Requests     int64   `json:"requests"`
+	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 }
 

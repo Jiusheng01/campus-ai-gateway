@@ -681,6 +681,34 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 }
 .addRoute:hover { background: var(--primary-soft); border-color: var(--primary); }
 
+/* --- model catalog -------------------------------------------------------- */
+
+/* The catalog is one row per upstream name, with the channels offering it
+   nested inside. A flat table would repeat the model name once per channel and
+   hide the one fact the view exists to show: two channels can serve the same
+   client-facing name. */
+.catalogList { display: flex; flex-direction: column; padding: 0; }
+.catalogRow { padding: 18px 20px; border-bottom: 1px solid var(--border); }
+.catalogRow:last-child { border-bottom: 0; }
+.catalogHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.catalogProviders { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.catalogProvider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 12px;
+}
+.catalogProviderName { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.catalogProviderName b { font-size: 13px; }
+.catalogProviderActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.catalogRefresh { display: flex; align-items: center; gap: 8px; }
+.catalogRefresh select { width: auto; min-width: 150px; }
+
 /* --- mini cards (mobile lists) -------------------------------------------- */
 
 .cardsList { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
@@ -983,6 +1011,14 @@ input:focus, select:focus, textarea:focus {
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* Failover tuning (priority, weight, timeout) is collapsed by default: the
+   defaults are what "add a line" means, and the controls are for the operator
+   who has deliberately decided this line is not ordinary. */
+.formAdvanced { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-subtle); padding: 0 12px; }
+.formAdvanced > summary { cursor: pointer; padding: 10px 0; font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+.formAdvanced[open] > summary { color: var(--text); padding-bottom: 4px; }
+.formAdvanced .formGrid { padding: 8px 0 12px; }
+.formAdvanced summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .formActions {
   display: flex;
   justify-content: flex-end;

@@ -20,6 +20,7 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 )
 
 // The data plane.
@@ -39,14 +40,25 @@ import (
 
 // directRoute is one usable line: a channel plus the upstream model name that
 // channel expects.
+//
+// The Credential fields describe where the channel secret comes from. An empty
+// CredentialSource means env, which keeps the existing route fixtures — and any
+// path that still carries only CredentialEnv — working.
 type directRoute struct {
 	Provider      string
 	BaseURL       string
 	UpstreamModel string
+	// CredentialEnv is the environment-variable name for the legacy env source.
 	CredentialEnv string
-	Priority      int
-	Weight        int
-	TimeoutMS     int
+	// CredentialSource is "env" or "inline".
+	CredentialSource string
+	// CredentialRef is the environment-variable name for an env credential.
+	CredentialRef string
+	// CredentialCiphertext is the sealed value for an inline credential.
+	CredentialCiphertext string
+	Priority             int
+	Weight               int
+	TimeoutMS            int
 }
 
 // routeTable maps an external model name to its lines, best first.
@@ -185,18 +197,32 @@ func assembleRouteTable(providers []model.Provider, models []model.ModelConfig, 
 			if !ok {
 				continue
 			}
+			// A Route without an upstream model is not a usable line. The
+			// retired model column is not a fallback: filling it from there
+			// would make a deleted field a second routing authority again.
 			upstream := strings.TrimSpace(rt.UpstreamModel)
 			if upstream == "" {
-				upstream = strings.TrimSpace(m.UpstreamModel)
+				continue
+			}
+			source := p.CredentialSource
+			ref := p.CredentialSecretRef
+			if source == "" {
+				// A provider fixture or a pre-Credential row: name the variable
+				// directly. The data plane treats an empty source as env.
+				source = model.CredentialSourceEnv
+				ref = p.CredentialEnv
 			}
 			routes = append(routes, directRoute{
-				Provider:      p.Name,
-				BaseURL:       p.BaseURL,
-				UpstreamModel: upstream,
-				CredentialEnv: p.CredentialEnv,
-				Priority:      rt.Priority,
-				Weight:        rt.Weight,
-				TimeoutMS:     rt.TimeoutMS,
+				Provider:             p.Name,
+				BaseURL:              p.BaseURL,
+				UpstreamModel:        upstream,
+				CredentialEnv:        ref,
+				CredentialSource:     source,
+				CredentialRef:        ref,
+				CredentialCiphertext: p.CredentialCiphertext,
+				Priority:             rt.Priority,
+				Weight:               rt.Weight,
+				TimeoutMS:            rt.TimeoutMS,
 			})
 		}
 		if len(routes) == 0 {
@@ -568,19 +594,30 @@ func clientSafeFailure(err error) string {
 	return ""
 }
 
-// missingCredentialError says a channel has no credential configured.
+// missingCredentialError says a channel has no usable credential.
 //
-// It is safe to show the caller: it names an environment variable, never its
-// value. Transport and upstream errors are not safe, because they can carry
-// internal addresses and upstream credentials, so the caller-facing code
-// distinguishes the two by type rather than by matching message text.
+// It is safe to show the caller: for the env source it names the environment
+// variable, never its value; for the inline source it says the stored credential
+// is missing or cannot be opened, never anything about the ciphertext. Transport
+// and upstream errors are not safe, because they can carry internal addresses
+// and upstream credentials, so the caller-facing code distinguishes the two by
+// type rather than by matching message text.
+//
+// Reason, when set, replaces the default "<Env> is empty" message. It exists for
+// the inline source, which has no variable name to report, and for a decryption
+// failure, which is not the same mistake as a missing one.
 type missingCredentialError struct {
 	Channel string
 	Env     string
+	Reason  string
 }
 
 func (e missingCredentialError) Error() string {
-	return fmt.Sprintf("channel %s: %s is empty", e.Channel, e.Env)
+	reason := e.Reason
+	if reason == "" {
+		reason = e.Env + " is empty"
+	}
+	return fmt.Sprintf("channel %s: %s", e.Channel, reason)
 }
 
 // directFailureReason classifies a failed attempt for the server log.
@@ -612,11 +649,50 @@ func directFailureReason(err error) string {
 	return "the channel could not be reached"
 }
 
+// resolveCredential turns a route's Credential into the Bearer value sent
+// upstream. It fails closed: an empty variable, a missing inline value and an
+// inline value this process cannot open all return missingCredentialError, so no
+// request with an empty Authorization is ever dialled.
+func (s *Server) resolveCredential(route directRoute) (string, error) {
+	source := route.CredentialSource
+	if source == "" {
+		source = model.CredentialSourceEnv
+	}
+	switch source {
+	case model.CredentialSourceEnv:
+		ref := strings.TrimSpace(route.CredentialRef)
+		if ref == "" {
+			ref = strings.TrimSpace(route.CredentialEnv)
+		}
+		value := strings.TrimSpace(os.Getenv(ref))
+		if value == "" {
+			return "", missingCredentialError{Channel: route.Provider, Env: ref}
+		}
+		return value, nil
+	case model.CredentialSourceInline:
+		sealed := strings.TrimSpace(route.CredentialCiphertext)
+		if sealed == "" {
+			return "", missingCredentialError{Channel: route.Provider, Reason: "inline credential is not configured"}
+		}
+		plaintext, err := security.Open(s.sealingKey(), sealed)
+		if err != nil {
+			return "", missingCredentialError{Channel: route.Provider, Reason: "inline credential could not be decrypted"}
+		}
+		value := strings.TrimSpace(string(plaintext))
+		if value == "" {
+			return "", missingCredentialError{Channel: route.Provider, Reason: "inline credential is empty"}
+		}
+		return value, nil
+	default:
+		return "", missingCredentialError{Channel: route.Provider, Reason: "credential source is unknown"}
+	}
+}
+
 // attemptDirect sends one request to one channel.
 func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnvelope, route directRoute) (*http.Response, error) {
-	credential := strings.TrimSpace(os.Getenv(route.CredentialEnv))
-	if credential == "" {
-		return nil, missingCredentialError{Channel: route.Provider, Env: route.CredentialEnv}
+	credential, err := s.resolveCredential(route)
+	if err != nil {
+		return nil, err
 	}
 
 	target, err := directTargetURL(route.BaseURL, r.URL)
@@ -659,7 +735,15 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	client := &http.Client{Transport: s.transport.get(timeout)}
+	// ADR-0012 forbids automatic redirects. Following one would move the
+	// channel credential to a host the channel's configuration never named, so
+	// the 3xx is surfaced as the answer instead.
+	client := &http.Client{
+		Transport: s.transport.get(timeout),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	return client.Do(req)
 }
 
@@ -672,25 +756,25 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 // Content-Length is copied because the body is streamed unchanged; leaving it
 // off would switch every non-streaming response to chunked encoding.
 var forwardableResponseHeaders = map[string]bool{
-	"Content-Type":         true,
-	"Content-Length":       true,
-	"Content-Encoding":     true,
-	"Cache-Control":        true,
-	"ETag":                 true,
-	"Last-Modified":        true,
-	"Expires":              true,
-	"Vary":                 true,
-	"Retry-After":          true,
-	"RateLimit-Limit":      true,
-	"RateLimit-Remaining":  true,
-	"RateLimit-Reset":      true,
-	"X-RateLimit-Limit":    true,
+	"Content-Type":          true,
+	"Content-Length":        true,
+	"Content-Encoding":      true,
+	"Cache-Control":         true,
+	"ETag":                  true,
+	"Last-Modified":         true,
+	"Expires":               true,
+	"Vary":                  true,
+	"Retry-After":           true,
+	"RateLimit-Limit":       true,
+	"RateLimit-Remaining":   true,
+	"RateLimit-Reset":       true,
+	"X-RateLimit-Limit":     true,
 	"X-RateLimit-Remaining": true,
-	"X-RateLimit-Reset":    true,
-	"Traceparent":          true,
-	"Tracestate":           true,
-	"Request-Id":           true,
-	"X-Request-Id":         true,
+	"X-RateLimit-Reset":     true,
+	"Traceparent":           true,
+	"Tracestate":            true,
+	"Request-Id":            true,
+	"X-Request-Id":          true,
 }
 
 // writeDirectResponse copies the upstream response to the client and stamps the
