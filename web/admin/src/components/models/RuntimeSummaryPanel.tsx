@@ -45,6 +45,7 @@ export function RuntimeSummaryPanel({
   const {data, loading, error, errorStatus, reload} = useResource(loader, [kind, id, hours])
   const recent = data?.recent || []
   const attempts = data && 'attempts' in data ? data.attempts : null
+  const empty = !!data && data.totals.requests === 0 && recent.length === 0
 
   return (
     <div className="drawerStack">
@@ -73,22 +74,28 @@ export function RuntimeSummaryPanel({
         <ErrorState message={error} status={errorStatus} onRetry={reload} />
       ) : data ? (
         <>
-          <div className="miniCardRows">
-            <div><span>请求</span><b>{num(data.totals.requests)}</b></div>
-            <div><span>错误</span><b>{num(data.totals.errors)}</b></div>
-            <div><span>成功率</span><b>{data.totals.success_rate.toFixed(1)}%</b></div>
-            <div><span>P95 延迟</span><b>{ms(data.totals.p95_latency_ms)}</b></div>
-            <div><span>故障切换</span><b>{num(data.totals.failover)}</b></div>
-            <div><span>Tokens</span><b>{num(data.totals.tokens)}</b></div>
-          </div>
-          <p className="hint">窗口：{when(data.from)} – {when(data.to)}（UTC）。没有数据时显示“暂无数据”，不以 0 冒充健康。</p>
-          {attempts && (
-            <p className="hint">
-              尝试结果：成功 {attempts.served} · 失败 {attempts.failed} · 跳过（熔断）{attempts.skipped}。
-              成功/失败只统计真正发起的尝试；熔断跳过不计入。
-            </p>
+          {empty ? (
+            <EmptyState icon={<Activity />} title="暂无数据" description="所选窗口内没有该范围的请求记录，不以 0 冒充健康。" />
+          ) : (
+            <>
+              <div className="miniCardRows">
+                <div><span>{attempts ? '获胜请求' : '请求'}</span><b>{num(data.totals.requests)}</b></div>
+                <div><span>错误</span><b>{num(data.totals.errors)}</b></div>
+                <div><span>{attempts ? '尝试成功率' : '成功率'}</span><b>{data.totals.success_rate.toFixed(1)}%</b></div>
+                <div><span>P95 延迟</span><b>{ms(data.totals.p95_latency_ms)}</b></div>
+                <div><span>故障切换</span><b>{num(data.totals.failover)}</b></div>
+                <div><span>Tokens</span><b>{num(data.totals.tokens)}</b></div>
+              </div>
+              <p className="hint">窗口：{when(data.from)} – {when(data.to)}（UTC）。请求/错误/P95 以请求日志中的获胜渠道为准。</p>
+              {attempts && (
+                <p className="hint">
+                  尝试结果：成功 {attempts.served} · 失败 {attempts.failed} · 跳过（熔断）{attempts.skipped}。
+                  尝试成功率只统计真正发起的 served/failed，不含 skipped；它不是获胜渠道请求数的成功率。
+                </p>
+              )}
+            </>
           )}
-          {recent.length ? (
+          {!empty && recent.length ? (
             <Table heads={['时间', 'Request ID', '请求模型', '渠道', '上游模型', '状态', '尝试', '延迟']} minWidth={980}>
               {recent.map(r => (
                 <tr key={r.request_id}>
@@ -103,9 +110,7 @@ export function RuntimeSummaryPanel({
                 </tr>
               ))}
             </Table>
-          ) : (
-            <EmptyState icon={<Activity />} title="暂无数据" description="所选窗口内没有该范围的请求记录。" />
-          )}
+          ) : null}
         </>
       ) : null}
     </div>

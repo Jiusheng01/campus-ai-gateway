@@ -185,7 +185,6 @@ func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
 		}
 		s.routeCache = built
 		s.routeAt = time.Now()
-		s.routeCacheGen = generation
 		s.routeBuildErr = ""
 		s.routeMu.Unlock()
 		return built, nil
@@ -193,6 +192,22 @@ func (s *Server) routeTableCached(ctx context.Context) (routeTable, error) {
 	// Continuous writes kept invalidating the build. Return the last complete
 	// snapshot without caching it; the next request will try again.
 	return built, nil
+}
+
+var errRoutingUnavailable = errors.New("routing configuration is unavailable")
+
+// routeTableForModels is the fail-closed loader for GET /v1/models. Business
+// traffic may keep serving a previous table during a database failure, but a
+// model list is a claim about the current static configuration and must not.
+func (s *Server) routeTableForModels(ctx context.Context) (routeTable, error) {
+	table, err := s.routeTableCached(ctx)
+	if err != nil {
+		return routeTable{}, errRoutingUnavailable
+	}
+	if s.routeCacheState().Stale {
+		return routeTable{}, errRoutingUnavailable
+	}
+	return table, nil
 }
 
 // invalidateRouteCache makes the next request rebuild from the database. It is
@@ -206,7 +221,6 @@ func (s *Server) invalidateRouteCache() {
 
 type routeCacheStatus struct {
 	BuiltAt       *time.Time `json:"built_at"`
-	AgeMS         int64      `json:"age_ms"`
 	Stale         bool       `json:"stale"`
 	LastErrorKind string     `json:"last_error_kind,omitempty"`
 	Generation    uint64     `json:"generation"`
@@ -219,7 +233,6 @@ func (s *Server) routeCacheState() routeCacheStatus {
 	if !s.routeAt.IsZero() {
 		at := s.routeAt.UTC()
 		out.BuiltAt = &at
-		out.AgeMS = time.Since(s.routeAt).Milliseconds()
 	}
 	return out
 }
@@ -1011,36 +1024,6 @@ func writeDirectResponse(w http.ResponseWriter, resp *http.Response, route direc
 			return
 		}
 	}
-}
-
-// serveDirectModels answers GET /v1/models from the routing table.
-//
-// There is nothing to proxy to, and the honest answer is the set of models that
-// can actually be routed right now.
-func (s *Server) serveDirectModels(w http.ResponseWriter, r *http.Request) {
-	table, err := s.routeTableCached(r.Context())
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load routing table", r.Header.Get("X-Request-Id"))
-		return
-	}
-	names := make([]string, 0, len(table.models))
-	for alias := range table.models {
-		names = append(names, alias)
-	}
-	sort.Strings(names)
-
-	type modelEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-	}
-	out := make([]modelEntry, 0, len(names))
-	for _, name := range names {
-		out = append(out, modelEntry{ID: name, Object: "model", OwnedBy: "campus-ai-gateway"})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": out})
 }
 
 // apiVersionSegment matches an API version path segment: "v" followed by

@@ -36,7 +36,9 @@ ORDER BY k.created_at DESC
 			return "", nil, err
 		}
 		var names []string
-		_ = json.Unmarshal(raw, &names)
+		if err := json.Unmarshal(raw, &names); err != nil {
+			return "", nil, err
+		}
 		for _, name := range names {
 			if name == model.AllModelsWildcard {
 				v.Wildcard = true
@@ -82,7 +84,9 @@ SELECT allowed_models FROM gateway_api_key WHERE id=$1::uuid FOR UPDATE
 			return "", nil, err
 		}
 		var names []string
-		_ = json.Unmarshal(raw, &names)
+		if err := json.Unmarshal(raw, &names); err != nil {
+			return "", nil, err
+		}
 		wildcard := false
 		has := false
 		for _, name := range names {

@@ -394,7 +394,7 @@ func TestServeDirectModelsListsWhatCanBeRouted(t *testing.T) {
 	}})
 
 	rec := httptest.NewRecorder()
-	s.serveDirectModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	writeModelsFromTable(rec, s.routeCache, nil, true)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)

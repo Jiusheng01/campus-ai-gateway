@@ -307,7 +307,7 @@ func (s *Server) handleProviderModelsRefresh(w http.ResponseWriter, r *http.Requ
 			// A 404 is the channel saying it has no model list, not evidence of
 			// a bad URL.
 			httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",
-				"cannot refresh models from channel "+provider.Name+": the channel does not expose a model list at GET "+requestPath, reqID)
+				"cannot refresh models from channel "+provider.Name+": the channel does not expose a model list at GET "+requestPath+"; add model names manually", reqID)
 			return
 		}
 		httpx.Error(w, http.StatusBadGateway, "upstream_unavailable",

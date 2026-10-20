@@ -215,6 +215,7 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			strings.HasPrefix(path, "/admin/models"),
 			strings.HasPrefix(path, "/admin/model-catalog"),
 			strings.HasPrefix(path, "/admin/model-routes"),
+			path == "/admin/routes",
 			path == "/admin/model-test",
 			path == "/admin/model-test-options",
 			path == "/admin/status",

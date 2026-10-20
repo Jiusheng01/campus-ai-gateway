@@ -178,13 +178,13 @@ type providerDiagnosticResult struct {
 
 func (s *Server) runProviderDiagnostic(r *http.Request, provider model.Provider, in providerTestRequest, reqID string) providerDiagnosticResult {
 	started := time.Now()
-	fail := func(status int, code, message string, httpStatus, latencyMS int64) providerDiagnosticResult {
+	fail := func(apiStatus int, code, message string, upstreamStatus, latencyMS int64) providerDiagnosticResult {
 		return providerDiagnosticResult{
-			httpStatus: status,
+			httpStatus: apiStatus,
 			errCode:    code,
 			errMessage: message,
 			last: model.ProviderTestResult{
-				At: started.UTC(), OK: false, StatusCode: int(httpStatus),
+				At: started.UTC(), OK: false, StatusCode: int(upstreamStatus),
 				LatencyMS: latencyMS, UpstreamModel: in.UpstreamModel, ErrorKind: code,
 			},
 		}
@@ -233,8 +233,12 @@ func (s *Server) runProviderDiagnostic(r *http.Request, provider model.Provider,
 			return fail(http.StatusBadRequest, "credential_unavailable",
 				"cannot test channel "+provider.Name+": "+detail, 0, latency)
 		}
+		if kind == errorKindTimeout {
+			return fail(http.StatusBadGateway, "provider_timeout",
+				"channel "+provider.Name+" ("+in.UpstreamModel+") did not answer in time", 0, latency)
+		}
 		return fail(http.StatusBadGateway, "upstream_unavailable",
-			"cannot test channel "+provider.Name+" ("+in.UpstreamModel+"): "+kind, 0, latency)
+			"cannot test channel "+provider.Name+" ("+in.UpstreamModel+")", 0, latency)
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	_ = resp.Body.Close()
@@ -242,14 +246,13 @@ func (s *Server) runProviderDiagnostic(r *http.Request, provider model.Provider,
 		return fail(http.StatusBadGateway, "upstream_unavailable", "the response could not be read", int64(resp.StatusCode), latency)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		kind := providerTestErrorKind(resp.StatusCode)
-		return fail(http.StatusBadGateway, kind,
+		return fail(http.StatusBadGateway, "upstream_unavailable",
 			"channel "+provider.Name+" ("+in.UpstreamModel+") answered HTTP "+http.StatusText(resp.StatusCode),
 			int64(resp.StatusCode), latency)
 	}
 	parsed, err := parseProbeResponse(body, time.Since(started))
 	if err != nil {
-		return fail(http.StatusBadGateway, "invalid_upstream_response",
+		return fail(http.StatusBadGateway, "upstream_unavailable",
 			"channel "+provider.Name+" ("+in.UpstreamModel+") returned a response that is not an OpenAI completion",
 			int64(resp.StatusCode), latency)
 	}
@@ -278,23 +281,6 @@ func (s *Server) recordProviderTest(providerID string, result model.ProviderTest
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.pg.RecordProviderTest(ctx, providerID, result)
-}
-
-func providerTestErrorKind(status int) string {
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return "credential_rejected"
-	case http.StatusNotFound:
-		return "upstream_model_not_found"
-	case http.StatusRequestTimeout:
-		return "upstream_timeout"
-	case http.StatusTooManyRequests:
-		return "upstream_rate_limited"
-	}
-	if status >= 500 {
-		return "upstream_error"
-	}
-	return "upstream_rejected"
 }
 
 func truncateRunes(s string, max int) string {

@@ -99,6 +99,67 @@ func TestLegacyRouteWriteUsesTheSameVersionAndStalesAGroupSave(t *testing.T) {
 	}
 }
 
+func TestReplaceModelRoutesCanSwapTwoBindingsInOneSave(t *testing.T) {
+	ctx := context.Background()
+	pg, created, providers, routes := routeSetFixture(t)
+	before, _ := pg.ModelByID(ctx, created.ID)
+	swapped := []model.ModelRoute{
+		{ID: routes[0].ID, ProviderID: providers[1].ID, UpstreamModel: "up-2", Priority: 1, Weight: 100, TimeoutMS: 60000, Status: 1},
+		{ID: routes[1].ID, ProviderID: providers[0].ID, UpstreamModel: "up-1", Priority: 2, Weight: 100, TimeoutMS: 60000, Status: 1},
+	}
+	_, saved, err := pg.ReplaceModelRoutes(ctx, created.ID, before.ConfigVersion, swapped)
+	if err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+	if len(saved) != 2 {
+		t.Fatalf("saved = %+v", saved)
+	}
+	byID := map[string]model.ModelRoute{}
+	for _, r := range saved {
+		byID[r.ID] = r
+	}
+	if byID[routes[0].ID].ProviderID != providers[1].ID || byID[routes[1].ID].ProviderID != providers[0].ID {
+		t.Fatalf("bindings were not swapped: %+v", saved)
+	}
+}
+
+func TestModelUpdateExpectedIsAtomicUnderConcurrentEditors(t *testing.T) {
+	ctx := context.Background()
+	pg, created, _, _ := routeSetFixture(t)
+	before, _ := pg.ModelByID(ctx, created.ID)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var success, conflicts int
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			_, err := pg.UpdateModelExpected(ctx, created.ID, model.ModelConfig{
+				Alias: created.Alias, DisplayName: name, Status: 1,
+			}, before.ConfigVersion)
+			mu.Lock()
+			switch {
+			case err == nil:
+				success++
+			case errors.Is(err, ErrConfigVersionConflict):
+				conflicts++
+			default:
+				t.Errorf("unexpected update error: %v", err)
+			}
+			mu.Unlock()
+		}("editor-" + string(rune('a'+i)))
+	}
+	wg.Wait()
+	if success != 1 || conflicts != 1 {
+		t.Fatalf("success=%d conflicts=%d, want 1/1", success, conflicts)
+	}
+	after, _ := pg.ModelByID(ctx, created.ID)
+	if after.ConfigVersion != before.ConfigVersion+1 {
+		t.Fatalf("version = %d, want %d", after.ConfigVersion, before.ConfigVersion+1)
+	}
+}
+
 func TestProviderDeleteBumpsSurvivingModelVersion(t *testing.T) {
 	ctx := context.Background()
 	pg, created, providers, _ := routeSetFixture(t)

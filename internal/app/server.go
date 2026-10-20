@@ -51,7 +51,6 @@ type Server struct {
 	routeCache    routeTable
 	routeAt       time.Time
 	routeGen      uint64
-	routeCacheGen uint64
 	routeBuildErr string
 	// routeBuildFn is a test seam for overlapping a slow rebuild with a write.
 	// Production leaves it nil and buildRouteTable is used.
@@ -567,10 +566,10 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		// key's allow-list. A restricted key must not advertise a disabled or
 		// nonexistent alias, and a wildcard key must not advertise a model with
 		// no enabled line.
-		table, err := s.routeTableCached(r.Context())
+		table, err := s.routeTableForModels(r.Context())
 		if err != nil {
 			httpx.Error(aw, http.StatusServiceUnavailable, "routing_unavailable",
-				"The routing configuration is unavailable", reqID)
+				"The routing configuration could not be verified", reqID)
 			return
 		}
 		writeModelsFromTable(aw, table, id.AllowedModels, id.AllModels)
@@ -868,29 +867,6 @@ func writeModelsFromTable(w http.ResponseWriter, table routeTable, allowed map[s
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
-}
-
-func writeAllowedModels(w http.ResponseWriter, allowed map[string]struct{}) {
-	models := make([]string, 0, len(allowed))
-	for name := range allowed {
-		models = append(models, name)
-	}
-	sort.Strings(models)
-
-	data := make([]map[string]any, 0, len(models))
-	for _, name := range models {
-		data = append(data, map[string]any{
-			"id":       name,
-			"object":   "model",
-			"owned_by": "campus-ai-gateway",
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"object": "list",
-		"data":   data,
-	})
 }
 
 func (s *Server) recordSecurityEvent(r *http.Request, event model.SecurityEvent) {

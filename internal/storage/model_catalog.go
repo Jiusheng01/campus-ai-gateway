@@ -119,13 +119,16 @@ func (p *Postgres) PublishProviderModel(ctx context.Context, providerModelID, al
 	}
 	defer tx.Rollback(ctx)
 
+	// Resolve the candidate without locking it. The model row is locked first,
+	// matching the route writes and the provider-delete cascade; the candidate
+	// and provider are locked after it so a delete cannot interleave and leave a
+	// published model pointing at a candidate that no longer exists.
 	var providerID, providerName, upstream string
 	if err := tx.QueryRow(ctx, `
 SELECT pm.provider_id::text, p.name, pm.upstream_model
 FROM gateway_provider_model pm
 JOIN gateway_provider p ON p.id = pm.provider_id
 WHERE pm.id=$1::uuid AND pm.status=1 AND p.status=1
-FOR UPDATE OF pm
 `, providerModelID).Scan(&providerID, &providerName, &upstream); err != nil {
 		return out, err
 	}
@@ -162,6 +165,21 @@ FOR UPDATE
 			return out, err
 		}
 	default:
+		return out, err
+	}
+
+	// Lock order after the model: provider, then candidate. DeleteProvider takes
+	// model locks first, then the provider, so this order cannot close a cycle.
+	if err := tx.QueryRow(ctx, `
+SELECT id::text FROM gateway_provider WHERE id=$1::uuid AND status=1 FOR UPDATE
+`, providerID).Scan(new(string)); err != nil {
+		return out, err
+	}
+	if err := tx.QueryRow(ctx, `
+SELECT id::text FROM gateway_provider_model
+WHERE id=$1::uuid AND provider_id=$2::uuid AND status=1
+FOR UPDATE
+`, providerModelID, providerID).Scan(new(string)); err != nil {
 		return out, err
 	}
 

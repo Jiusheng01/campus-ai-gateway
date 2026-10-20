@@ -53,6 +53,24 @@ func TestRuntimeSummaryRBACDoesNotOpenRawLogs(t *testing.T) {
 	}
 }
 
+func TestAggregateRoutesRBACMatchesTheNavigation(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		want bool
+	}{
+		{RoleGatewayAdmin, true},
+		{RoleSuperAdmin, true},
+		{RoleAuditor, false},
+		{RoleOperator, false},
+		{RoleMember, false},
+	} {
+		p := adminPrincipal{User: "u", Roles: map[string]bool{tc.role: true}}
+		if got := p.can(httptest.NewRequest(http.MethodGet, "/admin/routes", nil)); got != tc.want {
+			t.Fatalf("%s GET /admin/routes = %v, want %v", tc.role, got, tc.want)
+		}
+	}
+}
+
 func TestModelAuthorizationEndpointMergesAndRefusesWildcardRemoval(t *testing.T) {
 	pg := usagePostgres(t)
 	clearProviderFixtures(t, pg)
@@ -101,7 +119,7 @@ func TestModelAuthorizationEndpointMergesAndRefusesWildcardRemoval(t *testing.T)
 	if rec := do(RoleGatewayAdmin, http.MethodGet, ""); rec.Code != http.StatusForbidden {
 		t.Fatalf("gateway_admin read = %d %s", rec.Code, rec.Body.String())
 	}
-	rec := do(RoleSuperAdmin, http.MethodPut, `{"api_key_ids":["`+explicit.ID+`","`+wildcard.ID+`"],"allow":true}`)
+	rec := do(RoleSuperAdmin, http.MethodPut, `{"api_key_ids":["`+explicit.ID+`","`+wildcard.ID+`","not-a-uuid"],"allow":true}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("allow = %d %s", rec.Code, rec.Body.String())
 	}
@@ -115,7 +133,7 @@ func TestModelAuthorizationEndpointMergesAndRefusesWildcardRemoval(t *testing.T)
 	for _, r := range out.Results {
 		outcomes[r.APIKeyID] = r.Outcome
 	}
-	if outcomes[explicit.ID] != "added" || outcomes[wildcard.ID] != "already_allowed" {
+	if outcomes[explicit.ID] != "added" || outcomes[wildcard.ID] != "already_allowed" || outcomes["not-a-uuid"] != "not_found" {
 		t.Fatalf("allow outcomes = %+v", outcomes)
 	}
 

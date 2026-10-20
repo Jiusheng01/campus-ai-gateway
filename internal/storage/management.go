@@ -134,12 +134,18 @@ func (p *Postgres) ListProvidersPage(ctx context.Context, f ProviderFilter) ([]m
 	if offset < 0 {
 		offset = 0
 	}
+	whereClause := strings.Join(where, " AND ")
+	var total int
+	if err := p.Pool.QueryRow(ctx,
+		`SELECT COUNT(*)::int FROM gateway_provider p WHERE `+whereClause, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	args = append(args, limit, offset)
 	query := `
-SELECT ` + providerColumns + `, COUNT(*) OVER()::int AS total
+SELECT ` + providerColumns + `
 FROM gateway_provider p
 JOIN gateway_credential c ON c.id = p.credential_id
-WHERE ` + strings.Join(where, " AND ") + `
+WHERE ` + whereClause + `
 ORDER BY p.created_at DESC
 LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
 	rows, err := p.Pool.Query(ctx, query, args...)
@@ -149,10 +155,9 @@ LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
 	defer rows.Close()
 
 	var out []model.Provider
-	total := 0
 	for rows.Next() {
 		var v model.Provider
-		if err := scanProviderRow(rows, &v, &total); err != nil {
+		if err := scanProviderRow(rows, &v); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, v)
@@ -698,7 +703,28 @@ VALUES ($1::uuid, $2::uuid, $3, 1, 100, 60000, 1)
 // now edited one at a time through the Route API; a binding supplied to this
 // function is ignored rather than applied.
 func (p *Postgres) UpdateModel(ctx context.Context, id string, v model.ModelConfig) (model.ModelConfig, error) {
-	err := p.Pool.QueryRow(ctx, `
+	return p.UpdateModelExpected(ctx, id, v, 0)
+}
+
+// UpdateModelExpected applies a model metadata/status edit under the model row
+// lock. When expectedVersion is positive it is checked under that lock, so an
+// old read-modify-write cannot overwrite a concurrent edit. Version 0 is the
+// legacy compatibility path and keeps the documented weaker guarantee.
+func (p *Postgres) UpdateModelExpected(ctx context.Context, id string, v model.ModelConfig, expectedVersion int64) (model.ModelConfig, error) {
+	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return v, err
+	}
+	defer tx.Rollback(ctx)
+
+	var current int64
+	if err := tx.QueryRow(ctx, `SELECT config_version FROM gateway_model WHERE id=$1::uuid FOR UPDATE`, id).Scan(&current); err != nil {
+		return v, err
+	}
+	if expectedVersion > 0 && current != expectedVersion {
+		return v, ErrConfigVersionConflict
+	}
+	err = tx.QueryRow(ctx, `
 UPDATE gateway_model
 SET alias=$2, display_name=$3, description=$4, status=$5,
 	config_version=config_version+1, updated_at=NOW()
@@ -709,6 +735,9 @@ RETURNING `+modelReturningColumns+`
 		&v.ConfigVersion, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
+		return v, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return v, err
 	}
 	v.ProviderID, v.ProviderName, v.UpstreamModel = "", "", ""
@@ -972,6 +1001,18 @@ LIMIT $1
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func (p *Postgres) ConfigCounts(ctx context.Context) (model.DashboardConfigCounts, error) {
+	var v model.DashboardConfigCounts
+	err := p.Pool.QueryRow(ctx, `
+SELECT
+	(SELECT COUNT(*) FROM gateway_model)::bigint,
+	(SELECT COUNT(*) FROM gateway_model WHERE status=1)::bigint,
+	(SELECT COUNT(*) FROM gateway_provider)::bigint,
+	(SELECT COUNT(*) FROM gateway_provider WHERE status=1)::bigint
+`).Scan(&v.Models, &v.EnabledModels, &v.Providers, &v.EnabledProviders)
+	return v, err
 }
 
 func (p *Postgres) DashboardStats(ctx context.Context) (model.DashboardStats, error) {

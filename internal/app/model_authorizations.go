@@ -14,18 +14,7 @@ import (
 )
 
 func modelIDFromAuthorizationsPath(path string) (string, bool) {
-	const suffix = "/authorizations"
-	if !strings.HasSuffix(path, suffix) {
-		return "", false
-	}
-	rest := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/models/"), suffix)
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	if _, err := uuid.Parse(rest); err != nil {
-		return "", false
-	}
-	return rest, true
+	return modelIDFromPath(path, "/authorizations")
 }
 
 // handleModelAuthorizations is super_admin-only. The RBAC allow-list excludes
@@ -87,16 +76,19 @@ func (s *Server) setModelAuthorizations(w http.ResponseWriter, r *http.Request, 
 	}
 	seen := map[string]bool{}
 	ids := make([]string, 0, len(in.APIKeyIDs))
+	invalid := make([]model.AuthorizationResult, 0)
 	for _, raw := range in.APIKeyIDs {
 		id := strings.TrimSpace(raw)
-		if _, err := uuid.Parse(id); err != nil {
-			httpx.Error(w, http.StatusBadRequest, "invalid_request", "api_key_ids must contain valid UUIDs", reqID)
-			return
-		}
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
+		if _, err := uuid.Parse(id); err != nil {
+			// The contract is per-item: one malformed id does not abort the
+			// grants that are valid.
+			invalid = append(invalid, model.AuthorizationResult{APIKeyID: id, Outcome: "not_found"})
+			continue
+		}
 		ids = append(ids, id)
 	}
 	alias, results, err := s.pg.SetModelAuthorization(r.Context(), modelID, ids, *in.Allow)
@@ -108,5 +100,6 @@ func (s *Server) setModelAuthorizations(w http.ResponseWriter, r *http.Request, 
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to update model authorizations", reqID)
 		return
 	}
+	results = append(results, invalid...)
 	writeJSON(w, http.StatusOK, map[string]any{"alias": alias, "results": results})
 }

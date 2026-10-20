@@ -37,3 +37,6 @@ AGENTS.md
 GLOSSARY.md
 CLAUDE.md
 docs/
+
+# Vitest cache
+.vite/

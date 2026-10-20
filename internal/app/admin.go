@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -247,6 +248,11 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load provider stats", reqID)
 		return
 	}
+	configCounts, err := s.pg.ConfigCounts(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load configuration counts", reqID)
+		return
+	}
 
 	// data_plane is authoritative and always present: it names the one data
 	// plane this gateway runs.
@@ -257,6 +263,7 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"data_plane":     s.cfg.DataPlaneMode(),
 		"stats":          stats,
 		"provider_stats": providerStats,
+		"config_counts":  configCounts,
 		"route_cache":    s.routeCacheState(),
 	}
 	// The per-provider circuits are only meaningful for the direct plane, which
@@ -403,8 +410,12 @@ func (s *Server) updateProviderStatus(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	out, err := s.pg.UpdateProviderStatus(r.Context(), id, in.Status)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, http.StatusNotFound, "provider_not_found", "Provider was not found", reqID)
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Provider status could not be updated", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.providerView(out))
@@ -455,12 +466,31 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 			return
 		}
-		out, err := s.pg.CreateModel(r.Context(), in)
+		// The legacy create is a publish by binding: record the candidate if
+		// needed, then use the same transaction/validation service as publish
+		// and catalog open. It does not silently append to an existing alias.
+		candidate, _, err := s.pg.AddProviderModel(r.Context(), in.ProviderID, in.UpstreamModel)
 		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "model_create_failed", "The channel does not accept this upstream model", reqID)
+			return
+		}
+		res, err := s.pg.PublishProviderModel(r.Context(), candidate.ID, in.Alias, in.DisplayName, in.Description, false)
+		switch {
+		case errors.Is(err, storage.ErrAliasExists):
+			httpx.Error(w, http.StatusConflict, "model_create_failed", "The alias already exists with a different binding", reqID)
+			return
+		case errors.Is(err, pgx.ErrNoRows):
+			httpx.Error(w, http.StatusNotFound, "provider_not_found", "The channel was not found or is not enabled", reqID)
+			return
+		case err != nil:
 			httpx.Error(w, http.StatusConflict, "model_create_failed", "Model could not be created", reqID)
 			return
 		}
-		writeJSON(w, http.StatusCreated, out)
+		status := http.StatusCreated
+		if !res.Created {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, res.Model)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
@@ -484,14 +514,30 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	var in model.ModelConfig
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+	var body struct {
+		Alias           string `json:"alias"`
+		DisplayName     string `json:"display_name"`
+		Description     string `json:"description"`
+		Status          int    `json:"status"`
+		ConfigVersion   int64  `json:"config_version"`
+		ExpectedVersion *int64 `json:"expected_version"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON with alias, display_name, description, status and expected_version", reqID)
 		return
+	}
+	in := model.ModelConfig{
+		Alias: body.Alias, DisplayName: body.DisplayName, Description: body.Description, Status: body.Status,
 	}
 	if err := validateModel(&in, false); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_model", err, reqID)
 		return
+	}
+	expectedVersion := body.ConfigVersion
+	if body.ExpectedVersion != nil {
+		expectedVersion = *body.ExpectedVersion
 	}
 	existing, err := s.pg.ModelByID(r.Context(), id)
 	if err != nil {
@@ -503,21 +549,26 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 			"A published model alias is immutable; publish a new alias instead", reqID)
 		return
 	}
-	if in.ConfigVersion > 0 && in.ConfigVersion != existing.ConfigVersion {
+	in.Alias = existing.Alias
+	out, err := s.pg.UpdateModelExpected(r.Context(), id, in, expectedVersion)
+	if errors.Is(err, storage.ErrConfigVersionConflict) {
+		current, _ := s.pg.ModelByID(r.Context(), id)
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": map[string]any{
 				"code":            "config_version_conflict",
-				"message":         "The model changed since it was loaded; current version is " + strconv.FormatInt(existing.ConfigVersion, 10),
+				"message":         "The model changed since it was loaded; current version is " + strconv.FormatInt(current.ConfigVersion, 10),
 				"request_id":      reqID,
-				"current_version": existing.ConfigVersion,
+				"current_version": current.ConfigVersion,
 			},
 		})
 		return
 	}
-	in.Alias = existing.Alias
-	out, err := s.pg.UpdateModel(r.Context(), id, in)
+	if errors.Is(err, pgx.ErrNoRows) {
+		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
+		return
+	}
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found or could not be updated", reqID)
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Model could not be updated", reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -532,13 +583,13 @@ func (s *Server) getModelDetail(w http.ResponseWriter, r *http.Request, id, reqI
 		httpx.Error(w, http.StatusNotFound, "model_not_found", "Model was not found", reqID)
 		return
 	}
-	routes, err := s.pg.ListModelRoutes(r.Context(), id)
+	routes, err := s.pg.ListRouteViews(r.Context(), storage.RouteViewFilter{ModelID: id, Limit: 500})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load model routes", reqID)
 		return
 	}
 	if routes == nil {
-		routes = []model.ModelRoute{}
+		routes = []model.RouteView{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model":   m,

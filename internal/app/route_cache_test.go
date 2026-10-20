@@ -63,6 +63,19 @@ func TestRouteCacheDiscardsBuildThatOverlappedInvalidation(t *testing.T) {
 	}
 }
 
+func TestRouteTableForModelsFailsClosedOnStaleCache(t *testing.T) {
+	s := &Server{
+		routeCache: routeTableWith("previous"),
+		routeAt:    time.Time{},
+	}
+	s.routeBuildFn = func(context.Context) (routeTable, error) {
+		return routeTable{}, errors.New("database down")
+	}
+	if _, err := s.routeTableForModels(context.Background()); !errors.Is(err, errRoutingUnavailable) {
+		t.Fatalf("routeTableForModels = %v, want errRoutingUnavailable", err)
+	}
+}
+
 func TestRouteCacheKeepsPreviousTableAndMarksStaleOnBuildFailure(t *testing.T) {
 	s := &Server{
 		routeCache: routeTableWith("previous"),

@@ -91,6 +91,12 @@ WHERE provider=$1 AND created_at >= $2 AND created_at < $3
 `, out.Provider, from, to).Scan(&out.Attempts.Served, &out.Attempts.Failed, &out.Attempts.Skipped); err != nil {
 		return out, err
 	}
+	// The request-log rate is winner-only (the channel that served the
+	// request). The attempt rate is the honest channel-level denominator:
+	// served / (served + failed), excluding circuit-open skips.
+	if denom := out.Attempts.Served + out.Attempts.Failed; denom > 0 {
+		out.Totals.SuccessRate = float64(out.Attempts.Served) * 100 / float64(denom)
+	}
 	rows, err := p.Pool.Query(ctx, runtimeRecentQuery("provider=$1"), out.Provider, from, to)
 	if err != nil {
 		return out, err

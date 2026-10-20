@@ -277,7 +277,7 @@ export function ProvidersPage({
                       <dt>最近测试</dt>
                       <dd>
                         {p.last_test
-                          ? `${p.last_test.ok ? '成功' : '失败'} · HTTP ${p.last_test.status_code} · ${ms(p.last_test.latency_ms)} · ${when(p.last_test.at)}`
+                          ? `${p.last_test.ok ? '成功' : '失败'}（管理诊断） · HTTP ${p.last_test.status_code} · ${ms(p.last_test.latency_ms)} · ${when(p.last_test.at)}`
                           : '未测试'}
                       </dd>
                     </div>

@@ -85,47 +85,6 @@ func TestAllowedModelsPersistAsAnExplicitEmptyList(t *testing.T) {
 	}
 }
 
-// A restricted key must advertise exactly the models it may call. Answering
-// from the routing table, or expanding the wildcard, would advertise models the
-// key has just been refused — and a key allowed nothing must advertise nothing.
-func TestWriteAllowedModelsListsExactlyTheAllowedSet(t *testing.T) {
-	rec := httptest.NewRecorder()
-	writeAllowedModels(rec, map[string]struct{}{"demo-vision": {}, "demo-model": {}})
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var out struct {
-		Object string `json:"object"`
-		Data   []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response is not JSON: %v", err)
-	}
-	if out.Object != "list" {
-		t.Fatalf("object = %q, want list", out.Object)
-	}
-	if len(out.Data) != 2 || out.Data[0].ID != "demo-model" || out.Data[1].ID != "demo-vision" {
-		t.Fatalf("models = %+v, want demo-model then demo-vision", out.Data)
-	}
-
-	rec = httptest.NewRecorder()
-	writeAllowedModels(rec, map[string]struct{}{})
-	var empty struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &empty); err != nil {
-		t.Fatalf("response is not JSON: %v", err)
-	}
-	if len(empty.Data) != 0 {
-		t.Fatalf("a key allowed nothing must advertise nothing, got %+v", empty.Data)
-	}
-}
-
 // The backfill can only be run against PostgreSQL, which the test environment
 // does not provide, but its two structural promises are readable in the SQL and
 // are the parts that keep the upgrade from changing live access:

@@ -113,6 +113,14 @@ export function DashboardPage({roles}: {roles: string[]}) {
             )}
           </section>
 
+          <Panel title="配置概况" sub="对外模型与上游渠道的配置数量；与实时健康无关。">
+            <p className="hint">
+              对外模型 {data?.config_counts?.models ?? '未知'} 个（启用 {data?.config_counts?.enabled_models ?? '未知'}）；
+              上游渠道 {data?.config_counts?.providers ?? '未知'} 个（启用 {data?.config_counts?.enabled_providers ?? '未知'}）。
+            </p>
+            <p className="hint">统计窗口：今日（数据库会话时区）· 分母与来源：gateway_request_log。</p>
+          </Panel>
+
           <Panel
             title="基础设施状态"
             sub="Gateway、存储与数据面的实时可达性。"

@@ -24,7 +24,13 @@ func (s *Server) handleAllModelRoutes(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	items, err := s.pg.ListRouteViews(r.Context())
+	q := r.URL.Query()
+	status, _ := strconv.Atoi(q.Get("status"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	items, err := s.pg.ListRouteViews(r.Context(), storage.RouteViewFilter{
+		Model: q.Get("model"), Provider: q.Get("provider"), Status: status, Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list routes", reqID)
 		return
@@ -32,7 +38,7 @@ func (s *Server) handleAllModelRoutes(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []model.RouteView{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	writeJSON(w, http.StatusOK, map[string]any{"data": items, "limit": limit, "offset": offset})
 }
 
 func (s *Server) handleModelRoutes(w http.ResponseWriter, r *http.Request) {
@@ -303,21 +309,27 @@ func (s *Server) handleModelRouteByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func modelIDFromRoutesPath(path string) (string, bool) {
+// modelIDFromPath parses /admin/models/{uuid}{suffix}. One helper keeps every
+// model subresource (routes, impact, runtime-summary, authorizations) agreeing
+// on what a model id can look like.
+func modelIDFromPath(path, suffix string) (string, bool) {
 	const prefix = "/admin/models/"
-	const suffix = "/routes"
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return "", false
-	}
 	rest := strings.TrimPrefix(path, prefix)
-	if !strings.Contains(rest, suffix) {
+	if rest == path || !strings.HasSuffix(rest, suffix) {
 		return "", false
 	}
 	id := strings.TrimSuffix(rest, suffix)
 	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
+	if _, err := uuid.Parse(id); err != nil {
+		return "", false
+	}
 	return id, true
+}
+
+func modelIDFromRoutesPath(path string) (string, bool) {
+	return modelIDFromPath(path, "/routes")
 }
 
 func validateModelRoute(v *model.ModelRoute) string {

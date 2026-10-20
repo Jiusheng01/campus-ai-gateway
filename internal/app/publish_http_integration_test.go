@@ -87,6 +87,92 @@ func TestPublishEndpointCreatesThenRequiresExplicitAppend(t *testing.T) {
 	}
 }
 
+func TestLegacyCreateSharesPublishAndIsIdempotent(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	ctx := context.Background()
+	provider, err := pg.CreateProvider(ctx, model.Provider{
+		Name: "legacy-provider", BaseURL: "https://legacy.example.test/v1", Protocol: "openai-chat",
+		CredentialEnv: "MS1_TEST_PROVIDER_KEY", Status: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	s := providerModelTestServer(t, pg)
+	body := `{"alias":"legacy-alias-http","provider_id":"` + provider.ID + `","upstream_model":"legacy-up","status":1}`
+	post := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.handleModels(rec, httptest.NewRequest(http.MethodPost, "/admin/models", strings.NewReader(body)))
+		return rec
+	}
+	if rec := post(); rec.Code != http.StatusCreated {
+		t.Fatalf("first create = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("repeat create = %d %s", rec.Code, rec.Body.String())
+	}
+	models, err := pg.ListModels(ctx)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	found := 0
+	for _, m := range models {
+		if m.Alias == "legacy-alias-http" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("legacy create produced %d models, want 1", found)
+	}
+	candidates, err := pg.ListProviderModels(ctx, provider.ID)
+	if err != nil {
+		t.Fatalf("ListProviderModels: %v", err)
+	}
+	candidateFound := false
+	for _, c := range candidates {
+		if c.UpstreamModel == "legacy-up" {
+			candidateFound = true
+		}
+	}
+	if !candidateFound {
+		t.Fatal("legacy create did not record the candidate")
+	}
+}
+
+func TestModelUpdateRejectsStaleExpectedVersion(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	ctx := context.Background()
+	provider, err := pg.CreateProvider(ctx, model.Provider{
+		Name: "version-provider", BaseURL: "https://version.example.test/v1", Protocol: "openai-chat",
+		CredentialEnv: "MS1_TEST_PROVIDER_KEY", Status: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	created, err := pg.CreateModel(ctx, model.ModelConfig{
+		Alias: "version-alias", Status: 1, ProviderID: provider.ID, UpstreamModel: "version-up",
+	})
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
+	}
+	s := providerModelTestServer(t, pg)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/admin/models/"+created.ID,
+		strings.NewReader(`{"alias":"version-alias","display_name":"stale","status":1,"expected_version":999}`))
+	s.handleModelByID(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "config_version_conflict") {
+		t.Fatalf("stale update = %d %s", rec.Code, rec.Body.String())
+	}
+	stored, err := pg.ModelByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("ModelByID: %v", err)
+	}
+	if stored.DisplayName == "stale" || stored.ConfigVersion != created.ConfigVersion {
+		t.Fatalf("stale update changed the model: %+v", stored)
+	}
+}
+
 func TestModelAliasIsImmutableOnUpdate(t *testing.T) {
 	pg := usagePostgres(t)
 	clearProviderFixtures(t, pg)

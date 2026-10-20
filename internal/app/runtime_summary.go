@@ -4,27 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 func modelIDFromRuntimeSummaryPath(path string) (string, bool) {
-	const suffix = "/runtime-summary"
-	if !strings.HasPrefix(path, "/admin/models/") || !strings.HasSuffix(path, suffix) {
-		return "", false
-	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/models/"), suffix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", false
-	}
-	if _, err := uuid.Parse(id); err != nil {
-		return "", false
-	}
-	return id, true
+	return modelIDFromPath(path, "/runtime-summary")
 }
 
 func runtimeWindow(r *http.Request) (time.Time, time.Time, bool) {

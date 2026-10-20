@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -77,8 +79,47 @@ ORDER BY r.priority ASC, r.weight DESC, r.created_at ASC
 // ListRouteViews is the aggregate route policy read. It adds model display
 // name/version and provider/credential context, but every routing value still
 // comes from gateway_model_route.
-func (p *Postgres) ListRouteViews(ctx context.Context) ([]model.RouteView, error) {
-	rows, err := p.Pool.Query(ctx, `
+type RouteViewFilter struct {
+	ModelID   string
+	Model     string
+	Provider  string
+	Status    int
+	Limit     int
+	Offset    int
+}
+
+func (p *Postgres) ListRouteViews(ctx context.Context, f RouteViewFilter) ([]model.RouteView, error) {
+	where := []string{"TRUE"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if f.ModelID != "" {
+		add("r.model_id=$%d::uuid", f.ModelID)
+	}
+	if f.Model != "" {
+		add("m.alias=$%d", f.Model)
+	}
+	if f.Provider != "" {
+		add("p.name=$%d", f.Provider)
+	}
+	if f.Status == 1 || f.Status == 2 {
+		add("r.status=$%d", f.Status)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	args = append(args, limit, offset)
+	query := `
 SELECT
 	r.id::text, r.model_id::text, m.alias, r.provider_id::text, p.name,
 	r.upstream_model, r.priority, r.weight, r.timeout_ms, r.status, r.created_at, r.updated_at,
@@ -89,8 +130,10 @@ FROM gateway_model_route r
 JOIN gateway_model m ON m.id=r.model_id
 JOIN gateway_provider p ON p.id=r.provider_id
 JOIN gateway_credential c ON c.id=p.credential_id
+WHERE ` + strings.Join(where, " AND ") + `
 ORDER BY m.alias ASC, r.priority ASC, r.weight DESC, r.created_at ASC
-`)
+LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
+	rows, err := p.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -142,9 +185,10 @@ FROM gateway_model WHERE id=$1::uuid FOR UPDATE
 		id            string
 		providerID    string
 		upstreamModel string
+		createdAt     time.Time
 	}
 	rows, err := tx.Query(ctx, `
-SELECT id::text, provider_id::text, upstream_model
+SELECT id::text, provider_id::text, upstream_model, created_at
 FROM gateway_model_route WHERE model_id=$1::uuid ORDER BY id FOR UPDATE
 `, modelID)
 	if err != nil {
@@ -154,7 +198,7 @@ FROM gateway_model_route WHERE model_id=$1::uuid ORDER BY id FOR UPDATE
 	byBinding := map[string]string{}
 	for rows.Next() {
 		var r existingRoute
-		if err := rows.Scan(&r.id, &r.providerID, &r.upstreamModel); err != nil {
+		if err := rows.Scan(&r.id, &r.providerID, &r.upstreamModel, &r.createdAt); err != nil {
 			rows.Close()
 			return model.ModelConfig{}, nil, err
 		}
@@ -205,13 +249,32 @@ FROM gateway_model_route WHERE model_id=$1::uuid ORDER BY id FOR UPDATE
 		return model.ModelConfig{}, nil, ErrLastEnabledModelRoute
 	}
 
-	var deleteIDs []string
+	// A route whose binding changes cannot be updated in place when two routes
+	// swap upstreams: the unique (model, provider, upstream) index would fire on
+	// the first row. Delete every omitted or rebinding row first, then insert or
+	// update. The route id and its original created_at are preserved.
+	reinsert := map[string]existingRoute{}
+	deleteSet := map[string]bool{}
 	for id := range byID {
 		if !used[id] {
-			deleteIDs = append(deleteIDs, id)
+			deleteSet[id] = true
 		}
 	}
-	if len(deleteIDs) > 0 {
+	for _, r := range desired {
+		if r.ID == "" {
+			continue
+		}
+		prior := byID[r.ID]
+		if prior.providerID != r.ProviderID || prior.upstreamModel != r.UpstreamModel {
+			reinsert[r.ID] = prior
+			deleteSet[r.ID] = true
+		}
+	}
+	if len(deleteSet) > 0 {
+		deleteIDs := make([]string, 0, len(deleteSet))
+		for id := range deleteSet {
+			deleteIDs = append(deleteIDs, id)
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM gateway_model_route WHERE model_id=$1::uuid AND id = ANY($2::uuid[])`, modelID, deleteIDs); err != nil {
 			return model.ModelConfig{}, nil, err
 		}
@@ -219,11 +282,20 @@ FROM gateway_model_route WHERE model_id=$1::uuid ORDER BY id FOR UPDATE
 
 	for _, r := range desired {
 		if r.ID != "" {
+			if prior, changed := reinsert[r.ID]; changed {
+				if _, err := tx.Exec(ctx, `
+INSERT INTO gateway_model_route(id, model_id, provider_id, upstream_model, priority, weight, timeout_ms, status, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9)
+`, r.ID, modelID, r.ProviderID, r.UpstreamModel, r.Priority, r.Weight, r.TimeoutMS, r.Status, prior.createdAt); err != nil {
+					return model.ModelConfig{}, nil, err
+				}
+				continue
+			}
 			if _, err := tx.Exec(ctx, `
 UPDATE gateway_model_route
-SET provider_id=$2::uuid, upstream_model=$3, priority=$4, weight=$5, timeout_ms=$6, status=$7, updated_at=NOW()
-WHERE id=$1::uuid AND model_id=$8::uuid
-`, r.ID, r.ProviderID, r.UpstreamModel, r.Priority, r.Weight, r.TimeoutMS, r.Status, modelID); err != nil {
+SET priority=$3, weight=$4, timeout_ms=$5, status=$6, updated_at=NOW()
+WHERE id=$1::uuid AND model_id=$2::uuid
+`, r.ID, modelID, r.Priority, r.Weight, r.TimeoutMS, r.Status); err != nil {
 				return model.ModelConfig{}, nil, err
 			}
 			continue

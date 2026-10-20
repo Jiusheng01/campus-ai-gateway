@@ -9,24 +9,33 @@ import (
 
 func (p *Postgres) ProviderImpact(ctx context.Context, providerID string) (model.ProviderImpact, error) {
 	var out model.ProviderImpact
+	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback(ctx)
+
 	var exists bool
-	if err := p.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_provider WHERE id=$1::uuid)`, providerID).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_provider WHERE id=$1::uuid)`, providerID).Scan(&exists); err != nil {
 		return out, err
 	}
 	if !exists {
 		return out, pgx.ErrNoRows
 	}
-	if err := p.Pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 SELECT COUNT(*)::int FROM gateway_model_route WHERE provider_id=$1::uuid
 `, providerID).Scan(&out.Routes); err != nil {
 		return out, err
 	}
-	if err := p.Pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 SELECT COUNT(*)::int FROM gateway_provider_model WHERE provider_id=$1::uuid
 `, providerID).Scan(&out.ProviderModels); err != nil {
 		return out, err
 	}
-	rows, err := p.Pool.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 SELECT m.id::text, m.alias,
 	COUNT(r.id)::int AS routes_to_provider,
 	(COUNT(r.id) FILTER (WHERE r.provider_id=$1::uuid))::int AS provider_routes,
@@ -59,15 +68,30 @@ ORDER BY m.alias
 	if out.AffectedModels == nil {
 		out.AffectedModels = []model.ProviderImpactModel{}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (p *Postgres) ModelImpact(ctx context.Context, modelID string) (model.ModelImpact, error) {
 	var out model.ModelImpact
-	if err := p.Pool.QueryRow(ctx, `SELECT alias FROM gateway_model WHERE id=$1::uuid`, modelID).Scan(&out.Alias); err != nil {
+	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
 		return out, err
 	}
-	if err := p.Pool.QueryRow(ctx, `
+	defer tx.Rollback(ctx)
+
+	if err := tx.QueryRow(ctx, `SELECT alias FROM gateway_model WHERE id=$1::uuid`, modelID).Scan(&out.Alias); err != nil {
+		return out, err
+	}
+	if err := tx.QueryRow(ctx, `
 SELECT
 	COUNT(*) FILTER (WHERE r.status=1)::int,
 	COUNT(DISTINCT r.provider_id) FILTER (WHERE r.status=1 AND p.status=1)::int
@@ -77,12 +101,15 @@ WHERE r.model_id=$1::uuid
 `, modelID).Scan(&out.EnabledRoutes, &out.EnabledProviders); err != nil {
 		return out, err
 	}
-	if err := p.Pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 SELECT
 	COUNT(*) FILTER (WHERE allowed_models @> to_jsonb($1::text) AND NOT (allowed_models @> '["*"]'::jsonb))::int,
 	COUNT(*) FILTER (WHERE allowed_models @> '["*"]'::jsonb)::int
 FROM gateway_api_key
 `, out.Alias).Scan(&out.ExplicitKeys, &out.WildcardKeys); err != nil {
+		return out, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return out, err
 	}
 	return out, nil

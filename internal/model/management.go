@@ -55,8 +55,10 @@ type Provider struct {
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`
 	Protocol string `json:"protocol"`
-	// ProviderType is management metadata (for example "qwen" or "deepseek").
-	// It is not a runtime protocol and is not read by the data plane.
+	// ProviderType is a console template category (for example "qwen" or
+	// "deepseek"). It is not the Vendor identity and not a runtime protocol: one
+	// Vendor may be represented by several Providers, and the data plane never
+	// reads this field.
 	ProviderType string `json:"provider_type"`
 	Description  string `json:"description"`
 	// CredentialEnv is the environment-variable name for an env-sourced
@@ -77,13 +79,13 @@ type Provider struct {
 
 	// LastTest is the compact result of the last channel diagnostic test, when
 	// one has run. It never carries answer content.
-	LastTest *ProviderTestResult `json:"last_test,omitempty"`
+	LastTest *ProviderTestResult `json:"last_test"`
 
 	// List-only management counts. They are computed by the database and are
 	// not part of the Provider's stored identity.
-	CandidateModelCount  int `json:"candidate_model_count,omitempty"`
-	ReferencedRouteCount int `json:"referenced_route_count,omitempty"`
-	ReferencedModelCount int `json:"referenced_model_count,omitempty"`
+	CandidateModelCount  int `json:"candidate_model_count"`
+	ReferencedRouteCount int `json:"referenced_route_count"`
+	ReferencedModelCount int `json:"referenced_model_count"`
 
 	// The resolution data the data plane needs. These fields are deliberately
 	// never serialized: Ciphertext is the sealed secret, and SecretRef is carried
@@ -131,11 +133,11 @@ type ModelConfig struct {
 
 	// Management read projections. They are derived from the route set and
 	// provider/credential state, never stored on the model.
-	RouteCount           int    `json:"route_count,omitempty"`
-	EnabledRouteCount    int    `json:"enabled_route_count,omitempty"`
-	StaticallyRoutable   bool   `json:"statically_routable,omitempty"`
-	CredentialConfigured bool   `json:"credential_configured,omitempty"`
-	RoutingModeSummary   string `json:"routing_mode_summary,omitempty"`
+	RouteCount           int    `json:"route_count"`
+	EnabledRouteCount    int    `json:"enabled_route_count"`
+	StaticallyRoutable   bool   `json:"statically_routable"`
+	CredentialConfigured bool   `json:"credential_configured"`
+	RoutingModeSummary   string `json:"routing_mode_summary"`
 
 	ProviderID    string `json:"provider_id,omitempty"`
 	ProviderName  string `json:"provider_name,omitempty"`
@@ -387,6 +389,13 @@ type DashboardStats struct {
 	AvgLatencyMS  float64 `json:"avg_latency_ms"`
 	P95LatencyMS  float64 `json:"p95_latency_ms"`
 	FailoverCount int64   `json:"failover_count"`
+}
+
+type DashboardConfigCounts struct {
+	Models           int64 `json:"models"`
+	EnabledModels    int64 `json:"enabled_models"`
+	Providers        int64 `json:"providers"`
+	EnabledProviders int64 `json:"enabled_providers"`
 }
 
 type ProviderStats struct {

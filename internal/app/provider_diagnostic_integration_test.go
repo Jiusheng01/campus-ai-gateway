@@ -129,6 +129,36 @@ func TestProviderDiagnosticContentPreviewRequiresSuperAdmin(t *testing.T) {
 	}
 }
 
+func TestProviderDiagnosticUsesStableUpstreamErrorCode(t *testing.T) {
+	pg := usagePostgres(t)
+	clearProviderFixtures(t, pg)
+	ctx := context.Background()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("MS1_TEST_PROVIDER_KEY", "sk-test-value")
+	provider, err := pg.CreateProvider(ctx, model.Provider{
+		Name: "diag-429", BaseURL: upstream.URL + "/v1", Protocol: "openai-chat",
+		CredentialEnv: "MS1_TEST_PROVIDER_KEY", Status: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	s := providerModelTestServer(t, pg)
+	s.providerTests = newProviderTestLimiter()
+	rec := providerDiagnosticRequest(t, s, RoleGatewayAdmin, provider.ID,
+		`{"upstream_model":"up-x","prompt":"p"}`)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "upstream_unavailable") {
+		t.Fatalf("diagnostic 429 = %d %s", rec.Code, rec.Body.String())
+	}
+	stored, _ := pg.ProviderByID(ctx, provider.ID)
+	if stored.LastTest == nil || stored.LastTest.OK || stored.LastTest.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("last test = %+v", stored.LastTest)
+	}
+}
+
 func TestProviderDiagnosticRejectsArbitraryTargetFields(t *testing.T) {
 	pg := usagePostgres(t)
 	clearProviderFixtures(t, pg)

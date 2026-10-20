@@ -69,6 +69,7 @@ export function ProviderTestPanel({
       <Notice>
         <FlaskConical aria-hidden />
         该测试直接使用已保存的渠道地址与凭据，<b>不会</b>经过业务 API Key、租户配额或使用日志；可能产生真实上游费用。
+        每实例同一操作员同时最多 1 个、每分钟最多 6 次。
         {provider.status !== 1 ? ' 当前渠道已停用，测试只验证连通性。' : ''}
       </Notice>
 

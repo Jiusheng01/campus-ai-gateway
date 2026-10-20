@@ -3,26 +3,13 @@ package app
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 func modelIDFromImpactPath(path string) (string, bool) {
-	const suffix = "/impact"
-	if !strings.HasPrefix(path, "/admin/models/") || !strings.HasSuffix(path, suffix) {
-		return "", false
-	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/models/"), suffix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", false
-	}
-	if _, err := uuid.Parse(id); err != nil {
-		return "", false
-	}
-	return id, true
+	return modelIDFromPath(path, "/impact")
 }
 
 func (s *Server) handleProviderImpact(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 import {useCallback, useState} from 'react'
 import {Boxes, ChevronRight, FlaskConical, Route} from 'lucide-react'
-import {api, type ModelConfig, type ModelDetail, type ModelImpact, type ModelRoute} from '../api'
+import {api, listModelTestOptions, type ModelConfig, type ModelDetail, type ModelImpact, type ModelRoute, type ModelTestOption} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge, StatusBadge} from '../components/ui/Badge'
@@ -10,9 +10,11 @@ import {Drawer} from '../components/ui/Drawer'
 import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
+import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {useToast} from '../components/ui/Toast'
+import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -38,12 +40,22 @@ export function PublishedModelsPage({
   const {data, loading, error, errorStatus, reload} = useResource(loader)
   const [detail, setDetail] = useState<ModelDetail | null>(null)
   const toast = useToast()
+  const confirm = useConfirm()
   const [detailBusy, setDetailBusy] = useState('')
   const [detailError, setDetailError] = useState('')
   const [editingRoutes, setEditingRoutes] = useState(false)
   const [impact, setImpact] = useState<ModelImpact | null>(null)
   const [impactError, setImpactError] = useState('')
   const [disableBusy, setDisableBusy] = useState(false)
+  const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
+
+  const openTest = async () => {
+    try {
+      setTesting(await listModelTestOptions())
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '无法加载模型测试选项')
+    }
+  }
 
   const loadImpact = async (m: ModelConfig) => {
     setImpactError('')
@@ -54,7 +66,7 @@ export function PublishedModelsPage({
     }
   }
 
-  const disableModel = async () => {
+  const setModelStatus = async (status: 1 | 2) => {
     if (!detail) return
     setDisableBusy(true)
     try {
@@ -64,24 +76,35 @@ export function PublishedModelsPage({
           alias: detail.model.alias,
           display_name: detail.model.display_name,
           description: detail.model.description,
-          status: 2,
-          config_version: detail.version,
+          status,
+          expected_version: detail.version,
         }),
       })
-      toast.success('模型已停用；已发布 alias 不会自动从 Key 白名单移除')
+      toast.success(status === 2 ? '模型已停用；已发布 alias 不会自动从 Key 白名单移除' : '模型已启用')
       setImpact(null)
       await open(detail.model)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '停用模型失败')
+      toast.error(e instanceof Error ? e.message : (status === 2 ? '停用模型失败' : '启用模型失败'))
     } finally {
       setDisableBusy(false)
     }
   }
 
+  const enableModel = async () => {
+    if (!detail) return
+    const ok = await confirm({
+      title: `启用模型「${detail.model.alias}」？`,
+      description: '启用后该 alias 会在至少一条启用线路时重新进入静态可路由集合；Key 授权不变。',
+      confirmText: '启用模型',
+    })
+    if (ok) await setModelStatus(1)
+  }
+
   const open = async (m: ModelConfig) => {
     setDetailBusy(m.id)
     setDetailError('')
+    setDetail(null)
     try {
       const d = await api<ModelDetail>(`/admin/models/${m.id}`)
       setDetail(d)
@@ -179,9 +202,13 @@ export function PublishedModelsPage({
                 ['服务类型', '未知（MS1 未建立类型契约）'],
               ]}
             />
-            {detail.model.status === 1 && (
+            {detail.model.status === 1 ? (
               <Panel title="下线模型" sub="停用后该 alias 不再静态可路由；已授权的 Key 不会被自动改写。">
                 <Button variant="danger" onClick={() => void loadImpact(detail.model)}>查看停用影响</Button>
+              </Panel>
+            ) : (
+              <Panel title="上线模型" sub="启用不会修改 Key 授权；仍需至少一条启用线路才能静态可路由。">
+                <Button variant="primary" onClick={() => void enableModel()}>启用模型</Button>
               </Panel>
             )}
             <Panel
@@ -212,8 +239,22 @@ export function PublishedModelsPage({
                 <EmptyState icon={<Route />} title="暂无线路" description="该模型尚不可路由。" />
               )}
             </Panel>
-            <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
-              <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize={canAuthorize} />
+            {canAuthorize && (
+              <Panel title="授权" sub="授权针对具体 API Key；发布模型不会自动授权。">
+                <ModelAuthorizationPanel modelID={detail.model.id} canAuthorize />
+              </Panel>
+            )}
+            <Panel title="模型测试" sub="管理诊断不经过业务 API Key、租户配额或业务请求日志。">
+              <div className="formActions">
+                <Button icon={<FlaskConical />} onClick={() => void openTest()}>运行模型诊断</Button>
+              </div>
+              <p className="hint">
+                真实业务链路验证请使用环境变量中的 Key；该请求会经过鉴权、配额、路由、熔断和日志，不由管理诊断替代。
+              </p>
+              <pre className="mono responseText">{`curl "$GATEWAY_BASE_URL/v1/chat/completions" \\
+  -H "Authorization: Bearer $CAMPUS_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${detail.model.alias}","messages":[{"role":"user","content":"hello"}]}'`}</pre>
             </Panel>
             <Panel title="使用记录" sub="脱敏运行摘要；原始日志仍由超级管理员/审计员读取。">
               <RuntimeSummaryPanel
@@ -223,9 +264,6 @@ export function PublishedModelsPage({
                 onOpenLogs={onOpenLogs}
               />
             </Panel>
-            <p className="responseText muted">
-              <FlaskConical aria-hidden /> 模型诊断测试保留在独立的管理测试入口。
-            </p>
           </div>
         </Drawer>
       )}
@@ -238,7 +276,7 @@ export function PublishedModelsPage({
           footer={
             <>
               <Button onClick={() => setImpact(null)}>取消</Button>
-              <Button variant="danger" loading={disableBusy} onClick={() => void disableModel()}>确认停用</Button>
+              <Button variant="danger" loading={disableBusy} onClick={() => void setModelStatus(2)}>确认停用</Button>
             </>
           }
         >
@@ -253,6 +291,14 @@ export function PublishedModelsPage({
 
       {impactError && (
         <div className="notice warning" role="alert">{impactError}</div>
+      )}
+
+      {testing && (
+        <ModelTestDrawer
+          models={testing}
+          initialModel={detail?.model.alias}
+          onClose={() => setTesting(null)}
+        />
       )}
 
       {editingRoutes && detail && (

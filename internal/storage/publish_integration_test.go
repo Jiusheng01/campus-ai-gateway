@@ -3,9 +3,12 @@ package storage
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/jackc/pgx/v5"
 )
 
 func publishCandidate(t *testing.T, pg *Postgres, providerID, upstream string) string {
@@ -66,6 +69,49 @@ func TestPublishModelIsAtomicIdempotentAndExplicitOnAppend(t *testing.T) {
 	}
 	if appended.Created || !appended.RouteCreated || appended.Route.Priority != 2 || appended.Version != 2 {
 		t.Fatalf("append = %+v", appended)
+	}
+}
+
+func TestPublishAndProviderDeleteDoNotDeadlockOrLeaveDanglingRoutes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pg := testPostgres(t)
+	clearModelsAndProviders(t, pg)
+	provider := mustProvider(t, pg, "publish-race")
+	candidate := publishCandidate(t, pg, provider.ID, "race-up")
+
+	var wg sync.WaitGroup
+	var publishErr, deleteErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, publishErr = pg.PublishProviderModel(ctx, candidate, "race-alias", "", "", false)
+	}()
+	go func() {
+		defer wg.Done()
+		_, deleteErr = pg.DeleteProvider(ctx, provider.ID)
+	}()
+	wg.Wait()
+	if ctx.Err() != nil {
+		t.Fatal("publish and provider delete did not finish within 10s")
+	}
+	if deleteErr != nil {
+		t.Fatalf("provider delete: %v", deleteErr)
+	}
+	if publishErr != nil && !errors.Is(publishErr, pgx.ErrNoRows) {
+		t.Fatalf("publish: %v", publishErr)
+	}
+	var dangling, models int
+	if err := pg.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM gateway_model_route WHERE provider_id=$1::uuid`, provider.ID).Scan(&dangling); err != nil {
+		t.Fatalf("count dangling routes: %v", err)
+	}
+	if err := pg.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM gateway_model WHERE alias='race-alias'`).Scan(&models); err != nil {
+		t.Fatalf("count model: %v", err)
+	}
+	if dangling != 0 || models != 0 {
+		t.Fatalf("dangling routes=%d model=%d", dangling, models)
 	}
 }
 
