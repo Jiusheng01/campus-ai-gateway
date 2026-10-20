@@ -1041,6 +1041,8 @@ input:focus, select:focus, textarea:focus {
   border-radius: var(--radius-md);
   background: var(--surface-subtle);
 }
+.routeEditorRow.primary { grid-template-columns: auto 1.2fr 1.4fr .8fr .7fr auto; }
+.routeOrder { display: flex; flex-direction: column; gap: 4px; }
 @media (max-width: 900px) {
   .routeEditorRow { grid-template-columns: 1fr 1fr; }
 }

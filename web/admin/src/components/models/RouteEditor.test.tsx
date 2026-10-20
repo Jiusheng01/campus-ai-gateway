@@ -5,7 +5,7 @@ import {ToastProvider} from '../ui/Toast'
 
 const detail = {
   model: {id: 'm-1', alias: 'demo', display_name: 'Demo', description: '', status: 1, config_version: 1},
-  routes: [{id: 'r-1', model_id: 'm-1', model_alias: 'demo', provider_id: 'p-1', provider_name: 'Qwen', upstream_model: 'up-1', priority: 1, weight: 100, timeout_ms: 60000, status: 1}],
+  routes: [{id: 'r-1', model_id: 'm-1', model_alias: 'demo', provider_id: 'p-1', provider_name: 'Qwen', upstream_model: 'up-1', priority: 2, weight: 30, timeout_ms: 60000, status: 1}],
   version: 1,
 }
 
@@ -50,5 +50,21 @@ describe('RouteEditor', () => {
 
     expect(await screen.findByText(/当前版本为 2/)).toBeInTheDocument()
     expect(screen.getByDisplayValue('up-edited')).toBeInTheDocument()
+  })
+
+  it('shows an exact diff and does not write when switching to primary/backup', async () => {
+    const fetchMock = mockFetch()
+    render(
+      <ToastProvider>
+        <RouteEditor modelID="m-1" />
+      </ToastProvider>,
+    )
+    await screen.findByDisplayValue('up-1')
+    fireEvent.click(screen.getByRole('button', {name: '主备容灾'}))
+
+    expect(await screen.findByText(/会改变以下字段/)).toBeInTheDocument()
+    expect(screen.getByText(/优先级 2 → 1/)).toBeInTheDocument()
+    expect(screen.getByText(/权重 30 → 100/)).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
   })
 })
