@@ -23,7 +23,7 @@ func TestInlineAPIKeyIsWriteOnlyAndSummarizedOnRead(t *testing.T) {
 		Protocol:         "openai-chat",
 		CredentialSecret: "sk-live-abcd1234",
 	}
-	if reason := validateProvider(&v); reason != "" {
+	if reason := s.validateProvider(&v); reason != "" {
 		t.Fatalf("an inline credential_secret must be accepted: %q", reason)
 	}
 	if err := s.sealProviderCredential(&v); err != nil {
@@ -67,7 +67,7 @@ func TestInlineAPIKeyBypassesTheEnvironmentNamespace(t *testing.T) {
 		BaseURL:       "https://example.test/v1",
 		CredentialEnv: "sk-live-abc123",
 	}
-	if reason := validateProvider(&asEnv); reason == "" {
+	if reason := (&Server{}).validateProvider(&asEnv); reason == "" {
 		t.Fatal("a pasted key in credential_env must still be refused")
 	}
 
@@ -76,14 +76,14 @@ func TestInlineAPIKeyBypassesTheEnvironmentNamespace(t *testing.T) {
 		BaseURL:          "https://example.test/v1",
 		CredentialSecret: "sk-live-abc123",
 	}
-	if reason := validateProvider(&asInline); reason != "" {
+	if reason := (&Server{}).validateProvider(&asInline); reason != "" {
 		t.Fatalf("an inline key must not be judged as an environment-variable name: %q", reason)
 	}
 }
 
 func TestProviderCreateRequiresExactlyOneCredentialSource(t *testing.T) {
 	none := model.Provider{Name: "qwen", BaseURL: "https://example.test/v1"}
-	if reason := validateProvider(&none); reason == "" {
+	if reason := (&Server{}).validateProvider(&none); reason == "" {
 		t.Fatal("a channel with no credential must be refused on create")
 	}
 
@@ -93,13 +93,13 @@ func TestProviderCreateRequiresExactlyOneCredentialSource(t *testing.T) {
 		CredentialEnv:    "QWEN_API_KEY",
 		CredentialSecret: "sk-live-abc123",
 	}
-	if reason := validateProvider(&both); reason == "" {
+	if reason := (&Server{}).validateProvider(&both); reason == "" {
 		t.Fatal("supplying both credential_secret and credential_env is ambiguous and must be refused")
 	}
 
 	// An update with neither means "leave the credential alone".
 	update := model.Provider{Name: "qwen", BaseURL: "https://example.test/v1"}
-	if reason := validateProviderForUpdate(&update); reason != "" {
+	if reason := (&Server{}).validateProviderForUpdate(&update); reason != "" {
 		t.Fatalf("an update without a credential must be allowed: %q", reason)
 	}
 }
@@ -172,9 +172,10 @@ func TestCredentialLast4NeverDisclosesAShortSecret(t *testing.T) {
 // channel's own base URL as a Bearer token, so both writes must refuse it while
 // still accepting an ordinary vendor variable.
 func TestProviderWritesRefuseTheCredentialEncryptionKey(t *testing.T) {
+	strict := &Server{}
 	validators := map[string]func(*model.Provider) string{
-		"create": validateProvider,
-		"update": validateProviderForUpdate,
+		"create": strict.validateProvider,
+		"update": strict.validateProviderForUpdate,
 	}
 	for write, validate := range validators {
 		t.Run(write, func(t *testing.T) {

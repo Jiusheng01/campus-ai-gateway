@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// The direct data plane builds its outbound transport with
-// http.ProxyFromEnvironment, which reads HTTP_PROXY, HTTPS_PROXY, NO_PROXY and
-// ALL_PROXY. Those variables frequently embed "user:password@proxy", so a
-// channel credential_env that names one of them hands the operator the proxy
-// credential - the same escalation the namespace rule exists to prevent.
+// HTTP_PROXY, HTTPS_PROXY, NO_PROXY and ALL_PROXY frequently embed
+// "user:password@proxy". The Provider transport deliberately ignores them
+// (ADR-0012), but a channel credential_env that names one of them would still
+// send the proxy credential upstream as a Bearer token - the same escalation
+// the namespace rule exists to prevent.
 //
 // The existing family test iterates reservedCredentialEnvPrefixes, so it can
 // only catch families someone remembered to list. This test names the proxy

@@ -251,7 +251,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateProvider(&in); err != "" {
+		if err := s.validateProvider(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 			return
 		}
@@ -291,7 +291,7 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-	if err := validateProviderForUpdate(&in); err != "" {
+	if err := s.validateProviderForUpdate(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_provider", err, reqID)
 		return
 	}
@@ -1004,10 +1004,11 @@ func (s *Server) handleRequestLogsExport(w http.ResponseWriter, r *http.Request)
 // this function. CREDENTIAL_ is the same argument for the sealing key: naming
 // CREDENTIAL_ENCRYPTION_KEY here would make the gateway send the one key that
 // opens every inline Credential to the channel's configured base URL.
-// The proxy entries are separate because the direct data plane builds its
-// transport with http.ProxyFromEnvironment, which reads HTTPS_PROXY, NO_PROXY
-// and ALL_PROXY as well as HTTP_PROXY. Those values routinely embed
-// "user:password@proxy", and "HTTPS_" is not covered by "HTTP_".
+// The proxy entries are separate because those variables routinely embed
+// "user:password@proxy", and "HTTPS_" is not covered by "HTTP_". The Provider
+// transport deliberately ignores the environment proxy (ADR-0012), but naming
+// one of these as a channel credential would still send the proxy credential
+// upstream as a Bearer token.
 var reservedCredentialEnvPrefixes = []string{
 	"ADMIN_", "API_KEY_", "AWS_", "AZURE_", "CREDENTIAL_", "DATABASE_", "DATA_PLANE",
 	"DOCKER_", "GATEWAY_", "GCP_", "GOOGLE_", "HTTP_", "HTTPS_", "KUBERNETES_",
@@ -1037,32 +1038,52 @@ func validateCredentialEnv(name string) string {
 }
 
 // validateProvider validates a channel write that must name a credential (a
-// create).
+// create). It is a Server method because the deployment's
+// PROVIDER_HTTP_ALLOWLIST is what decides whether a plaintext target is an
+// allowed exception; a Server without a configuration fails closed.
 //
 // The gateway speaks the OpenAI wire format only: the in-process data plane
 // sends the OpenAI chat body it received straight to the provider, so a channel
 // marked anthropic or gemini would be sent a body it cannot read and fail at
 // request time. Refusing it when it is saved is a configuration error instead
 // of an outage.
-func validateProvider(v *model.Provider) string {
-	return validateProviderInput(v, true)
+func (s *Server) validateProvider(v *model.Provider) string {
+	return validateProviderInput(v, true, s.providerHTTPAllowlist())
 }
 
 // validateProviderForUpdate permits a write with no credential at all, which
 // means "keep the stored one" — the console sends that when an operator edits
 // the base URL and leaves the key field blank.
-func validateProviderForUpdate(v *model.Provider) string {
-	return validateProviderInput(v, false)
+func (s *Server) validateProviderForUpdate(v *model.Provider) string {
+	return validateProviderInput(v, false, s.providerHTTPAllowlist())
 }
 
-func validateProviderInput(v *model.Provider, requireCredential bool) string {
+// providerHTTPAllowlist compiles the configured entries once. A Server built
+// without NewServer (a unit test) compiles from its Config literal on demand;
+// malformed entries are already refused by LoadConfig, and a direct literal
+// with a malformed entry fails closed to "nothing allowed".
+func (s *Server) providerHTTPAllowlist() *hostAllowlist {
+	if s.httpAllowlist != nil {
+		return s.httpAllowlist
+	}
+	allowlist, _ := parseHostAllowlist(s.cfg.ProviderHTTPAllowlist)
+	return allowlist
+}
+
+func validateProviderInput(v *model.Provider, requireCredential bool, allowlist *hostAllowlist) string {
 	v.Name = strings.TrimSpace(v.Name)
 	v.BaseURL = strings.TrimSpace(v.BaseURL)
 	v.Protocol = strings.TrimSpace(v.Protocol)
 	v.CredentialEnv = strings.TrimSpace(v.CredentialEnv)
 	v.CredentialSecret = strings.TrimSpace(v.CredentialSecret)
-	if v.Name == "" || v.BaseURL == "" {
-		return "name and base_url are required"
+	if v.Name == "" {
+		return "name is required"
+	}
+	if v.BaseURL == "" {
+		return "base_url is required"
+	}
+	if reason := validateProviderBaseURL(v.BaseURL, allowlist); reason != "" {
+		return reason
 	}
 	// Two sources on one write is ambiguous: it is not clear whether the operator
 	// wants to replace an inline key with a variable reference or the reverse.

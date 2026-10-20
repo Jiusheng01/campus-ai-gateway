@@ -26,17 +26,18 @@ func anthropicProvider() model.Provider {
 // translation layer in front of the channels any more: the same provider
 // definition that a protocol enum once allowed through has to be refused here.
 func TestProviderOnlyAcceptsTheOpenAIChatProtocol(t *testing.T) {
+	strict := &Server{}
 	for _, protocol := range []string{"openai-responses", "anthropic", "gemini"} {
 		v := anthropicProvider()
 		v.Protocol = protocol
-		if reason := validateProvider(&v); reason == "" {
+		if reason := strict.validateProvider(&v); reason == "" {
 			t.Fatalf("%s must be refused when the gateway dials the provider itself", protocol)
 		}
 	}
 
 	v := anthropicProvider()
 	v.Protocol = "openai-chat"
-	if reason := validateProvider(&v); reason != "" {
+	if reason := strict.validateProvider(&v); reason != "" {
 		t.Fatalf("openai-chat is what the gateway speaks, got %q", reason)
 	}
 }
@@ -44,9 +45,10 @@ func TestProviderOnlyAcceptsTheOpenAIChatProtocol(t *testing.T) {
 // An empty protocol still means the OpenAI chat format, and a value nobody
 // defined is still refused.
 func TestProtocolDefaultAndUnknownValues(t *testing.T) {
+	strict := &Server{}
 	empty := anthropicProvider()
 	empty.Protocol = ""
-	if reason := validateProvider(&empty); reason != "" {
+	if reason := strict.validateProvider(&empty); reason != "" {
 		t.Fatalf("an empty protocol must be defaulted rather than refused: %q", reason)
 	}
 	if empty.Protocol != "openai-chat" {
@@ -55,7 +57,7 @@ func TestProtocolDefaultAndUnknownValues(t *testing.T) {
 
 	unknown := anthropicProvider()
 	unknown.Protocol = "carrier-pigeon"
-	if reason := validateProvider(&unknown); reason == "" {
+	if reason := strict.validateProvider(&unknown); reason == "" {
 		t.Fatal("an undefined protocol must be refused")
 	}
 }

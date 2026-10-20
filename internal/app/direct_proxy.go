@@ -88,18 +88,42 @@ const defaultUpstreamTimeout = 60 * time.Second
 // reuse working.
 type transportPool struct {
 	mu sync.Mutex
-	m  map[time.Duration]*http.Transport
+	m  map[transportKey]*http.Transport
 }
 
-func (p *transportPool) get(timeout time.Duration) *http.Transport {
+// transportKey keeps one transport per timeout and policy. The policy is fixed
+// for a Server's lifetime, but including it makes the pool honest about what a
+// cached transport dials with.
+type transportKey struct {
+	timeout time.Duration
+	policy  egressPolicy
+}
+
+func (p *transportPool) get(timeout time.Duration, policy egressPolicy) *http.Transport {
+	key := transportKey{timeout: timeout, policy: policy}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if t, ok := p.m[timeout]; ok {
+	if t, ok := p.m[key]; ok {
 		return t
 	}
+	// ADR-0012: every connection is checked against the address the resolver
+	// produced for it. Control runs at exactly that point, which is what makes
+	// the DNS answer revalidated per connection rather than trusted from a
+	// lookup made earlier.
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   policy.control,
+	}
 	t := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		// ADR-0012: Provider egress dials directly. ProxyFromEnvironment would
+		// make Dialer.Control see the proxy's address instead of the Provider's,
+		// so the address denial and the per-connection DNS revalidation would
+		// both be bypassed whenever HTTP(S)_PROXY is set. There is deliberately
+		// no configuration knob: a proxy setting must not route Provider traffic
+		// around the policy.
+		Proxy:                 nil,
+		DialContext:           dialer.DialContext,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
@@ -108,9 +132,9 @@ func (p *transportPool) get(timeout time.Duration) *http.Transport {
 		ExpectContinueTimeout: time.Second,
 	}
 	if p.m == nil {
-		p.m = make(map[time.Duration]*http.Transport)
+		p.m = make(map[transportKey]*http.Transport)
 	}
-	p.m[timeout] = t
+	p.m[key] = t
 	return t
 }
 
@@ -420,6 +444,7 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		resp, err := s.attemptDirect(r, body, envelope, route)
 		if err != nil {
 			s.recordBreaker(route.Provider, false)
+			s.recordEgressDenial(r, reqID, envelope.Model, err)
 			lastErr = err
 			lastStatus = 0
 			lastBody = nil
@@ -492,6 +517,18 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, lastStatus, "upstream_error",
 			fmt.Sprintf("all %d channel(s) failed; last status %d", tried, lastStatus), reqID)
 	case lastErr != nil:
+		// An egress refusal is a policy decision, not an upstream outage. It
+		// gets its own code and the channel+reason text so an operator can see
+		// what to change instead of reading another generic 502.
+		var denied *egressDeniedError
+		if errors.As(lastErr, &denied) {
+			// The log keeps the full refusal, resolved address included; the
+			// caller gets the fixed summary writeEgressDenied builds.
+			log.Printf("direct: request %s model %q was denied egress for channel %s: %s",
+				reqID, oneLine(envelope.Model), oneLine(lastChannel), denied.Error())
+			writeEgressDenied(w, reqID, denied)
+			return
+		}
 		log.Printf("direct: request %s model %q could not reach channel %s: %s",
 			reqID, oneLine(envelope.Model), oneLine(lastChannel), directFailureReason(lastErr))
 		if detail := clientSafeFailure(lastErr); detail != "" {
@@ -542,6 +579,43 @@ func (s *Server) recordBreaker(provider string, ok bool) {
 	}
 }
 
+// egressDenialEventType is the security-event label for a denied Provider
+// target. The event stream is where an auditor looks for "someone pointed a
+// channel at the gateway or its metadata service", which is a different
+// question from "which requests failed".
+const egressDenialEventType = "provider_egress_denied"
+
+// writeEgressDenied answers a denied Provider target for both the data plane
+// and the admin refresh. It is the one place the response is built, so neither
+// caller can drift back to echoing the dial target: the code is stable and the
+// message is denied.SafeSummary(), which never carries the resolved address
+// (ADR-0009). The full refusal stays in the log and the security event.
+func writeEgressDenied(w http.ResponseWriter, reqID string, denied *egressDeniedError) {
+	httpx.Error(w, http.StatusBadGateway, "provider_egress_denied", denied.SafeSummary(), reqID)
+}
+
+// recordEgressDenial writes an egress refusal to the existing security-event
+// stream. It is a no-op for anything that is not a denial, and for a Server
+// without a database (a unit test or a probe).
+func (s *Server) recordEgressDenial(r *http.Request, reqID, requestedModel string, err error) {
+	var denied *egressDeniedError
+	if !errors.As(err, &denied) {
+		return
+	}
+	event := model.SecurityEvent{
+		RequestID:      reqID,
+		EventType:      egressDenialEventType,
+		ClientIP:       s.clientIPFrom(r),
+		RequestedModel: requestedModel,
+		Detail:         denied.Error(),
+	}
+	if id, ok := httpx.IdentityFrom(r.Context()); ok {
+		event.TenantID = id.TenantID
+		event.APIKeyID = id.APIKeyID
+	}
+	s.recordSecurityEvent(r, event)
+}
+
 // attemptErrorKind classifies an attempt failure for telemetry. It returns the
 // gateway's own label, never the error text: a transport error can quote the
 // dialled URL, userinfo included (see directFailureReason).
@@ -549,6 +623,10 @@ func attemptErrorKind(err error) string {
 	var missing missingCredentialError
 	if errors.As(err, &missing) {
 		return errorKindMissingCredential
+	}
+	var denied *egressDeniedError
+	if errors.As(err, &denied) {
+		return errorKindEgressDenied
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -565,6 +643,7 @@ func attemptErrorKind(err error) string {
 // the column and the console agree on what can appear in error_kind.
 const (
 	errorKindMissingCredential = "missing_credential"
+	errorKindEgressDenied      = "egress_denied"
 	errorKindDNS               = "dns"
 	errorKindTimeout           = "timeout"
 	errorKindTransport         = "transport"
@@ -590,6 +669,14 @@ func clientSafeFailure(err error) string {
 	var missing missingCredentialError
 	if errors.As(err, &missing) {
 		return missing.Error()
+	}
+	// An egress refusal is the gateway's own policy decision about the target
+	// the operator configured. SafeSummary names the channel and the category
+	// of address without the resolved literal, which is what makes the failure
+	// actionable while keeping network detail out of a response (ADR-0009).
+	var denied *egressDeniedError
+	if errors.As(err, &denied) {
+		return denied.SafeSummary()
 	}
 	return ""
 }
@@ -629,12 +716,16 @@ func (e missingCredentialError) Error() string {
 // error's type, never its message, so no credential that reached the error can
 // reach the log.
 //
-// A missing credential is the one case that keeps real text, and it is shared
-// with the caller-facing summary on purpose: it names an environment variable,
-// never its value, and it is the single failure an operator can fix from the
-// log line alone. Reusing clientSafeFailure keeps the two audiences from
-// drifting apart.
+// A missing credential and an egress refusal are the cases that keep real text,
+// and both are the failures an operator can fix from the log line alone. A
+// denial uses the full Error() here, because the log is the one audience
+// allowed to see the resolved address; the caller-facing path uses
+// clientSafeFailure, which omits it.
 func directFailureReason(err error) string {
+	var denied *egressDeniedError
+	if errors.As(err, &denied) {
+		return denied.Error()
+	}
 	if detail := clientSafeFailure(err); detail != "" {
 		return detail
 	}
@@ -699,6 +790,13 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	if err != nil {
 		return nil, fmt.Errorf("channel %s: %w", route.Provider, err)
 	}
+	// The scheme and the plaintext allowlist are checked here, on the way to
+	// the dialer, because Dialer.Control only sees an ip:port. This covers rows
+	// that predate the write-time rule as well as hosts whose allowlist entry
+	// was removed after the save.
+	if reason := s.egressTargetReason(target); reason != "" {
+		return nil, &egressDeniedError{Channel: route.Provider, Reason: reason}
+	}
 
 	payload := body
 	if route.UpstreamModel != "" && route.UpstreamModel != envelope.Model {
@@ -716,9 +814,7 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 		return nil, fmt.Errorf("channel %s: %w", route.Provider, err)
 	}
 	for k, values := range r.Header {
-		switch http.CanonicalHeaderKey(k) {
-		case "Authorization", "Host", "Content-Length", "Connection", "Keep-Alive",
-			"Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		if !forwardableRequestHeaders[http.CanonicalHeaderKey(k)] {
 			continue
 		}
 		for _, v := range values {
@@ -739,12 +835,54 @@ func (s *Server) attemptDirect(r *http.Request, body []byte, envelope requestEnv
 	// channel credential to a host the channel's configuration never named, so
 	// the 3xx is surfaced as the answer instead.
 	client := &http.Client{
-		Transport: s.transport.get(timeout),
+		Transport: s.transport.get(timeout, s.egress),
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		// The dial hook knows the address and the rule but not the channel it
+		// was dialling for. Attach that here so every audience — the client,
+		// the log, the security event — can name the channel and the reason.
+		var denied *egressDeniedError
+		if errors.As(err, &denied) {
+			return nil, &egressDeniedError{Channel: route.Provider, Address: denied.Address, Reason: denied.Reason}
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+// forwardableRequestHeaders is the allow list ADR-0012 names for request
+// headers: content negotiation, W3C trace context and the Client Correlation
+// ID. It is the mirror of forwardableResponseHeaders and lives beside it so the
+// two sides are maintained together.
+//
+// Everything else stays in the gateway. A tenant's Cookie and its forwarding
+// chain (X-Forwarded-For, X-Real-IP) are between the tenant and the gateway,
+// not facts a third-party Provider should receive; a deny list would have to
+// anticipate every header a browser or proxy might attach, while an allow list
+// only names what an upstream can legitimately need. Authorization is not here
+// either — it is replaced below with the channel Credential — and Host,
+// Content-Length and Connection are transport-managed.
+//
+// Accept-Encoding is deliberately absent: the response body is streamed
+// unchanged, so the data plane forces identity after copying and a client value
+// would never reach the upstream. Listing it here only claimed a forwarding
+// that the code does not perform.
+//
+// X-Request-Id carries both identifiers in this repository: it is the internal
+// Request ID the request log records, and the Client Correlation ID when the
+// client supplied one. requestIDMiddleware keeps a client-supplied value and
+// generates one otherwise, and the data plane forwards whatever the header
+// holds.
+var forwardableRequestHeaders = map[string]bool{
+	"Accept":       true,
+	"Content-Type": true,
+	"Traceparent":  true,
+	"Tracestate":   true,
+	"X-Request-Id": true,
 }
 
 // forwardableResponseHeaders is the allow list ADR-0012 names for response

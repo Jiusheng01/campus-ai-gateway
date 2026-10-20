@@ -305,6 +305,52 @@ func TestZeroValueConfigIsTheDirectPlane(t *testing.T) {
 	}
 }
 
+// loadConfigWithProviderHTTPAllowlist runs the real environment-parsing path
+// for the plaintext-provider exception list.
+func loadConfigWithProviderHTTPAllowlist(t *testing.T, value string) (Config, error) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("PROVIDER_HTTP_ALLOWLIST", value)
+	return LoadConfig()
+}
+
+// PROVIDER_HTTP_ALLOWLIST is a comma-separated host/CIDR list. Unset means
+// "no plaintext targets at all", and a malformed entry must stop startup — a
+// typo that silently matched nothing would look exactly like a deliberate
+// deny, and the operator would not find out until a campus channel failed.
+func TestProviderHTTPAllowlistConfig(t *testing.T) {
+	cfg, err := loadConfigWithProviderHTTPAllowlist(t, "127.0.0.1, 10.0.0.0/8, campus-proxy.example.edu")
+	if err != nil {
+		t.Fatalf("valid entries must be accepted: %v", err)
+	}
+	if len(cfg.ProviderHTTPAllowlist) != 3 {
+		t.Fatalf("want three entries, got %#v", cfg.ProviderHTTPAllowlist)
+	}
+
+	empty, err := loadConfigWithProviderHTTPAllowlist(t, "")
+	if err != nil {
+		t.Fatalf("an unset allowlist must be accepted: %v", err)
+	}
+	if len(empty.ProviderHTTPAllowlist) != 0 {
+		t.Fatalf("an unset allowlist must stay empty, got %#v", empty.ProviderHTTPAllowlist)
+	}
+
+	for _, bad := range []string{
+		"http://campus-proxy.example.edu",
+		"10.0.0.0/33",
+		"bad host",
+		"-campus.example.edu",
+		"campus..example.edu",
+	} {
+		if _, err := loadConfigWithProviderHTTPAllowlist(t, bad); err == nil {
+			t.Fatalf("PROVIDER_HTTP_ALLOWLIST=%q must fail startup", bad)
+		}
+	}
+}
+
 // setConfigEnv applies the environment LoadConfig needs to get as far as the
 // Admin UI settings. The cases that care about a particular field override it
 // after calling this, so the five values that only have to be present are

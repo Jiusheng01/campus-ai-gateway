@@ -125,6 +125,8 @@ The first hop stays in the console: **create the first administrator → add a c
 
 > All configuration comes from **process environment variables**; no `.env` file is read. Provider API keys are the exception: paste them into the channel form and the gateway seals them in PostgreSQL. [`.env.example`](.env.example) is a reference list of names — see [Configuration](doc/configuration.md).
 
+> **Upgrade note — provider egress.** A channel `base_url` must be `https://`. A plaintext `http://` target is rejected unless its host is listed in `PROVIDER_HTTP_ALLOWLIST`; existing `http://` channels must move to HTTPS or be allowlisted. Loopback targets cannot be allowlisted — they are always denied before a connection is made.
+
 ## Call the API
 
 Create a tenant and a business key in the console, set the key's model allowlist, then:

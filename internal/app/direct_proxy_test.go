@@ -25,12 +25,18 @@ func newDirectTestServer(t *testing.T, table routeTable) *Server {
 		table.models = map[string][]directRoute{}
 	}
 	return &Server{
-		cfg:        Config{DataPlane: DataPlaneDirect},
+		// httptest upstreams listen on 127.0.0.1 and speak plaintext HTTP, so
+		// the test server carries the same explicit exception an operator makes
+		// with PROVIDER_HTTP_ALLOWLIST. Production validation is not loosened.
+		cfg:        Config{DataPlane: DataPlaneDirect, ProviderHTTPAllowlist: []string{"127.0.0.1"}},
 		routeCache: table,
 		routeAt:    time.Now(),
 		transport:  &transportPool{},
 		selector:   newRouteSelector(),
 		breaker:    newCircuitBreaker(),
+		// The permissive address policy is the test-only injection; NewServer
+		// still constructs the strict one.
+		egress: permissiveEgressPolicy(),
 	}
 }
 
