@@ -40,7 +40,7 @@ import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
 import {ConsoleKeysPage} from '../pages/ConsoleKeysPage'
 import {ConsoleModelsPage} from '../pages/ConsoleModelsPage'
 import {ConsoleLogsPage} from '../pages/ConsoleLogsPage'
-import {ConsoleUsagePage} from '../pages/ConsolePlaceholderPages'
+import {ConsoleUsagePage} from '../pages/ConsoleUsagePage'
 
 // loading   — checking the auth config and trying to restore a session
 // setup     — no administrator exists yet, show the first-run form

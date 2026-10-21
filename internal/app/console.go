@@ -84,6 +84,8 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleModels(w, r)
 	case "/api/console/request-logs":
 		s.handleConsoleRequestLogs(w, r)
+	case "/api/console/usage":
+		s.handleConsoleUsage(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/console/request-logs/") {
 			s.handleConsoleRequestLog(w, r)
