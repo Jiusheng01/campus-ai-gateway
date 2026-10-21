@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -56,46 +55,12 @@ func (s *Server) consoleMiddleware(next http.Handler) http.Handler {
 		}
 		ctx := withAdminPrincipal(r.Context(), principal)
 
-		if !consoleAuditedMethod(r.Method) {
+		if !isStateChangingMethod(r.Method) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-
-		aw := &adminAuditResponseWriter{ResponseWriter: w}
-		next.ServeHTTP(aw, r.WithContext(ctx))
-		status := aw.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		if s.pg == nil {
-			return
-		}
-		actor := principal.Username
-		if actor == "" {
-			actor = principal.User
-		}
-		auditCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = s.pg.InsertAdminAudit(auditCtx, model.AdminAuditLog{
-			RequestID:  reqID,
-			Actor:      actor,
-			Action:     r.Method,
-			Resource:   r.URL.Path,
-			StatusCode: status,
-			ClientIP:   s.clientIPFrom(r),
-		})
+		s.auditStateChangingRequest(next, w, r.WithContext(ctx), principal)
 	})
-}
-
-// consoleAuditedMethod lists the methods that change state. GET is excluded so
-// reading the member's own keys does not fill the audit trail.
-func consoleAuditedMethod(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		return true
-	default:
-		return false
-	}
 }
 
 // consoleMeResponse is the safe projection of the signed-in account for the
@@ -335,11 +300,9 @@ func (s *Server) createConsoleKey(w http.ResponseWriter, r *http.Request, princi
 		return
 	}
 
-	limit := s.cfg.PersonalKeyLimit
-	if limit <= 0 {
-		limit = personalKeyLimitDefault
-	}
-
+	// LoadConfig owns the default and has already resolved a non-positive
+	// PERSONAL_KEY_LIMIT; storage refuses a non-positive limit loudly rather
+	// than substituting one, so there is exactly one place the ceiling is set.
 	out, err := s.pg.CreatePersonalAPIKey(r.Context(), storage.PersonalKeyCreate{
 		OwnerUserID:   principal.UserID,
 		Name:          in.Name,
@@ -348,7 +311,7 @@ func (s *Server) createConsoleKey(w http.ResponseWriter, r *http.Request, princi
 		AllowedModels: in.AllowedModels,
 		AllowedIPs:    in.AllowedIPs,
 		ExpireAt:      in.ExpireAt,
-		Limit:         limit,
+		Limit:         s.cfg.PersonalKeyLimit,
 	})
 	if err != nil {
 		s.writePersonalKeyWriteError(w, reqID, err, "API key could not be created")

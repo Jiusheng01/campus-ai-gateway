@@ -121,7 +121,7 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
                 </div>
               </Panel>
 
-              <WorkspaceSummary onNavigate={onNavigate} />
+              <WorkspaceSummary keyCount={data.key_count} onNavigate={onNavigate} />
             </>
           ) : (
             <Panel title="租户与工作台" sub="租户决定你使用的配额与可调用的模型。">
@@ -182,7 +182,7 @@ function AccountPanel({data, roles}: {data: ConsoleMe; roles: string[]}) {
  * branch order is the three distinct empty states: no key (create one), no
  * traffic (nothing has been called yet), and finally the measured figures.
  */
-function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
+function WorkspaceSummary({keyCount, onNavigate}: {keyCount: number; onNavigate?: Navigate}) {
   const keys = useResource(listConsoleKeys)
   const logs = useResource(useCallback(() => listConsoleRequestLogs('limit=5'), []))
 
@@ -298,8 +298,8 @@ function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
         <Panel title="今日概览" sub="今日请求、Tokens 与错误率来自你的个人调用记录。">
           <div className="panelPad">
             <StatGrid columns={2}>
-              <StatCard label="我的 API Key" value={num(keyRows.length)} tone="info" subtext="你拥有的个人凭据" />
-              <StatCard label="已启用 Key" value={num(enabled)} tone="success" subtext={`共 ${num(keyRows.length)} 个`} />
+              <StatCard label="我的 API Key" value={num(keyCount)} tone="info" subtext="你拥有的个人凭据" />
+              <StatCard label="已启用 Key" value={num(enabled)} tone="success" subtext={`共 ${num(keyCount)} 个`} />
             </StatGrid>
             <EmptyState
               icon={<LineChart />}
@@ -323,8 +323,8 @@ function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
       <Panel title="今日概览" sub="今日请求、Tokens 与错误率来自你的个人调用记录；时间边界按本机时区计算。">
         <div className="panelPad">
           <StatGrid columns={3}>
-            <StatCard label="我的 API Key" value={num(keyRows.length)} tone="info" subtext="你拥有的个人凭据" />
-            <StatCard label="已启用 Key" value={num(enabled)} tone="success" subtext={`共 ${num(keyRows.length)} 个`} />
+            <StatCard label="我的 API Key" value={num(keyCount)} tone="info" subtext="你拥有的个人凭据" />
+            <StatCard label="已启用 Key" value={num(enabled)} tone="success" subtext={`共 ${num(keyCount)} 个`} />
             <StatCard label="今日请求" value={num(totals.requests)} tone="info" subtext={`成功 ${num(totals.successes)} · 失败 ${num(totals.failures)}`} />
             <StatCard label="今日 Token" value={num(totals.total_tokens)} tone="purple" subtext={`输入 ${num(totals.input_tokens)} · 输出 ${num(totals.output_tokens)}`} />
             <StatCard

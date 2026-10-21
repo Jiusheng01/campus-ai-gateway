@@ -8,13 +8,14 @@ import (
 )
 
 // Personal usage is read over a different predicate from the administrator's
-// request-log queries, so it gets its own small set of functions instead of a
-// new field on RequestLogFilter. The owner is a bound parameter in every one of
-// them; there is no caller-controlled tenant or key dimension to widen.
+// request-log queries, so it gets its own functions instead of a new field on
+// RequestLogFilter. The owner is a bound parameter in every one of them; there
+// is no caller-controlled tenant or key dimension to widen.
 //
-// All three use the same half-open window [from, to) as the trend endpoint, so
-// the totals, the per-model rows and the chart never describe different sets of
-// rows at a bucket boundary.
+// Both use the same half-open window [from, to) as the trend endpoint, so the
+// totals and the per-model rows never describe different sets of rows at a
+// bucket boundary. The trend itself is RequestLogSeries, shared with the
+// administrator path.
 
 // PersonalUsageTotals aggregates the member's own Request Records.
 //
@@ -90,8 +91,3 @@ ORDER BY 5 DESC, alias
 	}
 	return out, rows.Err()
 }
-
-// The trend series is shared with the administrator path as
-// RequestLogSeries(ownerID, ...). The personal endpoint passes the session's
-// account id, so the same bucket arithmetic owns both charts and a member can
-// never read a row outside the snapshot that query binds.

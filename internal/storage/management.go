@@ -819,24 +819,33 @@ RETURNING `+tenantColumns+`
 	return scanTenant(row)
 }
 
+// TenantUpdate is the input to UpdateTenant. It folds the allowlist pointer in
+// with the editable fields so there is one source of truth: AllowedModels is
+// read, and the embedded Tenant's own same-named field is not.
+//
+// The pointer distinguishes an omitted field (nil: leave the column alone) from
+// an explicit [] (a non-nil empty slice: deny every model).
+type TenantUpdate struct {
+	model.Tenant
+	AllowedModels *[]string
+}
+
 // UpdateTenant writes the editable fields and returns the stored row.
 //
-// allowedModels is a pointer so the caller can distinguish an omitted field
-// (nil: leave the column alone) from an explicit [] (a non-nil empty slice:
-// deny every model). COALESCE keeps the stored value in the omitted case, and
-// doing it in the statement rather than a read-then-write means a concurrent
-// allowlist edit cannot be reverted by a rename.
-func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant, allowedModels *[]string) (model.Tenant, error) {
+// COALESCE keeps the stored allowlist in the omitted case, and doing it in the
+// statement rather than a read-then-write means a concurrent allowlist edit
+// cannot be reverted by a rename.
+func (p *Postgres) UpdateTenant(ctx context.Context, id string, in TenantUpdate) (model.Tenant, error) {
 	var modelsArg any
-	if allowedModels != nil {
-		modelsArg = string(allowedModelsJSON(*allowedModels))
+	if in.AllowedModels != nil {
+		modelsArg = string(allowedModelsJSON(*in.AllowedModels))
 	}
 	row := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
 SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, allowed_models=COALESCE($12::jsonb, allowed_models), updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING `+tenantColumns+`
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency, modelsArg)
+`, id, in.Code, in.Name, in.Status, in.DailyTokenLimit, in.MonthlyTokenLimit, in.MonthlyRequestLimit, in.MonthlyBudgetMicros, in.RPMLimit, in.TPMLimit, in.MaxConcurrency, modelsArg)
 	return scanTenant(row)
 }
 

@@ -72,7 +72,7 @@ export function ConsoleLogDrawer({
  * the record survives through the owner snapshot, so the id is the only handle
  * left and printing it is more honest than an empty cell.
  */
-export function keyName(keys: KeyLabel[], id: string): string {
+function keyName(keys: KeyLabel[], id: string): string {
   const key = keys.find(k => k.id === id)
   return key ? `${key.name}（${key.key_prefix}）` : id ? `已删除的 Key（${shortId(id)}）` : '—'
 }

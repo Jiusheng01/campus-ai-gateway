@@ -73,32 +73,66 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
 
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
-			aw := &adminAuditResponseWriter{ResponseWriter: w}
-			next.ServeHTTP(aw, r)
-			status := aw.status
-			if status == 0 {
-				status = http.StatusOK
-			}
-			if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
-				s.invalidateRouteCache()
-			}
-			if s.pg == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
-				RequestID:  reqID,
-				Actor:      principal.User,
-				Action:     r.Method,
-				Resource:   r.URL.Path,
-				StatusCode: status,
-				ClientIP:   s.clientIPFrom(r),
-			})
+		if isStateChangingMethod(r.Method) {
+			s.auditStateChangingRequest(next, w, r, principal)
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// isStateChangingMethod reports whether a method can mutate control-plane
+// state. Reads are excluded so they never fill the audit trail.
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// auditStateChangingRequest serves next through a status-capturing writer and
+// records one admin audit row for the request. Both the administrator and the
+// personal-console middleware use it, so a write is audited the same way
+// wherever it enters.
+//
+// The writer does not touch the body: handlers that need to read it still do,
+// and Unwrap keeps per-request deadlines reachable through the wrapper.
+//
+// A successful write that can change the routing table also invalidates the
+// route cache. Console paths are under /api/console and never match that
+// predicate, so the shared helper preserves the administrator behaviour
+// without the personal middleware opting in.
+func (s *Server) auditStateChangingRequest(next http.Handler, w http.ResponseWriter, r *http.Request, principal adminPrincipal) {
+	aw := &adminAuditResponseWriter{ResponseWriter: w}
+	next.ServeHTTP(aw, r)
+	status := aw.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
+		s.invalidateRouteCache()
+	}
+	if s.pg == nil {
+		return
+	}
+	// The audit row answers "which person changed this". A session carries the
+	// same username in User; the trusted-header and break-glass modes carry only
+	// User, so the fallback keeps them attributed rather than blank.
+	actor := principal.Username
+	if actor == "" {
+		actor = principal.User
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
+		RequestID:  r.Header.Get("X-Request-Id"),
+		Actor:      actor,
+		Action:     r.Method,
+		Resource:   r.URL.Path,
+		StatusCode: status,
+		ClientIP:   s.clientIPFrom(r),
 	})
 }
 
@@ -106,7 +140,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 // change the routing table. A diagnostic test is a POST under a channel path
 // but does not change routing configuration.
 func routingWriteAffectsRoutes(method, path string) bool {
-	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
+	if !isStateChangingMethod(method) {
 		return false
 	}
 	if strings.HasSuffix(path, "/test") {
@@ -676,13 +710,14 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 				httpx.Error(w, http.StatusBadRequest, "invalid_tenant", reason, reqID)
 				return
 			}
-			v.AllowedModels = *in.AllowedModels
 		}
 		if err := validateTenantFields(&v); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
-		out, err := s.pg.UpdateTenant(r.Context(), id, v, in.AllowedModels)
+		// The pointer is the update's only allowlist input: tenant() applies it
+		// to v for validation, and UpdateTenant does not read that copy.
+		out, err := s.pg.UpdateTenant(r.Context(), id, storage.TenantUpdate{Tenant: v, AllowedModels: in.AllowedModels})
 		if err != nil {
 			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
 			return

@@ -1,15 +1,16 @@
 import {useCallback, useState} from 'react'
 import {Building2, CircleDollarSign, LineChart} from 'lucide-react'
-import {fetchConsoleUsage, type QuotaDimension} from '../api'
+import {fetchConsoleUsage} from '../api'
 import {PageBanner} from '../components/ui/PageBanner'
 import {Panel} from '../components/ui/Panel'
+import {QuotaBand} from '../components/ui/QuotaBand'
 import {Table} from '../components/ui/Table'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {TrendChart} from '../components/charts/TrendChart'
 import {num} from '../lib/format'
-import {formatPercent, quotaTone} from '../lib/quota'
+import {formatPercent} from '../lib/quota'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -184,9 +185,9 @@ export function ConsoleUsagePage() {
                   所属租户：<b>{quota.tenant_name || quota.tenant_id}</b>。以下为只读汇总，每日与每月用量由网关按租户统计。
                 </p>
                 <div className="quotaStrip">
-                  <QuotaBand label="每日 Token 配额" q={quota.daily_token} />
-                  <QuotaBand label="每月 Token 配额" q={quota.monthly_token} />
-                  <QuotaBand label="每月请求配额" q={quota.monthly_request} />
+                  <QuotaBand label="每日 Token 配额" q={quota.daily_token} format={num} />
+                  <QuotaBand label="每月 Token 配额" q={quota.monthly_token} format={num} />
+                  <QuotaBand label="每月请求配额" q={quota.monthly_request} format={num} />
                 </div>
               </div>
             ) : (
@@ -214,37 +215,6 @@ export function ConsoleUsagePage() {
           </Panel>
         </>
       ) : null}
-    </div>
-  )
-}
-
-/**
- * One shared-quota band.
- *
- * A band with no configured limit renders as 未设, never 0%: the two are
- * opposite facts, and a member who reads 0% concludes the budget is untouched.
- */
-function QuotaBand({label, q}: {label: string; q: QuotaDimension | null}) {
-  if (!q) {
-    return (
-      <div className="quotaCell">
-        <small>{label}</small>
-        <b className="quotaValue muted">未设</b>
-        <span className="quotaMeta">未配置限额</span>
-      </div>
-    )
-  }
-  const tone = quotaTone(q.pct)
-  return (
-    <div className={`quotaCell ${tone}`.trim()}>
-      <small>{label}</small>
-      <b className="quotaValue">{formatPercent(q.pct)}</b>
-      <i className="progressTrack">
-        <em className={`progressFill ${tone}`.trim()} style={{width: `${Math.min(100, q.pct)}%`}} />
-      </i>
-      <span className="quotaMeta">
-        {num(q.used)} / {num(q.limit)}
-      </span>
     </div>
   )
 }

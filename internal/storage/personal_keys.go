@@ -78,8 +78,8 @@ type PersonalKeyCreate struct {
 	AllowedModels []string
 	AllowedIPs    []string
 	ExpireAt      *time.Time
-	// Limit is the per-Account ceiling. A non-positive value is treated as the
-	// handler's default, so a hand-built Config cannot disable creation.
+	// Limit is the per-Account ceiling, resolved by the config layer. A
+	// non-positive value is rejected rather than defaulted again here.
 	Limit int64
 }
 

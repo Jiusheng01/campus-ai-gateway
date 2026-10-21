@@ -16,6 +16,7 @@ const me = {
   tenant_name: '校园信息化',
   allowed_models: ['*'],
   workspace_usable: true,
+  key_count: 2,
 }
 
 const keys = [
