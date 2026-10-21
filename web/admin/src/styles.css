@@ -3675,7 +3675,6 @@ input:focus, select:focus, textarea:focus {
 
 /* Channel identity and dependency cells. */
 .channelMainName { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
-.channelFriendlyName { font-size: var(--fs-caption); color: var(--text-muted); }
 .channelDescText {
   margin: 0;
   max-width: 260px;
@@ -3784,19 +3783,6 @@ input:focus, select:focus, textarea:focus {
 .batchSelectionCount b { color: var(--text); }
 .batchButtons { display: flex; gap: 8px; }
 
-.tablePaginationFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-.paginationInfo { font-size: 12px; color: var(--text-muted); }
-.paginationControls { display: flex; align-items: center; gap: 8px; }
-.paginationCurrentPage { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 700; }
 
 
 /* --- overview (ticket 04) -------------------------------------------------- */
