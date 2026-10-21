@@ -4138,3 +4138,164 @@ input:focus, select:focus, textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+/* --- models (ticket 07) --- */
+
+/* The summary row holds the statistic cards and the publish action. The
+   action keeps its width when the tenant card is absent, so the cards do not
+   stretch across the space the action will need at a wider role. */
+.modelsSummarySection {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.modelsSummaryGrid {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+.modelsSummaryAction {
+  flex: none;
+}
+
+/* Card header. The identity group keeps the icon beside the alias, and the
+   title block owns the alias row and the display name. */
+.modelCardIdentity {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.modelCardIconBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.modelCardIconBadge svg {
+  width: 18px;
+  height: 18px;
+}
+.modelCardAliasRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.modelCardMetaRight {
+  flex: none;
+}
+.configVersionBadge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+/* A disabled card stays readable; dimming the whole card would also dim the
+   status chip that explains why. */
+.modelCardNew.disabled {
+  opacity: 0.82;
+}
+.modelCardMetaDivider {
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+/* Two facts per row: route counts and routing mode. The capability flags live
+   in the tag row above because each tag is a field the gateway maintains. */
+.modelCardInfoGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.modelCardInfoItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.infoItemLabel {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.infoItemValue {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.modelTagBadge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+}
+.modelTagBadge.warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
+}
+
+.modelCardActionsLeft {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.modelCardActionsRight {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* Route list in the model detail drawer: one compact row per configured
+   Route, in the priority order the route editor maintains. */
+.compactRouteList {
+  display: flex;
+  flex-direction: column;
+}
+.compactRouteRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 12.5px;
+  border-top: 1px solid var(--border-subtle);
+}
+.compactRouteRow:first-child {
+  border-top: 0;
+}
+.compactRouteIndex {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.compactRouteProvider {
+  color: var(--text);
+}
+.compactRouteModel {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.compactRoutePriority,
+.compactRouteWeight {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.compactRouteRow > .badge {
+  margin-left: auto;
+}
+
