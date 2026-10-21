@@ -5,14 +5,16 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   Users,
 } from 'lucide-react'
-import {api, type Tenant, type TenantUsage} from '../api'
+import {api, deleteTenant, type Tenant, type TenantUsage} from '../api'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {Drawer} from '../components/ui/Drawer'
 import {Table} from '../components/ui/Table'
+import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
 import {TenantForm, type TenantDraft} from '../components/tenants/TenantForm'
 import {TenantUsageDetail} from '../components/tenants/TenantUsageDetail'
@@ -29,18 +31,22 @@ import {quotaState, quotaText} from '../lib/quota'
  */
 export function TenantsPage({
   tenants,
+  keyCounts = {},
   loading = false,
   error = '',
   errorStatus = 0,
   onReload,
 }: {
   tenants: Tenant[] | null
+  /** API Keys per tenant id, so the delete confirmation can name the cost. */
+  keyCounts?: Record<string, number>
   loading?: boolean
   error?: string
   errorStatus?: number
   onReload: () => void
 }) {
   const toast = useToast()
+  const confirm = useConfirm()
   const reload = onReload
 
   const [draft, setDraft] = useState<TenantDraft | null>(null)
@@ -70,6 +76,40 @@ export function TenantsPage({
       setUsage({tenant: t, usage: u})
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无法加载租户用量')
+    }
+  }
+
+  /**
+   * Deleting a tenant removes its API Keys with it — the gateway runs both
+   * deletes in one transaction, because the keys' tenant_id is a required
+   * foreign key. The confirmation therefore states how many credentials go
+   * with the tenant; an operator who only meant to retire the department
+   * should disable it instead, which leaves the keys in place.
+   */
+  const remove = async (t: Tenant) => {
+    const keys = keyCounts[t.id] || 0
+    const ok = await confirm({
+      title: `删除租户「${t.name}」？`,
+      description:
+        keys > 0
+          ? `该租户和它名下的 ${keys} 个 API Key 会被永久删除，这些 Key 立即失效且无法恢复。历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。`
+          : '该租户会被永久删除。历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。',
+      confirmText: '确认删除',
+      danger: true,
+      requireText: t.name,
+      requireTextLabel: `输入租户名称「${t.name}」以确认`,
+    })
+    if (!ok) return
+    try {
+      const out = await deleteTenant(t.id)
+      toast.success(
+        out.deleted_keys > 0
+          ? `已删除租户「${t.name}」及 ${out.deleted_keys} 个 API Key`
+          : `已删除租户「${t.name}」`,
+      )
+      reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '删除租户失败')
     }
   }
 
@@ -233,6 +273,14 @@ export function TenantsPage({
                           <Pencil aria-hidden />
                           编辑
                         </button>
+                        <button
+                          type="button"
+                          className="tableActionLink dangerText"
+                          onClick={() => void remove(t)}
+                        >
+                          <Trash2 aria-hidden />
+                          删除
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -295,6 +343,9 @@ export function TenantsPage({
                     </Button>
                     <Button size="sm" icon={<Pencil />} onClick={() => setDraft(t)}>
                       编辑
+                    </Button>
+                    <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => void remove(t)}>
+                      删除
                     </Button>
                   </footer>
                 </article>
