@@ -486,6 +486,18 @@ export async function revokeApiKey(id:string){
   return api<{ok:boolean;id:string;status:number}>(`/admin/api-keys/${encodeURIComponent(id)}`,{method:'DELETE'})
 }
 
+/**
+ * deleteApiKey removes the key row itself.
+ *
+ * This is the harder of the two irreversible operations: revocation keeps the
+ * row so a request log can still name the key, deletion removes it, and a
+ * historical request keeps only the id. `purge=1` is what tells the gateway
+ * which one the caller means.
+ */
+export async function deleteApiKey(id:string){
+  return api<{ok:boolean;id:string;deleted:boolean}>(`/admin/api-keys/${encodeURIComponent(id)}?purge=1`,{method:'DELETE'})
+}
+
 export type TenantFacet={id:string;code:string;name:string}
 export type APIKeyFacet={id:string;name:string;key_prefix:string;tenant_id:string}
 export type RequestLogFacets={tenants:TenantFacet[];keys:APIKeyFacet[]}

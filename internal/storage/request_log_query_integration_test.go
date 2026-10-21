@@ -423,6 +423,34 @@ func TestRevokeAPIKeyReportsAMissingKey(t *testing.T) {
 	}
 }
 
+// TestDeleteAPIKeyRemovesTheRow is the property the console's 删除 action
+// promises, and the one revocation deliberately does not: the row is gone, and
+// a second delete reports that nothing was there rather than succeeding.
+func TestDeleteAPIKeyRemovesTheRow(t *testing.T) {
+	pg := testPostgres(t)
+	clearRequestLogs(t, pg)
+	clearTenantsAndKeys(t, pg)
+
+	fx := seedTenantAndKey(t, pg, "purge", "purge-key")
+	ctx := context.Background()
+
+	if err := pg.DeleteAPIKey(ctx, fx.keyID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	var remaining int
+	if err := pg.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_api_key WHERE id=$1::uuid`, fx.keyID).Scan(&remaining); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("key row still present after delete (count=%d)", remaining)
+	}
+
+	if err := pg.DeleteAPIKey(ctx, fx.keyID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("deleting a missing key returned %v, want pgx.ErrNoRows", err)
+	}
+}
+
 // TestListAPIKeysReportsCumulativeUsage checks the column the console shows
 // next to the rate limits, including the case that matters most: a key that has
 // served nothing must read as zero rather than disappear from the list.

@@ -727,6 +727,13 @@ func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		s.updateAPIKey(w, r, id, reqID)
 	case http.MethodDelete:
+		// DELETE without a qualifier keeps its original meaning: revoke the
+		// credential but keep the row so request history stays resolvable.
+		// `?purge=1` is the separate, harder operation — removing the row.
+		if isPurgeRequest(r) {
+			s.deleteAPIKey(w, r, id, reqID)
+			return
+		}
 		s.revokeAPIKey(w, r, id, reqID)
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")
@@ -792,6 +799,34 @@ func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request, id, reqID 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "status": 2})
+}
+
+// isPurgeRequest tells the two DELETE meanings apart. Revocation is the
+// default because it is the older contract and the safer mistake: a client that
+// forgets the qualifier loses the credential but keeps the history readable.
+func isPurgeRequest(r *http.Request) bool {
+	v := r.URL.Query().Get("purge")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// deleteAPIKey removes the key row outright. It is a separate method from
+// revokeAPIKey on purpose: the two have different consequences for the record
+// trail, and a caller that means the reversible one must not get this by
+// accident.
+func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+	if err := s.pg.DeleteAPIKey(r.Context(), id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "API key could not be deleted", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted": true})
 }
 
 func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
