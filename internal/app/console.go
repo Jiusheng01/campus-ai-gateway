@@ -82,6 +82,8 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleKeys(w, r)
 	case "/api/console/models":
 		s.handleConsoleModels(w, r)
+	case "/api/console/usage":
+		s.handleConsoleUsage(w, r)
 	default:
 		httpx.Error(w, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
 	}

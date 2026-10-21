@@ -23,15 +23,6 @@ function ComingSoon({title, description}: {title: string; description: string}) 
   )
 }
 
-export function ConsoleUsagePage() {
-  return (
-    <ComingSoon
-      title="用量"
-      description="按时间段查看你自己的请求数、成功与失败、输入与输出 Tokens，以及按模型分组的用量。"
-    />
-  )
-}
-
 export function ConsoleLogsPage() {
   return (
     <ComingSoon
