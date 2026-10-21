@@ -1444,11 +1444,6 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 900px) {
   .desktopOnly { display: none; }
   .mobileOnly { display: block; }
-  /* `.cardsList` sets `display: flex` for its column gap, but `.mobileOnly`
-     above comes later in the sheet at equal specificity, so it would win and
-     stack the cards flush. Restating the display here keeps the gap without
-     changing what `.mobileOnly` means everywhere else. */
-  .cardsList { display: flex; }
 }
 
 @media (max-width: 780px) {
@@ -3085,6 +3080,30 @@ input:focus, select:focus, textarea:focus {
   color: var(--text-muted);
   font-weight: normal;
 }
+
+/* --- tenants (ticket 09) --- */
+
+/* The tenant page renders the table and the card list together and lets the
+   `.desktopOnly` / `.mobileOnly` pair in the responsive block pick one. That
+   pair switches at 900px; the shell's own chrome breakpoints are reconciled in
+   the shell, so the page follows the sheet rather than inventing a second one.
+
+   `.cardsList` asks for `display: flex` to keep its column gap, but
+   `.mobileOnly` sets `display` too and wins on source order at equal
+   specificity, stacking the cards flush. Restate the display inside the same
+   breakpoint and only for the pair, so neither name changes meaning on its
+   own. */
+@media (max-width: 900px) {
+  .cardsList.mobileOnly { display: flex; }
+}
+
+/* `.miniCardRows span` is the label rule and also matches the three-state
+   quota tags nested in the value cell: left alone it turns the number muted
+   and drops 无限制's colour. The card has to read the same three states as the
+   table, so the nested tags keep their own presentation. */
+.miniCardRows .tenantQuotaValue span { display: inline-block; font-size: 11.5px; }
+.miniCardRows .tenantQuotaValue .quotaNumericValue { font-size: 13px; color: var(--text); }
+.miniCardRows .tenantQuotaValue .quotaUnlimitedTag { color: #059669; }
 
 /* --- shell chrome (ticket 02) --------------------------------------------- */
 

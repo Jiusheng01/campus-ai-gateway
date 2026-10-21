@@ -16,7 +16,7 @@ import {Table} from '../components/ui/Table'
 import {useToast} from '../components/ui/Toast'
 import {TenantForm, type TenantDraft} from '../components/tenants/TenantForm'
 import {TenantUsageDetail} from '../components/tenants/TenantUsageDetail'
-import {fmt} from '../lib/format'
+import {quotaState, quotaText} from '../lib/quota'
 
 /**
  * The tenant table for one tenant list.
@@ -73,17 +73,21 @@ export function TenantsPage({
     }
   }
 
-  // Clearly distinguishes "无限制" (0), "未设置" (null/undefined), and numeric values
-  const renderLimit = (val?: number, unit = '') => {
-    if (val === undefined || val === null) {
-      return <span className="quotaUnsetTag">未设置</span>
+  // The table cell and the card both render through this, so the same response
+  // cannot read as 无限制 in one place and 未设置 in the other. The three-way
+  // classification itself lives in lib/quota so the API Key drawer's quota
+  // preview can converge on the same rule.
+  const renderLimit = (val?: number | null, unit = '') => {
+    const state = quotaState(val)
+    if (state === 'unset') {
+      return <span className="quotaUnsetTag">{quotaText(val)}</span>
     }
-    if (val === 0) {
-      return <span className="quotaUnlimitedTag">无限制</span>
+    if (state === 'unlimited') {
+      return <span className="quotaUnlimitedTag">{quotaText(val)}</span>
     }
     return (
       <span className="quotaNumericValue mono">
-        {fmt(val)} {unit && <small className="quotaUnit">{unit}</small>}
+        {quotaText(val)} {unit && <small className="quotaUnit">{unit}</small>}
       </span>
     )
   }
@@ -256,31 +260,33 @@ export function TenantsPage({
                   {/* The table and the card share renderLimit so the same
                       response cannot read as 无限制 in one place and 未设置 in
                       the other; the labels stay short because the grid is
-                      three columns wide on a phone. */}
+                      three columns wide on a phone. The value cell carries its
+                      own class because `.miniCardRows span` styles the label and
+                      would otherwise flatten the quota tags nested in it. */}
                   <div className="miniCardRows">
                     <div>
                       <span>日 Token</span>
-                      <b>{renderLimit(t.daily_token_limit)}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.daily_token_limit)}</b>
                     </div>
                     <div>
                       <span>月 Token</span>
-                      <b>{renderLimit(t.monthly_token_limit)}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.monthly_token_limit)}</b>
                     </div>
                     <div>
                       <span>月请求</span>
-                      <b>{renderLimit(t.monthly_request_limit)}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.monthly_request_limit)}</b>
                     </div>
                     <div>
                       <span>RPM</span>
-                      <b>{renderLimit(t.rpm_limit, '/min')}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.rpm_limit, '/min')}</b>
                     </div>
                     <div>
                       <span>TPM</span>
-                      <b>{renderLimit(t.tpm_limit, '/min')}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.tpm_limit, '/min')}</b>
                     </div>
                     <div>
                       <span>并发</span>
-                      <b>{renderLimit(t.max_concurrency)}</b>
+                      <b className="tenantQuotaValue">{renderLimit(t.max_concurrency)}</b>
                     </div>
                   </div>
                   <footer className="cardActions">

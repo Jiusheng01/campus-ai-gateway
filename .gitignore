@@ -40,3 +40,6 @@ docs/
 
 # Vitest cache
 .vite/
+
+# Package installs
+node_modules/
