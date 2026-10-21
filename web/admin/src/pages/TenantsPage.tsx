@@ -157,70 +157,132 @@ export function TenantsPage({onReload}: {onReload?: () => void}) {
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : filteredTenants.length ? (
-          <div className="tenantsTableWrap">
-            <Table
-              heads={[
-                '租户',
-                '编码',
-                '状态',
-                '日 Token 上限',
-                '月 Token 上限',
-                '月请求上限',
-                'RPM 上限',
-                'TPM 上限',
-                '并发限制',
-                '操作',
-              ]}
-              minWidth={1180}
-            >
+          <>
+            {/* Ten columns of limits cannot be squeezed into a phone viewport,
+                so both representations are rendered and the 900px breakpoint
+                in styles.css picks one. Rendering both rather than branching on
+                a measured width keeps the choice in CSS, where it also holds on
+                first paint. */}
+            <div className="desktopOnly">
+              <Table
+                heads={[
+                  '租户',
+                  '编码',
+                  '状态',
+                  '日 Token 上限',
+                  '月 Token 上限',
+                  '月请求上限',
+                  'RPM 上限',
+                  'TPM 上限',
+                  '并发限制',
+                  '操作',
+                ]}
+                minWidth={1180}
+              >
+                {filteredTenants.map(t => (
+                  <tr key={t.id}>
+                    <td>
+                      <div className="tenantCell">
+                        <span className="tenantName">{t.name}</span>
+                      </div>
+                    </td>
+                    <td className="mono muted">{t.code}</td>
+                    <td>
+                      <span className={`statusChip ${t.status === 1 ? 'ok' : 'down'}`}>
+                        <i className={`dot ${t.status === 1 ? 'on' : 'down'}`} aria-hidden />
+                        {t.status === 1 ? '启用' : '停用'}
+                      </span>
+                    </td>
+                    <td className="numeric">{renderLimit(t.daily_token_limit)}</td>
+                    <td className="numeric">{renderLimit(t.monthly_token_limit)}</td>
+                    <td className="numeric">{renderLimit(t.monthly_request_limit)}</td>
+                    <td className="numeric">{renderLimit(t.rpm_limit, '/min')}</td>
+                    <td className="numeric">{renderLimit(t.tpm_limit, '/min')}</td>
+                    <td className="numeric">{renderLimit(t.max_concurrency)}</td>
+                    <td>
+                      <div className="rowActions">
+                        <button
+                          type="button"
+                          className="tableActionLink"
+                          onClick={() => void openUsage(t)}
+                        >
+                          <Gauge aria-hidden />
+                          查看用量
+                        </button>
+                        <button
+                          type="button"
+                          className="tableActionLink"
+                          onClick={() => setDraft(t)}
+                        >
+                          <Pencil aria-hidden />
+                          编辑
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </Table>
+
+              <footer className="tableFooterBar">
+                <span className="tableRecordCount">共 {filteredTenants.length} 个租户</span>
+              </footer>
+            </div>
+
+            <section className="mobileOnly cardsList" aria-label="租户卡片列表">
               {filteredTenants.map(t => (
-                <tr key={t.id}>
-                  <td>
-                    <div className="tenantNameCell">
-                      <b className="tenantNameTitle">{t.name}</b>
+                <article className="miniCard" key={t.id}>
+                  <header>
+                    <div>
+                      <span className="eyebrow">{t.code}</span>
+                      <h3>{t.name}</h3>
                     </div>
-                  </td>
-                  <td className="mono muted">{t.code}</td>
-                  <td>
                     <span className={`statusChip ${t.status === 1 ? 'ok' : 'down'}`}>
                       <i className={`dot ${t.status === 1 ? 'on' : 'down'}`} aria-hidden />
                       {t.status === 1 ? '启用' : '停用'}
                     </span>
-                  </td>
-                  <td className="numeric">{renderLimit(t.daily_token_limit)}</td>
-                  <td className="numeric">{renderLimit(t.monthly_token_limit)}</td>
-                  <td className="numeric">{renderLimit(t.monthly_request_limit)}</td>
-                  <td className="numeric">{renderLimit(t.rpm_limit, '/min')}</td>
-                  <td className="numeric">{renderLimit(t.tpm_limit, '/min')}</td>
-                  <td className="numeric">{renderLimit(t.max_concurrency)}</td>
-                  <td>
-                    <div className="rowActions">
-                      <button
-                        type="button"
-                        className="tableActionLink"
-                        onClick={() => void openUsage(t)}
-                      >
-                        <Gauge aria-hidden />
-                        查看用量
-                      </button>
-                      <button
-                        type="button"
-                        className="tableActionLink"
-                        onClick={() => setDraft(t)}
-                      >
-                        <Pencil aria-hidden />
-                        编辑
-                      </button>
+                  </header>
+                  {/* The table and the card share renderLimit so the same
+                      response cannot read as 无限制 in one place and 未设置 in
+                      the other; the labels stay short because the grid is
+                      three columns wide on a phone. */}
+                  <div className="miniCardRows">
+                    <div>
+                      <span>日 Token</span>
+                      <b>{renderLimit(t.daily_token_limit)}</b>
                     </div>
-                  </td>
-                </tr>
+                    <div>
+                      <span>月 Token</span>
+                      <b>{renderLimit(t.monthly_token_limit)}</b>
+                    </div>
+                    <div>
+                      <span>月请求</span>
+                      <b>{renderLimit(t.monthly_request_limit)}</b>
+                    </div>
+                    <div>
+                      <span>RPM</span>
+                      <b>{renderLimit(t.rpm_limit, '/min')}</b>
+                    </div>
+                    <div>
+                      <span>TPM</span>
+                      <b>{renderLimit(t.tpm_limit, '/min')}</b>
+                    </div>
+                    <div>
+                      <span>并发</span>
+                      <b>{renderLimit(t.max_concurrency)}</b>
+                    </div>
+                  </div>
+                  <footer className="cardActions">
+                    <Button size="sm" icon={<Gauge />} onClick={() => void openUsage(t)}>
+                      查看用量
+                    </Button>
+                    <Button size="sm" icon={<Pencil />} onClick={() => setDraft(t)}>
+                      编辑
+                    </Button>
+                  </footer>
+                </article>
               ))}
-            </Table>
-
-            <footer className="tableFooterBar">
-              <span className="tableRecordCount">共 {filteredTenants.length} 个租户</span>
-            </footer>
-          </div>
+            </section>
+          </>
         ) : (
           <EmptyState
             icon={<Users />}

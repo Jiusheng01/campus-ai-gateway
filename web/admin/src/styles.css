@@ -1445,6 +1445,11 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 900px) {
   .desktopOnly { display: none; }
   .mobileOnly { display: block; }
+  /* `.cardsList` sets `display: flex` for its column gap, but `.mobileOnly`
+     above comes later in the sheet at equal specificity, so it would win and
+     stack the cards flush. Restating the display here keeps the gap without
+     changing what `.mobileOnly` means everywhere else. */
+  .cardsList { display: flex; }
 }
 
 @media (max-width: 780px) {
