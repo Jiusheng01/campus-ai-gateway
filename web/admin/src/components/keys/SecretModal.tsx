@@ -31,7 +31,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
   const copy = async () => {
     if (await copyText(value)) {
       setCopied(true)
-      toast.success('API 密钥已复制到剪贴板')
+      toast.success('API Key 已复制到剪贴板')
     } else {
       toast.error('复制失败，请手动选择并复制')
     }
@@ -43,8 +43,8 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
       return
     }
     const ok = await confirm({
-      title: '尚未确认已保存 API 密钥',
-      description: '完整 Key 只在创建完成时显示一次，关闭后将永远无法再次查看。确定要关闭吗？',
+      title: '尚未确认已保存 API Key',
+      description: '完整 API Key 只在创建完成时显示一次，关闭后将永远无法再次查看。确定要关闭吗？',
       confirmText: '仍然关闭',
       cancelText: '返回保存',
       danger: true,
@@ -54,8 +54,8 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
 
   return (
     <Modal
-      title="API 密钥创建成功"
-      subtitle="完整 Key 仅显示一次，离开页面后将无法再次查看。"
+      title="API Key 创建成功"
+      subtitle="完整 API Key 仅显示一次，离开页面后将无法再次查看。"
       dismissable={false}
       onClose={() => void guardedClose()}
       footer={
@@ -77,8 +77,8 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
         <div className="secretSuccessBanner">
           <CheckCircle2 className="secretSuccessIcon" aria-hidden />
           <div className="secretSuccessText">
-            <b>API 凭据已成功生成</b>
-            <p>请立即复制并妥善配置到业务系统的环境变量或凭据管理服务中。</p>
+            <b>API Key 已成功生成</b>
+            <p>请立即复制并妥善配置到业务系统的环境变量中。</p>
           </div>
         </div>
 
@@ -100,7 +100,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
               icon={copied ? <Check /> : <Copy />}
               onClick={() => void copy()}
             >
-              {copied ? '已复制' : '复制 Key'}
+              {copied ? '已复制' : '复制 API Key'}
             </Button>
           </div>
         </div>
@@ -111,8 +111,8 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
           <div>
             <b>安全防护提示：</b>
             <p>
-              出于安全规范，校园网关系统数据库仅持久化保存该 Key 的前缀及不可逆的 HMAC 摘要。
-              关闭本对话框后，任何管理员都无法再次找回完整 Key。若遗失，只能吊销并重新创建。
+              出于安全规范，校园网关系统数据库仅持久化保存该 API Key 的前缀及不可逆的 HMAC 摘要。
+              关闭本对话框后，任何管理员都无法再次找回完整 API Key。若遗失，只能吊销并重新创建。
             </p>
           </div>
         </div>

@@ -1,5 +1,4 @@
-/* ==========================================================================
-   Campus AI Gateway · Admin console design system
+/* ===================================================================   Campus AI Gateway · Admin console design system
    --------------------------------------------------------------------------
    One palette, one radius scale, one control height. Pages compose these
    primitives instead of inventing their own spacing and colour, which is what
@@ -1445,6 +1444,11 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 900px) {
   .desktopOnly { display: none; }
   .mobileOnly { display: block; }
+  /* `.cardsList` sets `display: flex` for its column gap, but `.mobileOnly`
+     above comes later in the sheet at equal specificity, so it would win and
+     stack the cards flush. Restating the display here keeps the gap without
+     changing what `.mobileOnly` means everywhere else. */
+  .cardsList { display: flex; }
 }
 
 @media (max-width: 780px) {
@@ -3080,6 +3084,515 @@ input:focus, select:focus, textarea:focus {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: normal;
+}
+
+/* --- shell chrome (ticket 02) --------------------------------------------- */
+
+/* The topbar is the one row every page shares, so its controls use the same
+   control height and radius as the buttons below them. Before this block none
+   of these names had a rule and the whole right-hand cluster fell back to
+   unstyled buttons: full-width, default font, no separation from the title. */
+.topbarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: none;
+}
+.topbarActionItem {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The search entry is a button that opens the palette, not an input: clicking
+   it must not focus a field that cannot be typed into. It is sized like a
+   field so it reads as the search affordance it stands for. */
+.topbarSearchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  min-width: 0;
+  width: 300px;
+  max-width: 34vw;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-faint);
+  text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.topbarSearchBar:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.topbarSearchBar:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.searchBarIcon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-muted);
+}
+.searchBarPlaceholder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+/* The shortcut hint is a key cap, so it is monospaced and never wraps away
+   from the label it belongs to. */
+.searchBarKbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+
+/* Square icon controls in the topbar. Transparent border keeps the four of
+   them on one baseline with the bordered search entry beside them. */
+.topbarIconBtn {
+  position: relative;
+  width: var(--control-h);
+  height: var(--control-h);
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+}
+.topbarIconBtn:hover { background: var(--surface-hover); color: var(--text); }
+.topbarIconBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.topbarIconBtn svg { width: 17px; height: 17px; }
+
+/* The dot sits on the bell's shoulder. The ring is painted in the surface
+   colour rather than a fixed white, so it still separates from the button on
+   the dark theme. */
+.badgeDot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.topbarIconBtn.hasBadge { color: var(--text); }
+
+/* User menu. The trigger carries the identity; the dropdown repeats it because
+   the trigger collapses to an avatar on narrow screens. */
+.userMenuWrapper { position: relative; }
+.userMenuTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+.userMenuTrigger:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.userMenuTrigger.open { border-color: var(--primary); background: var(--surface-subtle); }
+.userMenuTrigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.userAvatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.userMeta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.userName {
+  font-size: 12.5px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userRole {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userChevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.userMenuTrigger.open .userChevron { transform: rotate(180deg); }
+
+/* The dropdown is positioned against the trigger's wrapper, not the viewport,
+   so it stays attached while the topbar scrolls. */
+.userDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 244px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: pop 0.12s ease-out;
+}
+.userDropdownHead {
+  padding: 8px 10px 9px;
+  min-width: 0;
+}
+.dropdownUsername {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdownRoles {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userDropdownDivider {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--border);
+}
+.userDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+.userDropdownItem svg { width: 15px; height: 15px; color: var(--text-muted); flex: none; }
+.userDropdownItem:hover { background: var(--surface-subtle); }
+.userDropdownItem:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.userDropdownItem.danger { color: var(--danger); }
+.userDropdownItem.danger svg { color: var(--danger); }
+.userDropdownItem.danger:hover { background: var(--danger-soft); }
+
+/* Brand row: the left cluster takes the free width so the collapse control
+   stays at the right edge instead of drifting with the title's length. */
+.brandLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.brandCollapseBtn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+}
+.brandCollapseBtn:hover { background: var(--surface-subtle); color: var(--text); }
+.brandCollapseBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.brandCollapseBtn svg { width: 16px; height: 16px; }
+
+.navItemIcon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.navItemLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Help dialog. The code sample scrolls sideways rather than widening the
+   dialog: a request example is one long line per header. */
+.helpContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.helpSection h3 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.helpSection p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+.helpCodeBlock {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+.helpList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.9;
+}
+.helpList kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The notification panel shows /admin/security-events rows. Rows read as one
+   list: the icon column is fixed so the event text lines up across rows of
+   different lengths. */
+.notificationList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notificationItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+}
+.notificationItem + .notificationItem { border-top: 1px solid var(--border); border-radius: 0; }
+.notificationIcon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+.notificationIcon svg { width: 16px; height: 16px; }
+.notificationIcon.danger { background: var(--danger-soft); color: var(--danger); }
+.notificationIcon.warning { background: var(--warning-soft); color: var(--warning); }
+.notificationIcon.info { background: var(--info-soft); color: var(--info); }
+.notificationIcon.neutral { background: var(--surface-subtle); color: var(--text-muted); }
+.notificationContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.notificationContent b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.notificationContent p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.notificationTime {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.notificationMore {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+/* Sidebar promo card. It is a block inside a 240px column, so every child has
+   to shrink with it; the artwork is inline SVG with a viewBox and no fixed
+   width, which is what lets it fill the card instead of overflowing it. */
+.campusPromoCard {
+  margin: 12px 10px 4px;
+  padding: 12px 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--primary-soft) 0%, var(--surface) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* The card is not rendered at the collapsed width; this keeps it out of the
+   layout if a caller ever renders it there. */
+.sidebar.collapsed .campusPromoCard { display: none; }
+.campusPromoVisual {
+  width: 100%;
+  min-width: 0;
+  line-height: 0;
+}
+.campusPromoIllustration {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 68px;
+}
+.campusPromoText {
+  min-width: 0;
+  text-align: center;
+}
+.campusPromoTitle {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campusPromoSub {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The sparkline is inline SVG sized by attributes; this keeps it from
+   stretching inside the flex card row and from overflowing on a phone. */
+.miniSparkline {
+  display: block;
+  flex: none;
+  max-width: 100%;
+}
+
+/* The shell's drawer class. The body scroll lock is set from the component;
+   this stops the workspace itself from rubber-banding behind the backdrop on
+   touch devices, where `overflow: hidden` on the body is not always honoured. */
+.shell.isMobileOpen { overflow: hidden; }
+.shell.isMobileOpen .workspace { touch-action: none; }
+
+/* The sidebar drawer breakpoint is 780px everywhere in this sheet. The shell
+   used to close the drawer at 960px, which left a 180px band where the drawer
+   could be opened but the layout never showed its trigger. */
+@media (max-width: 780px) {
+  .topbarSearchBar {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+    padding: 0;
+    justify-content: center;
+  }
+  .topbarSearchBar .searchBarPlaceholder,
+  .topbarSearchBar .searchBarKbd { display: none; }
+  .userMeta { display: none; }
+  .userMenuTrigger { padding: 0 4px; }
+  .userChevron { display: none; }
+  .campusPromoCard { margin: 10px 8px 4px; }
+}
+
+@media (max-width: 480px) {
+  .topbarIconBtn { width: 32px; height: 32px; }
+  .topbarRight { gap: 4px; }
+}
+
+
+/* --- key drawer (ticket 08) ----------------------------------------------- */
+/* Only the section holding focus is lit. Inactive steps keep their number and
+   label readable but drop the filled disc, so the bar reads as "you are here"
+   rather than "three things are done". */
+.formStep {
+  color: var(--text-muted);
+}
+.formStep .stepNumber {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.formStep .stepLabel {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.formStep.active .stepNumber {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.formStep.active .stepLabel {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* The three-state limit labels. Colour carries the distinction as well as the
+   words: an unlimited cap is a green permission, an unset one is neutral
+   information, and a number is plain text. */
+.quotaMetricValue.quotaUnlimitedTag,
+.quotaMetricValue.quotaUnsetTag {
+  font-size: 15px;
+}
+.quotaMetricValue.quotaUnsetTag {
+  font-weight: 500;
+}
+
+/* Model chips in the key form: the alias is the value the operator recognises,
+   the display name is supporting context. */
+.chipAlias {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+.chipName {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+/* Length hint beside the one-time secret; secondary to the value itself. */
+.secretLengthNotice {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* --- quick search (ticket 03) --- */

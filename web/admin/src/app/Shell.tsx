@@ -1,17 +1,16 @@
 import {useCallback, useEffect, useRef, useState, type ReactNode} from 'react'
 import {
   Bell,
-  CheckCircle2,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
   HelpCircle,
-  Info,
   Loader2,
   LogOut,
   Menu,
   Moon,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   UserRound,
@@ -19,10 +18,29 @@ import {
 } from 'lucide-react'
 import {navGroups, pageMeta, type NavItem, type Page} from './navigation'
 import {primaryRole, roleLabel} from '../lib/roles'
-import type {WhoAmI} from '../api'
+import {api, type SecurityEvent, type WhoAmI} from '../api'
 import {CampusSidebarCard} from '../components/ui/CampusIllustrations'
 import {QuickSearchModal} from '../components/ui/QuickSearch'
 import {Modal} from '../components/ui/Modal'
+import {EmptyState, ErrorState} from '../components/ui/EmptyState'
+import {SkeletonRows} from '../components/ui/Skeleton'
+import {useResource} from '../lib/useResource'
+import {securityLabel, securityTone} from '../lib/labels'
+import {ago} from '../lib/format'
+
+/**
+ * Width at which the sidebar becomes an overlay drawer. It has to equal the
+ * breakpoint of the `.sidebar` / `.mobileNavTrigger` rules in styles.css: the
+ * drawer state and the layout that shows it are two halves of one switch, and
+ * a mismatch leaves the drawer openable at a width where no drawer exists.
+ */
+const MOBILE_DRAWER_QUERY = '(max-width: 780px)'
+/** The same boundary read from the desktop side, for the resize-close listener. */
+const DESKTOP_QUERY = '(min-width: 781px)'
+
+/** Roles the gateway accepts on GET /admin/security-events (see the RBAC allow-list). */
+const mayReadSecurityEvents = (roles: string[]) =>
+  roles.includes('super_admin') || roles.includes('auditor')
 
 type Props = {
   page: Page
@@ -69,6 +87,38 @@ export function Shell({
   // changes, and a new callback on every shell render would pull focus out of
   // the search input.
   const closeSearch = useCallback(() => setSearchOpen(false), [])
+
+  const roles = who?.roles || []
+  const canReadSecurity = mayReadSecurityEvents(roles)
+
+  // Only fetched for roles the endpoint accepts. Asking with any other role
+  // would 403 on every page load and light the bell for an error the operator
+  // cannot act on. The resource is shared by the dot and the panel so the two
+  // cannot describe different event lists.
+  const security = useResource(
+    async () => {
+      if (!canReadSecurity) return []
+      const d = await api<{data: SecurityEvent[]}>(`/admin/security-events?limit=5`)
+      return d.data || []
+    },
+    [canReadSecurity],
+  )
+  const events = security.data || []
+
+  // The dot marks events nobody has opened the panel for. It is derived from
+  // the response rather than a static class: an empty deployment has nothing to
+  // point at, and "已读" is a fact about this browser session, not the gateway.
+  const [seenEventIds, setSeenEventIds] = useState<Set<number>>(new Set())
+  const unreadCount = events.filter(e => !seenEventIds.has(e.id)).length
+
+  function openNotifications() {
+    setNotificationsOpen(true)
+    setSeenEventIds(prev => {
+      const next = new Set(prev)
+      for (const event of events) next.add(event.id)
+      return next
+    })
+  }
 
   // Listen for Ctrl+K or Cmd+K
   useEffect(() => {
@@ -119,7 +169,7 @@ export function Shell({
   // Close mobile drawer when resizing to desktop
   useEffect(() => {
     if (!mobileNavOpen) return
-    const wide = window.matchMedia('(min-width: 960px)')
+    const wide = window.matchMedia(DESKTOP_QUERY)
     const closeIfWide = () => {
       if (wide.matches) setMobileNavOpen(false)
     }
@@ -133,7 +183,6 @@ export function Shell({
     .filter(g => g.items.length > 0)
 
   const username = who?.username || who?.user || '管理员'
-  const roles = who?.roles || []
   const userRoleText = roleLabel(primaryRole(roles))
 
   return (
@@ -270,19 +319,21 @@ export function Shell({
               </span>
             )}
 
-            {/* Notification Bell */}
-            <div className="topbarActionItem">
-              <button
-                type="button"
-                className="topbarIconBtn hasBadge"
-                onClick={() => setNotificationsOpen(true)}
-                title="系统通知"
-                aria-label="系统通知"
-              >
-                <Bell aria-hidden />
-                <span className="badgeDot" aria-hidden />
-              </button>
-            </div>
+            {/* Notification Bell. Hidden for roles the endpoint would reject. */}
+            {canReadSecurity && (
+              <div className="topbarActionItem">
+                <button
+                  type="button"
+                  className={`topbarIconBtn ${unreadCount ? 'hasBadge' : ''}`}
+                  onClick={openNotifications}
+                  title="安全事件"
+                  aria-label="系统通知"
+                >
+                  <Bell aria-hidden />
+                  {unreadCount > 0 && <span className="badgeDot" aria-hidden />}
+                </button>
+              </div>
+            )}
 
             {/* Help Question Icon */}
             <div className="topbarActionItem">
@@ -400,35 +451,56 @@ export function Shell({
         />
       )}
 
-      {/* System Notifications Modal */}
-      {notificationsOpen && (
+      {/* Recent security events. The gateway has no notification endpoint, so
+          this panel shows the one feed it does supply rather than inventing
+          messages: every row below comes from /admin/security-events, and with
+          no rows the panel says so. */}
+      {notificationsOpen && canReadSecurity && (
         <Modal
-          title="系统通知"
-          subtitle="网关运行状况与安全提示"
+          title="安全事件"
+          subtitle="最近 5 条鉴权、权限与配额拒绝事件"
           onClose={() => setNotificationsOpen(false)}
         >
-          <div className="notificationList">
-            <div className="notificationItem unread">
-              <div className="notificationIcon info">
-                <Info aria-hidden />
-              </div>
-              <div className="notificationContent">
-                <b>校园 AI 模型网关控制台已就绪</b>
-                <p>已成功加载最新路由拓扑与渠道配置，所有对外模型状态正常。</p>
-                <small className="notificationTime">刚刚</small>
-              </div>
+          {security.loading && !security.data ? (
+            <SkeletonRows rows={3} columns={2} />
+          ) : security.error ? (
+            <ErrorState message={security.error} status={security.errorStatus} onRetry={security.reload} />
+          ) : events.length ? (
+            <div className="notificationList">
+              {events.map(event => (
+                <div className="notificationItem" key={event.id}>
+                  <div className={`notificationIcon ${securityTone(event.event_type)}`}>
+                    <ShieldAlert aria-hidden />
+                  </div>
+                  <div className="notificationContent">
+                    <b>{securityLabel(event.event_type)}</b>
+                    <p>
+                      {event.detail || '—'}
+                      {event.requested_model ? ` · ${event.requested_model}` : ''}
+                      {event.client_ip ? ` · ${event.client_ip}` : ''}
+                    </p>
+                    <small className="notificationTime">{ago(event.created_at)}</small>
+                  </div>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="link notificationMore"
+                onClick={() => {
+                  setNotificationsOpen(false)
+                  onNavigate('security')
+                }}
+              >
+                查看全部安全事件
+              </button>
             </div>
-            <div className="notificationItem">
-              <div className="notificationIcon success">
-                <CheckCircle2 aria-hidden />
-              </div>
-              <div className="notificationContent">
-                <b>健康巡检正常</b>
-                <p>Gateway 数据面、PostgreSQL 存储与 Redis 配额服务均处于健康状态。</p>
-                <small className="notificationTime">今日 09:00</small>
-              </div>
-            </div>
-          </div>
+          ) : (
+            <EmptyState
+              icon={<ShieldAlert />}
+              title="暂无安全事件"
+              description="发生鉴权失败或限流拒绝后，事件会记录在这里。"
+            />
+          )}
         </Modal>
       )}
 
