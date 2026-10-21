@@ -3214,11 +3214,11 @@ input:focus, select:focus, textarea:focus {
 /* The three-state limit labels. Colour carries the distinction as well as the
    words: an unlimited cap is a green permission, an unset one is neutral
    information, and a number is plain text. */
-.quotaMetricValue .quotaUnlimitedTag,
-.quotaMetricValue .quotaUnsetTag {
+.quotaMetricValue.quotaUnlimitedTag,
+.quotaMetricValue.quotaUnsetTag {
   font-size: 15px;
 }
-.quotaMetricValue .quotaUnsetTag {
+.quotaMetricValue.quotaUnsetTag {
   font-weight: 500;
 }
 
