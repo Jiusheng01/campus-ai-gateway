@@ -23,15 +23,6 @@ function ComingSoon({title, description}: {title: string; description: string}) 
   )
 }
 
-export function ConsoleKeysPage() {
-  return (
-    <ComingSoon
-      title="API Key"
-      description="创建属于你自己的调用凭据、启用或停用它，以及永久删除不再使用的凭据。凭据只属于你的账号，列表不会显示其他账号的 Key。"
-    />
-  )
-}
-
 export function ConsoleModelsPage() {
   return (
     <ComingSoon

@@ -64,6 +64,10 @@ type adminStore interface {
 	AdminUserStats(ctx context.Context) (model.AdminUserStats, error)
 	FindAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error)
 	FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error)
+	// TenantAllowedModels is the model ceiling the personal console offers
+	// when creating a key. It is read separately from the account because it is
+	// the Tenant's fact, not a claim carried in the session.
+	TenantAllowedModels(ctx context.Context, tenantID string) ([]string, error)
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
 	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)

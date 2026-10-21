@@ -37,8 +37,8 @@ import {SettingsPage} from '../pages/SettingsPage'
 import {ProfilePage} from '../pages/ProfilePage'
 import {AccessPage} from '../pages/AccessPage'
 import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
+import {ConsoleKeysPage} from '../pages/ConsoleKeysPage'
 import {
-  ConsoleKeysPage,
   ConsoleLogsPage,
   ConsoleModelsPage,
   ConsoleUsagePage,

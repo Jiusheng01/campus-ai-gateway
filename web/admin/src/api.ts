@@ -387,11 +387,60 @@ export type ConsoleMe={
   status:number
   tenant_id:string
   tenant_name:string
+  /**
+   * The Tenant's model allowlist: ["*"], an explicit list, or [] (none).
+   * This is the ceiling the create drawer offers; the gateway enforces the same
+   * list again inside the create transaction.
+   */
+  allowed_models:string[]
   workspace_usable:boolean
 }
 
 export async function getConsoleMe(){
   return api<ConsoleMe>('/api/console/me',{},false)
+}
+
+/**
+ * ConsoleKey is one row of the member's own key list.
+ *
+ * It deliberately has no `api_key` field: the create response is the only
+ * place the full credential exists. `key_prefix` is enough to recognise a key
+ * and is what the table shows.
+ */
+export type ConsoleKey={
+  id:string
+  tenant_id:string
+  tenant_code:string
+  tenant_name:string
+  name:string
+  key_prefix:string
+  status:number
+  expire_at?:string
+  last_used_at?:string
+  allowed_models:string[]
+  allowed_ips:string[]
+  created_at:string
+  usage_requests:number
+  usage_tokens:number
+}
+
+export async function listConsoleKeys(){
+  const d=await api<{data:ConsoleKey[]}>('/api/console/keys')
+  return d.data||[]
+}
+
+/**
+ * createConsoleKey returns the full key exactly once.
+ *
+ * Only name and model scope are sent: owner and tenant are derived by the
+ * gateway from the session and the Tenant Membership, and the request type has
+ * no field that could override them.
+ */
+export async function createConsoleKey(input:{name:string;allowed_models:string[]}){
+  return api<ConsoleKey&{api_key:string}>('/api/console/keys',{
+    method:'POST',
+    body:JSON.stringify(input),
+  })
 }
 
 export async function revokeSession(id:string){

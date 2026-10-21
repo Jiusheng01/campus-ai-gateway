@@ -56,6 +56,12 @@
 | `PUBLIC_REGISTER_MAX_ATTEMPTS` | 注册限流，按来源 IP 计 | 否 | `5` |
 | `PUBLIC_REGISTER_WINDOW` | 注册限流窗口 | 否 | `1h` |
 
+### 个人控制台
+
+| 变量 | 用途 | 必填 | 默认值 |
+| --- | --- | --- | --- |
+| `PERSONAL_KEY_LIMIT` | 单个账号在个人控制台最多可拥有的 API Key 数量；在创建事务内校验，并发创建也不会超过上限。0 或负数回落到默认值 | 否 | `10` |
+
 ### trusted-header / 应急模式
 
 | 变量 | 用途 | 必填 | 默认值 |

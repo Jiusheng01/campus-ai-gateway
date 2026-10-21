@@ -66,6 +66,9 @@ type fakeAdminStore struct {
 	// tenants maps a Tenant id to its display name. The fake only needs the
 	// name because it is not asked to enforce quota or key membership.
 	tenants map[string]string
+	// tenantModels optionally maps a Tenant id to its model allowlist. An
+	// absent entry reads as the wildcard, which is the column default.
+	tenantModels map[string][]string
 	// ownedKeys is the number of API Keys each account owns. It stands in for a
 	// real gateway_api_key count so the refusal can be exercised without a
 	// database.
@@ -80,11 +83,12 @@ type revokeCall struct {
 
 func newFakeAdminStore() *fakeAdminStore {
 	return &fakeAdminStore{
-		users:     map[string]model.AdminUser{},
-		names:     map[string]string{},
-		sessions:  map[string]model.AdminSession{},
-		tenants:   map[string]string{},
-		ownedKeys: map[string]int64{},
+		users:        map[string]model.AdminUser{},
+		names:        map[string]string{},
+		sessions:     map[string]model.AdminSession{},
+		tenants:      map[string]string{},
+		tenantModels: map[string][]string{},
+		ownedKeys:    map[string]int64{},
 	}
 }
 
@@ -153,6 +157,16 @@ func (f *fakeAdminStore) FindAdminUserByID(_ context.Context, id string) (model.
 		return model.AdminUser{}, storage.ErrAdminUserNotFound
 	}
 	return u, nil
+}
+
+func (f *fakeAdminStore) TenantAllowedModels(_ context.Context, tenantID string) ([]string, error) {
+	if _, ok := f.tenants[tenantID]; !ok {
+		return nil, nil
+	}
+	if models, ok := f.tenantModels[tenantID]; ok {
+		return models, nil
+	}
+	return []string{model.AllModelsWildcard}, nil
 }
 
 func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {

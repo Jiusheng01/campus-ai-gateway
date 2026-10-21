@@ -69,6 +69,7 @@ type consoleMeBody struct {
 	Status          int      `json:"status"`
 	TenantID        string   `json:"tenant_id"`
 	TenantName      string   `json:"tenant_name"`
+	AllowedModels   []string `json:"allowed_models"`
 	WorkspaceUsable bool     `json:"workspace_usable"`
 }
 
@@ -107,6 +108,9 @@ func TestConsoleMeReturnsMemberIdentityAndTenant(t *testing.T) {
 	if body.TenantID != "tenant-campus" || body.TenantName != "校园信息化" {
 		t.Fatalf("tenant = %q/%q", body.TenantID, body.TenantName)
 	}
+	if len(body.AllowedModels) != 1 || body.AllowedModels[0] != model.AllModelsWildcard {
+		t.Fatalf("allowed_models = %v, want the column default wildcard", body.AllowedModels)
+	}
 	if !body.WorkspaceUsable {
 		t.Fatal("a member with a Tenant must have a usable workspace")
 	}
@@ -134,8 +138,29 @@ func TestConsoleMeReportsUnassignedTenant(t *testing.T) {
 	if body.TenantID != "" || body.TenantName != "" {
 		t.Fatalf("unassigned tenant must be empty, got %q/%q", body.TenantID, body.TenantName)
 	}
+	if len(body.AllowedModels) != 0 {
+		t.Fatalf("an unassigned account has no model ceiling, got %v", body.AllowedModels)
+	}
 	if body.WorkspaceUsable {
 		t.Fatal("an account without a Tenant must report the workspace as not usable")
+	}
+}
+
+// The create drawer must be bounded by the Tenant's allowlist, so the identity
+// projection carries it. This is the small addition to /api/console/me that
+// stands in until the dedicated models endpoint (ticket 07) lands.
+func TestConsoleMeCarriesTheTenantModelAllowlist(t *testing.T) {
+	s, store := consoleServer(t, testConfig())
+	_, token := consoleMember(t, s, store, "member-models", true)
+	store.tenantModels["tenant-campus"] = []string{"campus-chat", "campus-embed"}
+
+	rec := consoleCall(t, s, token, "/api/console/me")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/console/me = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeConsoleMe(t, rec)
+	if len(body.AllowedModels) != 2 || body.AllowedModels[0] != "campus-chat" || body.AllowedModels[1] != "campus-embed" {
+		t.Fatalf("allowed_models = %v, want the Tenant's explicit list", body.AllowedModels)
 	}
 }
 
