@@ -335,7 +335,7 @@ function Console() {
     >
       {route.workspace === 'console' ? (
         <>
-          {route.page === 'overview' && <ConsoleOverviewPage />}
+          {route.page === 'overview' && <ConsoleOverviewPage onNavigate={navigate} />}
           {route.page === 'keys' && <ConsoleKeysPage />}
           {route.page === 'models' && <ConsoleModelsPage />}
           {route.page === 'usage' && <ConsoleUsagePage />}
