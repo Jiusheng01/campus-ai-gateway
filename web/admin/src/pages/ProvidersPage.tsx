@@ -290,7 +290,7 @@ export function ProvidersPage({
       {/* Filter Section matching image 2 */}
       <div className="filterCard">
         <div className="filtersBar">
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">名称</span>
             <input
               className="filterInput"
@@ -301,7 +301,7 @@ export function ProvidersPage({
             />
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">供应商类型</span>
             <select
               className="filterSelect"
@@ -317,7 +317,7 @@ export function ProvidersPage({
             </select>
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">协议</span>
             <select
               className="filterSelect"
@@ -333,7 +333,7 @@ export function ProvidersPage({
             </select>
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">状态</span>
             <select
               className="filterSelect"
@@ -452,24 +452,24 @@ export function ProvidersPage({
                       </span>
                     </td>
                     <td>
-                      <span className={`statusPill ${isOnline ? 'ok' : 'down'}`}>
+                      <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
                         <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
                         {isOnline ? '在线' : '已停用'}
                       </span>
                     </td>
                     <td>
                       {hasCred ? (
-                        <span className="statusPill ok">
+                        <span className="statusChip ok">
                           <i className="dot on" aria-hidden />
                           已配置
                         </span>
                       ) : p.credential?.source_type === 'env' ? (
-                        <span className="statusPill warning">
+                        <span className="statusChip warn">
                           <i className="dot unknown" aria-hidden />
                           环境变量未就绪
                         </span>
                       ) : (
-                        <span className="statusPill down">
+                        <span className="statusChip down">
                           <i className="dot down" aria-hidden />
                           未配置
                         </span>

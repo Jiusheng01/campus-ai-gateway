@@ -184,7 +184,7 @@ export function RoutesPage() {
       {/* Filter Row matching image 4 */}
       <div className="filterCard">
         <div className="filtersBar">
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">对外模型</span>
             <input
               className="filterInput"
@@ -195,7 +195,7 @@ export function RoutesPage() {
             />
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">渠道</span>
             <input
               className="filterInput"
@@ -206,7 +206,7 @@ export function RoutesPage() {
             />
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">状态</span>
             <select
               className="filterSelect"
@@ -264,7 +264,7 @@ export function RoutesPage() {
                         {gm.model_display_name && (
                           <span className="routeModelDisplayName">{gm.model_display_name}</span>
                         )}
-                        <span className={`statusPill ${gm.isOnline ? 'ok' : 'down'}`}>
+                        <span className={`statusChip ${gm.isOnline ? 'ok' : 'down'}`}>
                           <i className={`dot ${gm.isOnline ? 'on' : 'down'}`} aria-hidden />
                           {gm.isOnline ? '已启用' : '已停用'}
                         </span>
@@ -335,7 +335,7 @@ export function RoutesPage() {
                         </td>
                         <td className="numeric">{ms(r.timeout_ms)}</td>
                         <td>
-                          <span className={`statusPill ${r.status === 1 ? 'ok' : 'down'}`}>
+                          <span className={`statusChip ${r.status === 1 ? 'ok' : 'down'}`}>
                             <i className={`dot ${r.status === 1 ? 'on' : 'down'}`} aria-hidden />
                             {r.status === 1 ? '启用' : '停用'}
                           </span>

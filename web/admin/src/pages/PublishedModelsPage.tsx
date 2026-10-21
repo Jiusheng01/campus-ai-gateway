@@ -259,7 +259,7 @@ export function PublishedModelsPage({
       {/* Filter Row matching image 3 */}
       <div className="filterCard">
         <div className="filtersBar">
-          <label className="filterField flexGrow">
+          <label className="filterFieldInline flexGrow">
             <span className="filterLabel">搜索</span>
             <div className="searchFieldWrapper">
               <Search className="fieldSearchIcon" aria-hidden />
@@ -272,7 +272,7 @@ export function PublishedModelsPage({
             </div>
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">状态</span>
             <select
               className="filterSelect"
@@ -285,7 +285,7 @@ export function PublishedModelsPage({
             </select>
           </label>
 
-          <label className="filterField">
+          <label className="filterFieldInline">
             <span className="filterLabel">上游渠道</span>
             <select
               className="filterSelect"
@@ -344,7 +344,7 @@ export function PublishedModelsPage({
                       <div className="modelCardNameBlock">
                         <div className="modelCardAliasRow">
                           <h3 className="modelCardAlias mono">{m.alias}</h3>
-                          <span className={`statusPill ${isOnline ? 'ok' : 'down'}`}>
+                          <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
                             <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
                             {isOnline ? '启用中' : '已停用'}
                           </span>

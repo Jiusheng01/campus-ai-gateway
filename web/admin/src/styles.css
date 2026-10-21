@@ -1609,19 +1609,37 @@ input:focus, select:focus, textarea:focus {
   box-shadow: var(--shadow-sm);
   margin-bottom: 20px;
 }
-.pageBannerBody {
+/* The banner's text column carries the title, subtitle and actions, so it is a
+   column with one rhythm rather than a plain max-width box. The illustration
+   sits beside it in its own absolutely positioned wrapper, which keeps the
+   artwork out of the flex flow and lets the text keep the full width on narrow
+   windows where the illustration is hidden by the media query below. */
+.pageBannerContent {
   position: relative;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   max-width: 680px;
+}
+.pageBannerHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 .pageBannerTitle {
   font-size: 22px;
   font-weight: 700;
   color: var(--text);
-  margin: 0 0 6px 0;
+  margin: 0;
   letter-spacing: -0.02em;
 }
-.pageBannerSubtitle {
+.pageBannerBadge {
+  display: inline-flex;
+  align-items: center;
+}
+.pageBannerSub {
   font-size: 13.5px;
   color: var(--text-muted);
   line-height: 1.6;
@@ -1634,17 +1652,29 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 12px;
 }
-.pageBannerIllustration {
+.pageBannerIllustrationWrap {
   position: absolute;
   right: 16px;
   bottom: 0;
   top: 0;
-  height: 100%;
+  display: flex;
+  align-items: flex-end;
   pointer-events: none;
   z-index: 1;
   opacity: 0.9;
-  display: flex;
-  align-items: flex-end;
+}
+.pageBannerIllustration {
+  display: block;
+  height: 100%;
+  max-height: 110px;
+  width: auto;
+}
+/* Below this width the artwork would sit under the subtitle rather than
+   beside it, so the banner keeps the text and loses the decoration. */
+@media (max-width: 760px) {
+  .pageBanner { padding: 18px 20px; }
+  .pageBannerIllustrationWrap { display: none; }
+  .pageBannerContent { max-width: none; }
 }
 .campusIllustrationWrap svg {
   display: block;
@@ -1703,6 +1733,17 @@ input:focus, select:focus, textarea:focus {
 .statGrid.cols-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+/* The card row is the page's first content block; four 26px values across a
+   laptop width would each wrap. Two columns keep the number and its label on
+   one line until the phone breakpoint, where they stack. */
+@media (max-width: 1100px) {
+  .statGrid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .statGrid.cols-4,
+  .statGrid.cols-3,
+  .statGrid.cols-2 { grid-template-columns: minmax(0, 1fr); }
+}
 
 .statCard {
   background: var(--surface);
@@ -1719,11 +1760,26 @@ input:focus, select:focus, textarea:focus {
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
+/* A card that opens a detail view must read as clickable before hover, so the
+   cursor and focus ring carry the affordance the border alone does not. */
+.statCard.interactive {
+  cursor: pointer;
+}
+.statCard.interactive:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 
 .statCardTop {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.statCardLabelGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .statCardLabel {
   font-size: 13px;
@@ -1758,8 +1814,19 @@ input:focus, select:focus, textarea:focus {
   background: #fffbeb;
   color: #d97706;
 }
+/* The tone union includes danger, so a caller marking an error count must not
+   fall back to the default grey icon. */
+.statCard.danger .statCardIcon {
+  background: #fef2f2;
+  color: #dc2626;
+}
 
-.statCardMiddle {
+.statCardMain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.statCardValueRow {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1773,12 +1840,13 @@ input:focus, select:focus, textarea:focus {
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
 }
-.statCardChart {
+.statCardSparkline {
   display: flex;
   align-items: center;
+  flex: none;
 }
 
-.statCardBottom {
+.statCardFoot {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1788,23 +1856,33 @@ input:focus, select:focus, textarea:focus {
   border-top: 1px dashed var(--border-subtle);
   padding-top: 8px;
 }
-.statCardSubtext {
+.statCardSub {
   font-size: 12px;
   color: var(--text-muted);
+  min-width: 0;
 }
+.statCardTrend {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The arrow and the colour both come from the same `isPositive`/`neutral`
+   flags, so a caption never says "up" in red. `neutral` exists because a
+   flat period is neither. */
+.statCardTrend.up { color: var(--success); }
+.statCardTrend.down { color: var(--danger); }
+.statCardTrend.neutral { color: var(--text-muted); }
+/* The badge is a caller-supplied node (a status pill, a count). It gets chip
+   spacing only; colour belongs to that node, so there are no tone variants
+   here for a consumer to guess at. */
 .statCardBadge {
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
-}
-.statCardBadge.positive {
-  background: #ecfdf5;
-  color: #059669;
-}
-.statCardBadge.negative {
-  background: #fef2f2;
-  color: #dc2626;
+  flex: none;
 }
 
 /* --- 3. Unified Filter Cards ---------------------------------------------- */
@@ -1851,7 +1929,12 @@ input:focus, select:focus, textarea:focus {
   outline: none;
   box-shadow: 0 0 0 2px var(--primary-soft);
 }
-.filterField {
+/* The redesigned filter bar puts the caption beside its control, whereas the
+   `.filterField` primitive that predates it stacks the caption above the
+   control. They are different layouts, not two spellings of one: redefining
+   `.filterField` here silently turned the request-log page's stacked fields
+   into a row. The redesigned bar therefore uses its own name. */
+.filterFieldInline {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1877,8 +1960,11 @@ input:focus, select:focus, textarea:focus {
   margin-left: auto;
 }
 
-/* Status Pill Indicators */
-.statusPill {
+/* Status chips. The `.statusPill` primitive (top of the sheet) sets colour on
+   text; the redesign wants a filled pill. That is a second presentation of the
+   same fact, so it gets a second name. An override of `.statusPill` would have
+   restyled every existing status row that never asked for a pill. */
+.statusChip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1888,28 +1974,36 @@ input:focus, select:focus, textarea:focus {
   border-radius: 999px;
   line-height: 1;
 }
-.statusPill.ok {
-  background: #ecfdf5;
-  color: #065f46;
-  border: 1px solid #a7f3d0;
+.statusChip.ok {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 32%, var(--border));
 }
-.statusPill.down {
-  background: #fef2f2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
+.statusChip.down {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
 }
-.statusPill.warn {
-  background: #fffbeb;
-  color: #92400e;
-  border: 1px solid #fde68a;
+/* `warn`, not `warning`: the pill's tone names are short across the console
+   (`ok`, `down`), and ticket 06 renders the provider credential tag from this
+   same variant. */
+.statusChip.warn {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
 }
-.statusPill .dot {
+.statusChip.unknown {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.statusChip .dot {
   width: 6px;
   height: 6px;
   border-radius: 999px;
 }
-.statusPill .dot.on { background: #10b981; }
-.statusPill .dot.down { background: #ef4444; }
+.statusChip .dot.on { background: var(--success); }
+.statusChip .dot.down { background: var(--danger); }
 
 /* Table Action Links */
 .tableActionLink {

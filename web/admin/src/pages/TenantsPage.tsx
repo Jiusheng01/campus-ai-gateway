@@ -123,7 +123,7 @@ export function TenantsPage({onReload}: {onReload?: () => void}) {
               />
             </div>
 
-            <label className="filterField">
+            <label className="filterFieldInline">
               <span className="filterLabel">状态</span>
               <select
                 className="filterSelect"
@@ -182,7 +182,7 @@ export function TenantsPage({onReload}: {onReload?: () => void}) {
                   </td>
                   <td className="mono muted">{t.code}</td>
                   <td>
-                    <span className={`statusPill ${t.status === 1 ? 'ok' : 'down'}`}>
+                    <span className={`statusChip ${t.status === 1 ? 'ok' : 'down'}`}>
                       <i className={`dot ${t.status === 1 ? 'on' : 'down'}`} aria-hidden />
                       {t.status === 1 ? '启用' : '停用'}
                     </span>

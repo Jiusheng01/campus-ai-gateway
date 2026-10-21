@@ -280,7 +280,7 @@ export function DashboardPage({
                       </div>
                       <small>{h.note}</small>
                     </div>
-                    <span className={`statusPill ${state}`}>
+                    <span className={`statusChip ${state === 'ok' ? 'ok' : state === 'down' ? 'down' : 'unknown'}`}>
                       <i className={`dot ${state === 'ok' ? 'on' : state === 'down' ? 'down' : 'unknown'}`} aria-hidden />
                       {state === 'ok' ? '正常' : state === 'down' ? '异常' : '未知'}
                     </span>

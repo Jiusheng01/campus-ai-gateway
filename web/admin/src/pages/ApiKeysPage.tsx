@@ -185,7 +185,7 @@ export function ApiKeysPage({
               />
             </div>
 
-            <label className="filterField">
+            <label className="filterFieldInline">
               <span className="filterLabel">全部状态</span>
               <select
                 className="filterSelect"
@@ -198,7 +198,7 @@ export function ApiKeysPage({
               </select>
             </label>
 
-            <label className="filterField">
+            <label className="filterFieldInline">
               <span className="filterLabel">全部租户</span>
               <select
                 className="filterSelect"
@@ -314,7 +314,7 @@ export function ApiKeysPage({
                     </td>
 
                     <td>
-                      <span className={`statusPill ${k.status === 1 ? 'ok' : 'down'}`}>
+                      <span className={`statusChip ${k.status === 1 ? 'ok' : 'down'}`}>
                         <i className={`dot ${k.status === 1 ? 'on' : 'down'}`} aria-hidden />
                         {k.status === 1 ? '启用' : '停用'}
                       </span>

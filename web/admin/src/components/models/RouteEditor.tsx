@@ -228,7 +228,7 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
                     <span className="routeRuleIndex">#{i + 1}</span>
                     <b className="routeRuleChannelName">{providerName}</b>
                     <span className="routeRuleModelTag mono">{r.upstream_model || '（未输入上游模型）'}</span>
-                    <span className={`statusPill ${r.status === 1 ? 'ok' : 'down'}`}>
+                    <span className={`statusChip ${r.status === 1 ? 'ok' : 'down'}`}>
                       <i className={`dot ${r.status === 1 ? 'on' : 'down'}`} aria-hidden />
                       {r.status === 1 ? '启用' : '停用'}
                     </span>
