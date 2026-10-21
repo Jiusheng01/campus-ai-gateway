@@ -137,6 +137,8 @@ docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --bu
 
 第一跳全部在控制台内完成：**创建管理员 → 新增渠道（把厂商 API Key 粘进密码框）→ 在「对外模型」页从该渠道的候选模型里发布对外模型 → 调用**。「模型服务」组现在是「服务概览 / 上游渠道 / 对外模型 / 路由策略 / 调用管理 / 调用日志」：上游渠道管接入与凭据来源，对外模型列出已发布的对外模型并可从渠道候选里发布新名称，路由策略展示每个名称背后的线路组，调用管理签发 API Key 并设定租户配额。Key 在保存时以 AES-256-GCM 加密入库，之后永不回显——控制台只告诉你「已配置」和尾 4 位。如果更愿意走环境变量，勾选「改为引用环境变量」并填入名称即可。
 
+成员使用**个人控制台**：登录后进入 <http://127.0.0.1:8080/console>（管理员也可以打开，但只看到自己名下的资源）。成员先由 `super_admin` 在「用户」页分配租户，再在「API Key」页于租户模型白名单内创建自己的 Key，并查看自己的模型、用量与调用日志；没有租户时页面会明确提示等待分配。
+
 > 全部配置来自**进程环境变量**，**不读取 `.env` 文件**。Provider API Key 是例外：在渠道表单里粘贴后由网关加密存入 PostgreSQL。[`.env.example`](.env.example) 只是变量名参考清单——见[配置](doc/configuration.md)。
 
 > **升级提示 — Provider 出站**：渠道 `base_url` 必须是 `https://`；`http://` 目标只有在 host 命中 `PROVIDER_HTTP_ALLOWLIST` 时才允许。存量 `http://` 渠道需要迁到 HTTPS 或加入 allowlist。loopback 目标无法加入 allowlist，一律在建立连接前拒绝。

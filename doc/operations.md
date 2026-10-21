@@ -108,25 +108,37 @@ go run ./cmd/migrate -database-url "postgres://campus:campus@127.0.0.1:5432/camp
 
 MS1 的 0017 迁移、升级步骤、应用/数据库回退实操和管理员闭环见 [MS1 模型服务管理上线、迁移与回退](ms1-operations.md)。0017 记录后 pre-MS1 二进制不能直接启动，回退必须按该页的方案 A/B 执行，`git revert` 不是完整回退。
 
+### 0018 — 个人控制台归属与快照
+
+`migrations/0018_ownership_and_snapshot.sql` 是个人控制台所需的增量迁移。它只加列和索引，不重写、不删除任何表，也不接触 HMAC 或凭据加密密钥：
+
+- `gateway_admin_user.tenant_id`：可空外键（`ON DELETE SET NULL`），带索引；一个 Account 最多属于一个 Tenant。
+- `gateway_api_key.owner_user_id`：可空外键（`ON DELETE SET NULL`），带索引；`NULL` 表示管理员签发、不属于任何 Account 的 Key。
+- `gateway_tenant.allowed_models`：`JSONB NOT NULL DEFAULT '["*"]'`；存量租户因此继续允许全部模型。
+- `gateway_request_log.owner_user_id`：可空列，**没有外键**，并随 `created_at` 建索引。它是快照，必须在 Key 和 Account 删除后仍然保留归属。
+
+迁移是前向、可重复执行的（`IF NOT EXISTS`）。默认值保持现有行为：存量 Account 没有 Tenant，存量 Key 没有 owner 且继续正常认证，存量请求记录保持无归属、只在管理端可见，存量租户允许全部模型。升级只需正常执行迁移命令（`dev.ps1` / `setup.ps1` 与 Compose 的 migrate 服务都会调用），不需要手工回填；升级后新产生的请求记录才会写入 owner 快照。
+
 ---
 
-## Admin UI 构建
+## 控制台构建（Admin UI 与个人控制台）
 
-Admin UI 源码位于：
+管理控制台与个人控制台**共用同一个构建**，源码位于：
 
 ```text
 web/admin/
 ```
 
-检查与构建：
+检查、测试与构建：
 
 ```powershell
 npm --prefix .\web\admin install
 npm --prefix .\web\admin run check
+npm --prefix .\web\admin run test
 npm --prefix .\web\admin run build
 ```
 
-生产运行时只使用构建后嵌入 Go 的静态资源，不需要单独运行 Node 服务。
+构建产物写入 `internal/app/adminui/dist/`，并由 `go build` 嵌入二进制。`/admin-ui/*` 与 `/console/*` 由同一个 `index.html` 提供：Go 端对非资源路径回落到 SPA 外壳，因此刷新和深链（例如 `/console/keys`）都能直接打开；不存在的资源路径仍然返回 404，CSP 不变。生产运行时只使用嵌入的静态资源，不需要单独运行 Node 服务，也没有第二个前端构建。
 
 ---
 
@@ -197,11 +209,35 @@ scripts/
 
 ```powershell
 npm --prefix .\web\admin run check
+npm --prefix .\web\admin run test
 npm --prefix .\web\admin run build
 go test -count=1 ./...
 go vet ./...
 go build ./...
 ```
+
+依赖数据库的 Go 测试（迁移、存储、个人控制台 HTTP 集成）在该库不可达且未设置 `TEST_DATABASE_URL` 时 SKIP；Redis 相关测试还需要 `TEST_REDIS_ADDR`。跳过不等于通过，验收时必须同时报告哪些套件实际运行。
+
+### 个人控制台验收
+
+前置：`ADMIN_AUTH_MODE=session`（trusted-header 下个人接口按设计拒绝）、一个 `super_admin`、一个成员账号（开放注册需 `PUBLIC_REGISTRATION_ENABLED=true`，或使用已有本地账号），以及至少一个已发布且有可用线路的对外模型。
+
+管理侧：
+
+1. 以 `super_admin` 登录，确认落在 `/admin-ui/dashboard`；刷新 `/admin-ui/users` 等深链仍能打开。
+2. 在「调用管理」创建或编辑租户，设置 `allowed_models`：`["*"]`、显式列表或 `[]`；保存后重新打开确认值已持久化。
+3. 在「用户」把成员分配到该租户；确认用户列表显示所属租户。该账号仍拥有 Key 时再次更改租户，应返回 `409 user_owns_keys` 并带 `owned_key_count`。
+4. 确认管理端的渠道、对外模型、路由、调用日志等页面行为不变。
+
+成员侧：
+
+5. 以成员登录，确认落在 `/console/overview`，概览显示账号、租户、Key 数与今日请求 / Token / 错误率。未分配租户时显示“等待分配租户”的空状态，且创建 Key 被拒绝。
+6. 打开 `/console/keys`：只出现自己的 Key；创建时模型选项不超过租户白名单；创建成功后完整 Key 只显示一次。
+7. 用该 Key 调用 `/v1/chat/completions`，确认 `/console/usage` 与 `/console/request-logs` 出现这次请求，且不包含其他账号的记录；用量页说明货币成本不可用。
+8. 停用 Key 后调用失败，重新启用后恢复；删除 Key 需输入名称确认，删除后 Key 行消失，但此前产生的调用日志仍可打开（owner 快照）。
+9. 打开 `/console/models`，确认只列出租户允许且有可用线路的模型，并显示 OpenAI 兼容 base URL 与请求示例。
+10. 成员直接访问 `/admin-ui` 应看到 403 页面而不是被静默重定向；管理员访问 `/console` 时只看到自己名下的资源。
+11. 退出登录后打开 `/console/usage`，登录完成后应回到该深链；直接刷新 `/console/keys` 也能正常加载。
 
 管理员认证 E2E：
 
