@@ -20,6 +20,7 @@ export default defineConfig({
       // dropped to the login screen on every reload.
       // Match API paths without intercepting the /admin-ui/ frontend assets.
       '^/admin(?:/|$)': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+      '^/auth(?:/|$)': { target: 'http://127.0.0.1:8080', changeOrigin: false },
       '/api/console': { target: 'http://127.0.0.1:8080', changeOrigin: false },
       '/metrics': { target: 'http://127.0.0.1:8080', changeOrigin: false },
       '/healthz': { target: 'http://127.0.0.1:8080', changeOrigin: false },
