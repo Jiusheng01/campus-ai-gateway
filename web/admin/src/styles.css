@@ -3184,3 +3184,56 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
+
+/* --- key drawer (ticket 08) ----------------------------------------------- */
+/* Only the section holding focus is lit. Inactive steps keep their number and
+   label readable but drop the filled disc, so the bar reads as "you are here"
+   rather than "three things are done". */
+.formStep {
+  color: var(--text-muted);
+}
+.formStep .stepNumber {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.formStep .stepLabel {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.formStep.active .stepNumber {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.formStep.active .stepLabel {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* The three-state limit labels. Colour carries the distinction as well as the
+   words: an unlimited cap is a green permission, an unset one is neutral
+   information, and a number is plain text. */
+.quotaMetricValue .quotaUnlimitedTag,
+.quotaMetricValue .quotaUnsetTag {
+  font-size: 15px;
+}
+.quotaMetricValue .quotaUnsetTag {
+  font-weight: 500;
+}
+
+/* Model chips in the key form: the alias is the value the operator recognises,
+   the display name is supporting context. */
+.chipAlias {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+.chipName {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+/* Length hint beside the one-time secret; secondary to the value itself. */
+.secretLengthNotice {
+  font-size: 11px;
+  color: var(--text-muted);
+}
