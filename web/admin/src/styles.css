@@ -3204,6 +3204,23 @@ input:focus, select:focus, textarea:focus {
   color: var(--text-muted);
   line-height: 1.65;
 }
+/* Personal model catalog: base URL and copyable examples. */
+.accessStack { display: flex; flex-direction: column; gap: 20px; }
+.accessBlock { display: flex; flex-direction: column; gap: 8px; }
+.accessHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.accessHeading b { font-size: 13px; color: var(--text); }
+.accessHeadingActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.accessModelPick { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.accessModelPick select { min-height: 30px; padding: 2px 8px; font-size: 12.5px; }
+.accessCode {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+}
 .helpCodeBlock {
   margin: 0;
   padding: 12px 14px;

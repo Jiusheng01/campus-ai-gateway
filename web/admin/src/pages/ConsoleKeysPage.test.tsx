@@ -20,6 +20,11 @@ const me = {
   workspace_usable: true,
 }
 
+const catalog = [
+  {alias: 'campus-chat', display_name: '校园问答', description: '', available: true},
+  {alias: 'campus-embed', display_name: '校园向量', description: '', available: true},
+]
+
 const keys = [
   {
     id: 'k-1',
@@ -57,6 +62,9 @@ type Call = {url: string; method: string; body?: string}
 function stubConsole(options: {
   me?: unknown
   meStatus?: number
+  models?: unknown[]
+  modelsStatus?: number
+  emptyReason?: string
   keys?: unknown[]
   keysStatus?: number
   create?: unknown
@@ -74,6 +82,15 @@ function stubConsole(options: {
             ? {error: options.me || {code: 'admin_internal_error', message: 'database unavailable'}}
             : {...me, ...(options.me as object)},
           options.meStatus || 200,
+        )
+      }
+      if (url === '/api/console/models') {
+        const models = options.models ?? catalog
+        return jsonResponse(
+          options.modelsStatus && options.modelsStatus >= 400
+            ? {error: {code: 'admin_internal_error', message: 'models unavailable'}}
+            : {models, ...(options.emptyReason ? {empty_reason: options.emptyReason} : {})},
+          options.modelsStatus || 200,
         )
       }
       if (url === '/api/console/keys' && method === 'GET') {
@@ -142,6 +159,14 @@ describe('personal console API keys', () => {
     renderPage()
 
     expect(await screen.findByText('尚未分配租户')).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: /创建 API Key/})).toBeDisabled()
+  })
+
+  it('states that a Tenant which allows no models cannot issue a key', async () => {
+    stubConsole({models: [], emptyReason: 'tenant_allows_none', keys: []})
+    renderPage()
+
+    expect(await screen.findByText('租户未开放任何模型')).toBeInTheDocument()
     expect(screen.getByRole('button', {name: /创建 API Key/})).toBeDisabled()
   })
 

@@ -101,6 +101,28 @@ func (i Identity) AllowsModel(name string) bool {
 	return ok
 }
 
+// IdentityFromAllowedModels builds the admission view of a stored scope.
+//
+// It is the one place that turns the JSON list into the map AllowsModel reads,
+// so a caller holding a Tenant or key scope does not reimplement the wildcard
+// rule. The wildcard stands alone by validation; an empty or nil list yields an
+// identity that allows nothing, with a nil map so "denies all" stays
+// distinguishable from "allows all".
+func IdentityFromAllowedModels(list []string) Identity {
+	var i Identity
+	for _, name := range list {
+		if name == AllModelsWildcard {
+			i.AllModels = true
+			continue
+		}
+		if i.AllowedModels == nil {
+			i.AllowedModels = make(map[string]struct{}, len(list))
+		}
+		i.AllowedModels[name] = struct{}{}
+	}
+	return i
+}
+
 type RequestLog struct {
 	RequestID string
 	TenantID  string

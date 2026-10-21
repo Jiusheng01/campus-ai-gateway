@@ -23,15 +23,6 @@ function ComingSoon({title, description}: {title: string; description: string}) 
   )
 }
 
-export function ConsoleModelsPage() {
-  return (
-    <ComingSoon
-      title="模型"
-      description="查看你的租户允许使用的模型，以及 OpenAI 兼容的接入地址和请求示例。"
-    />
-  )
-}
-
 export function ConsoleUsagePage() {
   return (
     <ComingSoon

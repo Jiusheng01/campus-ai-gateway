@@ -14,6 +14,7 @@ import {
   ApiError,
   createConsoleKey,
   getConsoleMe,
+  getConsoleModels,
   listConsoleKeys,
   type ConsoleKey,
 } from '../api'
@@ -36,13 +37,18 @@ import {ago, copyText, fmt, num, when} from '../lib/format'
  * the create form sends a name and a model scope, and the gateway derives the
  * rest from the session and its Tenant Membership.
  *
- * The model ceiling comes from /api/console/me's `allowed_models`. That small
- * addition stands in for the dedicated models endpoint until ticket 07 lands;
- * the same ceiling is enforced server-side inside the create transaction, so
- * this list is a convenience rather than the authority.
+ * The picker is bounded by /api/console/models: the catalog is the Tenant's
+ * allowlist intersected with the statically routable set, so the drawer offers
+ * exactly the aliases the gateway says are callable. `/api/console/me` still
+ * supplies the allowlist's shape — wildcard versus explicit — because a
+ * wildcard key should keep the "including future models" meaning that a list of
+ * today's aliases would lose. The same bounds are enforced server-side inside
+ * the create transaction, so the picker is a convenience rather than the
+ * authority.
  */
 export function ConsoleKeysPage() {
   const me = useResource(getConsoleMe)
+  const catalog = useResource(getConsoleModels)
   const keys = useResource(listConsoleKeys)
   const [creating, setCreating] = useState(false)
   const [secret, setSecret] = useState<string | null>(null)
@@ -50,9 +56,11 @@ export function ConsoleKeysPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [copiedPrefix, setCopiedPrefix] = useState<string | null>(null)
 
-  const allowedModels = me.data?.allowed_models || []
-  const tenantWildcard = allowedModels.includes('*')
-  const canCreate = !!me.data?.workspace_usable && allowedModels.length > 0
+  const tenantWildcard = (me.data?.allowed_models || []).includes('*')
+  const availableModels = catalog.data?.models || []
+  const modelAliases = availableModels.map(m => m.alias)
+  const emptyReason = catalog.data?.empty_reason
+  const canCreate = !!me.data?.workspace_usable && modelAliases.length > 0
 
   const filtered = useMemo(() => {
     const list = keys.data || []
@@ -81,8 +89,9 @@ export function ConsoleKeysPage() {
     keys.reload()
   }
 
-  const loading = (me.loading && !me.data) || (keys.loading && !keys.data)
-  const loadError = me.error || keys.error
+  const loading =
+    (me.loading && !me.data) || (catalog.loading && !catalog.data) || (keys.loading && !keys.data)
+  const loadError = me.error || catalog.error || keys.error
 
   return (
     <div className="stack">
@@ -102,7 +111,7 @@ export function ConsoleKeysPage() {
               canCreate
                 ? undefined
                 : me.data?.workspace_usable
-                  ? '你的租户未开放任何模型'
+                  ? '暂无可签发的模型'
                   : '请先联系管理员为你的账号分配租户'
             }
             onClick={() => setCreating(true)}
@@ -146,8 +155,9 @@ export function ConsoleKeysPage() {
         </div>
 
         {loadError ? (
-          <ErrorState message={loadError} status={me.errorStatus || keys.errorStatus} onRetry={() => {
+          <ErrorState message={loadError} status={me.errorStatus || catalog.errorStatus || keys.errorStatus} onRetry={() => {
             me.reload()
+            catalog.reload()
             keys.reload()
           }} />
         ) : loading ? (
@@ -158,11 +168,17 @@ export function ConsoleKeysPage() {
             title="尚未分配租户"
             description="你的账号还没有加入任何租户，因此暂时不能创建 API Key。请联系管理员在「用户」中为你的账号分配租户。"
           />
-        ) : allowedModels.length === 0 ? (
+        ) : emptyReason === 'tenant_allows_none' ? (
           <EmptyState
             icon={<KeyRound />}
             title="租户未开放任何模型"
             description="你的租户当前没有允许任何模型，因此不能签发可用的 API Key。请联系管理员调整租户的模型授权。"
+          />
+        ) : modelAliases.length === 0 ? (
+          <EmptyState
+            icon={<KeyRound />}
+            title="暂无可调用的模型"
+            description="你的租户允许的模型当前都不可调用（尚未发布或没有可用线路）。请联系管理员检查模型与线路配置。"
           />
         ) : filtered.length ? (
           <div className="keysTableWrap">
@@ -274,7 +290,7 @@ export function ConsoleKeysPage() {
           onClose={() => setCreating(false)}
         >
           <CreateKeyForm
-            models={allowedModels}
+            models={modelAliases}
             tenantWildcard={tenantWildcard}
             onCancel={() => setCreating(false)}
             onCreated={created => {

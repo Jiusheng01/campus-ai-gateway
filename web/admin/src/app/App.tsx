@@ -38,9 +38,9 @@ import {ProfilePage} from '../pages/ProfilePage'
 import {AccessPage} from '../pages/AccessPage'
 import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
 import {ConsoleKeysPage} from '../pages/ConsoleKeysPage'
+import {ConsoleModelsPage} from '../pages/ConsoleModelsPage'
 import {
   ConsoleLogsPage,
-  ConsoleModelsPage,
   ConsoleUsagePage,
 } from '../pages/ConsolePlaceholderPages'
 
