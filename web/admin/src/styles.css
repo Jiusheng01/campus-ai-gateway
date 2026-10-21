@@ -3819,3 +3819,152 @@ input:focus, select:focus, textarea:focus {
   font-size: 10px;
 }
 
+
+/* --- channels (ticket 06) --- */
+/* The three summary cards describe the whole channel configuration. They sit
+   above the table and keep their own row so a filter that narrows the table
+   cannot narrow them. */
+.providersSummarySection { width: 100%; }
+.providersSummaryHeader {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.providersSummaryStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  flex: 1 1 520px;
+}
+.providersSummaryAction { display: flex; align-items: flex-end; }
+.compactStat { padding: 14px 16px; gap: 8px; }
+@media (max-width: 900px) {
+  .providersSummaryStats { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Channel identity and dependency cells. */
+.channelMainName { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+.channelFriendlyName { font-size: 11.5px; color: var(--text-muted); }
+.channelDescText {
+  margin: 0;
+  max-width: 260px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.providerTypeBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.protocolBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.baseUrlText { max-width: 200px; color: var(--text-faint); font-size: 11.5px; }
+
+/* Status and this instance's Provider Circuit. The circuit chip is deliberately
+   not a green "healthy" badge: closed just means this process has not tripped
+   the breaker, and the local state resets when the process does. */
+.channelStatusStack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.circuitChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.circuitScope { font-weight: 600; }
+.circuitValue { font-family: var(--font-mono); font-weight: 700; }
+.circuitRetry { font-weight: 600; }
+.circuitChip.open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.circuitChip.half-open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.circuitChip.closed { color: var(--text-muted); }
+.circuitChip.none,
+.circuitChip.unknown { color: var(--text-faint); }
+.channelFactCircuit { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+.channelRefs { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.candidateCountBadge {
+  display: inline-flex;
+  min-width: 24px;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.channelRefCounts { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+
+/* Diagnostic column. */
+.lastTestCell { display: flex; flex-direction: column; gap: 2px; }
+.lastTestTime { font-size: 12px; color: var(--text); }
+.lastTestLatency { font-size: 11.5px; font-weight: 600; }
+.lastTestLatency.success { color: var(--success); }
+.lastTestLatency.danger { color: var(--danger); }
+
+/* Table selection and batch actions. */
+.selectionCell { width: 36px; }
+.selectedRow { background: var(--primary-soft); }
+.batchActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+}
+.batchSelectionCount { font-size: 12.5px; color: var(--text-muted); }
+.batchSelectionCount b { color: var(--text); }
+.batchButtons { display: flex; gap: 8px; }
+
+.tablePaginationFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.paginationInfo { font-size: 12px; color: var(--text-muted); }
+.paginationControls { display: flex; align-items: center; gap: 8px; }
+.paginationCurrentPage { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 700; }
