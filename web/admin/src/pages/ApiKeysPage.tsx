@@ -1,16 +1,17 @@
 import {useMemo, useState} from 'react'
 import {
-  Ban,
   Check,
   Copy,
   KeyRound,
   Pencil,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
-import {api, revokeApiKey, type ApiKey, type ModelConfig, type Tenant} from '../api'
+import {api, deleteApiKey, type ApiKey, type ModelConfig, type Tenant} from '../api'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
@@ -52,7 +53,9 @@ export function ApiKeysPage({
 
   const [draft, setDraft] = useState<KeyDraft | null>(null)
   const [secret, setSecret] = useState<string | null>(null)
-  const [revoking, setRevoking] = useState<string | null>(null)
+  // One row can only be doing one thing at a time; both row actions share the
+  // marker so a double click cannot fire disable and delete together.
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [copiedPrefix, setCopiedPrefix] = useState<string | null>(null)
 
   // Filter state
@@ -105,25 +108,60 @@ export function ApiKeysPage({
     }
   }
 
-  const revoke = async (k: ApiKey) => {
+  /**
+   * Disabling is an edit, not a revocation: the credential keeps working the
+   * moment the row is re-enabled, which is why it lives beside 编辑 rather than
+   * behind the destructive action. The whole editable record is sent because
+   * the update endpoint replaces it.
+   */
+  const toggleStatus = async (k: ApiKey) => {
+    const next = k.status === 1 ? 2 : 1
+    setBusyId(k.id)
+    try {
+      await api(`/admin/api-keys/${k.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: k.name,
+          tenant_id: k.tenant_id,
+          allowed_models: k.allowed_models || [],
+          allowed_ips: k.allowed_ips || [],
+          status: next,
+          expire_at: k.expire_at || undefined,
+        }),
+      })
+      toast.success(next === 2 ? `已停用「${k.name}」` : `已启用「${k.name}」`)
+      reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '更新状态失败')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  /**
+   * Deletion removes the row, unlike revocation. A request that named this key
+   * keeps only its id afterwards, which is why the confirmation asks for the
+   * name to be typed.
+   */
+  const remove = async (k: ApiKey) => {
     const ok = await confirm({
-      title: `吊销「${k.name}」？`,
-      description: `吊销后 ${k.key_prefix}… 会立即失效，且无法恢复——重新启用也不会让旧 Key 再次可用。历史使用日志会保留，如需继续使用请创建新的 Key。`,
-      confirmText: '确认吊销',
+      title: `删除「${k.name}」？`,
+      description: `删除会移除这条 API Key 记录，${k.key_prefix}… 立即失效且无法恢复。历史请求日志仍会保留，但无法再把它们关联回这个 Key。如需保留可追溯性，请改用「停用」。`,
+      confirmText: '确认删除',
       danger: true,
       requireText: k.name,
       requireTextLabel: `输入 Key 名称「${k.name}」以确认`,
     })
     if (!ok) return
-    setRevoking(k.id)
+    setBusyId(k.id)
     try {
-      await revokeApiKey(k.id)
-      toast.success(`已吊销「${k.name}」`)
+      await deleteApiKey(k.id)
+      toast.success(`已删除「${k.name}」`)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '吊销失败')
+      toast.error(e instanceof Error ? e.message : '删除失败')
     } finally {
-      setRevoking(null)
+      setBusyId(null)
     }
   }
 
@@ -333,12 +371,21 @@ export function ApiKeysPage({
                         </button>
                         <button
                           type="button"
-                          className="tableActionLink dangerText"
-                          disabled={revoking === k.id}
-                          onClick={() => void revoke(k)}
+                          className="tableActionLink"
+                          disabled={busyId === k.id}
+                          onClick={() => void toggleStatus(k)}
                         >
-                          <Ban aria-hidden />
-                          {revoking === k.id ? '吊销中…' : '吊销'}
+                          <Power aria-hidden />
+                          {busyId === k.id ? '处理中…' : k.status === 1 ? '停用' : '启用'}
+                        </button>
+                        <button
+                          type="button"
+                          className="tableActionLink dangerText"
+                          disabled={busyId === k.id}
+                          onClick={() => void remove(k)}
+                        >
+                          <Trash2 aria-hidden />
+                          {busyId === k.id ? '处理中…' : '删除'}
                         </button>
                       </div>
                     </td>

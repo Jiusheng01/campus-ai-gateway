@@ -2,6 +2,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import {CallsPage} from './CallsPage'
 import {ToastProvider} from '../components/ui/Toast'
+import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import {when} from '../lib/format'
 
 function jsonResponse(body: unknown, status = 200) {
@@ -69,10 +70,34 @@ function stubFetch({statusFails = false}: StubOptions = {}) {
   return paths
 }
 
+/**
+ * A stub that records the method and body as well as the path, so a row action
+ * can be judged by what it actually sent rather than by what it rendered.
+ */
+function recordingStub() {
+  const calls: {url: string; method: string; body?: string}[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({url, method: init?.method || 'GET', body: init?.body as string | undefined})
+      if (url === '/admin/status') return jsonResponse(status)
+      if (url === '/admin/api-keys') return jsonResponse({data: keys})
+      if (url === '/admin/tenants') return jsonResponse({data: tenants})
+      if (url === '/admin/models') return jsonResponse({data: models})
+      if (url.startsWith('/admin/api-keys/')) return jsonResponse({ok: true})
+      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+    }),
+  )
+  return calls
+}
+
 function renderCalls() {
   return render(
     <ToastProvider>
-      <CallsPage />
+      <ConfirmProvider>
+        <CallsPage />
+      </ConfirmProvider>
     </ToastProvider>,
   )
 }
@@ -173,5 +198,46 @@ describe('CallsPage', () => {
 
     const expected = when(keys[0].expire_at)
     expect(await screen.findByText(expected)).toBeInTheDocument()
+  })
+
+  it('offers edit, disable and delete, and no revocation', async () => {
+    stubFetch()
+    renderCalls()
+
+    await screen.findByText('校园问答')
+    expect(screen.getByRole('button', {name: /编辑/})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: /停用/})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: /删除/})).toBeInTheDocument()
+    expect(screen.queryByRole('button', {name: /吊销/})).not.toBeInTheDocument()
+  })
+
+  it('disables a key by updating its status rather than destroying it', async () => {
+    const calls = recordingStub()
+    renderCalls()
+
+    fireEvent.click(await screen.findByRole('button', {name: /停用/}))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.method === 'PUT' && c.url === '/admin/api-keys/k1')
+      expect(put, 'a PUT to the key').toBeTruthy()
+      expect(JSON.parse(String(put?.body))).toMatchObject({status: 2, tenant_id: 't1'})
+    })
+  })
+
+  it('deletes a key only after the operator types its name', async () => {
+    const calls = recordingStub()
+    renderCalls()
+
+    fireEvent.click(await screen.findByRole('button', {name: /删除/}))
+
+    // Nothing is sent while the confirmation is open.
+    expect(calls.some(c => c.method === 'DELETE')).toBe(false)
+
+    fireEvent.change(screen.getByLabelText(/输入 Key 名称/), {target: {value: '校园问答'}})
+    fireEvent.click(screen.getByRole('button', {name: '确认删除'}))
+
+    await waitFor(() =>
+      expect(calls.some(c => c.method === 'DELETE' && c.url === '/admin/api-keys/k1?purge=1')).toBe(true),
+    )
   })
 })

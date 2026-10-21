@@ -955,6 +955,25 @@ WHERE id=$1::uuid
 	return nil
 }
 
+// DeleteAPIKey removes the key row itself.
+//
+// RevokeAPIKey is the softer operation: it destroys the credential and keeps
+// the row so historical requests can still resolve a name and tenant. This one
+// is the operator asking for the row to be gone — after it, a request log that
+// names this key keeps the id but nothing can resolve it. The console therefore
+// asks for it only behind a typed confirmation, and the audit row the admin
+// middleware writes retains what was deleted and by whom.
+func (p *Postgres) DeleteAPIKey(ctx context.Context, id string) error {
+	tag, err := p.Pool.Exec(ctx, `DELETE FROM gateway_api_key WHERE id=$1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (p *Postgres) ListRequestLogs(ctx context.Context, limit int) ([]model.RequestLogAdmin, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT
