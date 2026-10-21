@@ -1,14 +1,38 @@
 import {useState} from 'react'
-import type {Tenant} from '../../api'
+import {Layers} from 'lucide-react'
+import type {ModelConfig, Tenant} from '../../api'
 import {Button} from '../ui/Button'
 import {Field} from '../ui/Field'
+import {ModelScopePicker} from '../models/ModelScopePicker'
 
 export type TenantDraft = Partial<Tenant> & {id?: string}
 
-export function TenantForm({value, onSave, onCancel}: {value: TenantDraft; onSave: (v: TenantDraft) => void; onCancel: () => void}) {
-  const [v, setV] = useState<TenantDraft>(value)
+export function TenantForm({
+  value,
+  models = [],
+  onSave,
+  onCancel,
+}: {
+  value: TenantDraft
+  models?: ModelConfig[]
+  onSave: (v: TenantDraft) => void
+  onCancel: () => void
+}) {
+  const [v, setV] = useState<TenantDraft>(() => ({
+    ...value,
+    // A create form, and a response from before this field existed, start
+    // unrestricted. That is the column default and what every existing Tenant
+    // already means, so opening the form never narrows access by accident.
+    allowed_models: value.allowed_models ?? ['*'],
+  }))
   const isNew = !value.id
   const set = (k: keyof TenantDraft, n: number) => setV({...v, [k]: n})
+
+  // The same three shapes the API accepts: "*" (everything, including models
+  // added later), a named list, and [] (nothing). The picker is shared with
+  // the key forms so the three surfaces cannot drift apart.
+  const allowedModels = v.allowed_models ?? []
+  const allModels = allowedModels.includes('*')
 
   return (
     <form
@@ -52,6 +76,32 @@ export function TenantForm({value, onSave, onCancel}: {value: TenantDraft; onSav
           <input type="number" min="0" value={v.max_concurrency || 0} onChange={e => set('max_concurrency', +e.target.value)} />
         </Field>
       </div>
+
+      {/* The Tenant allowlist is the ceiling for personal API Keys written by
+          this Tenant's members. It is not a data-plane check: existing keys keep
+          their own scope, so editing this value never changes live traffic. */}
+      <fieldset className="formSectionFieldset">
+        <legend className="formSectionLegend">
+          <Layers aria-hidden /> 模型授权
+        </legend>
+
+        <ModelScopePicker
+          value={allowedModels}
+          onChange={next => setV(prev => ({...prev, allowed_models: next}))}
+          options={models.map(m => ({alias: m.alias, displayName: m.display_name}))}
+          title="成员可用的对外模型"
+          wildcardLabel="全部对外模型（含以后新增）"
+          wildcardNoticeTitle="已启用通配符授权"
+          wildcardNoticeText="该租户的成员可以调用系统内所有已启用的对外模型，以后新增的模型也会自动允许。"
+          emptyPlaceholder="未选择任何模型（该租户的成员将无法签发可用模型）"
+          addPlaceholder="+ 选择要添加的模型授权…"
+          hint={
+            allModels
+              ? '通配符模式：本租户的成员可以使用所有已启用的对外模型。'
+              : `已选择 ${allowedModels.length} 个模型。不选择任何模型表示不允许使用任何对外模型。`
+          }
+        />
+      </fieldset>
 
       <Field label="状态">
         <select value={v.status || 1} onChange={e => setV({...v, status: +e.target.value})}>

@@ -34,7 +34,7 @@ export type CatalogModel={upstream_model:string;opened:boolean;providers:Catalog
  * the idempotent repeat — the model and Route already covered this binding.
  */
 export type CatalogOpenResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean}
-export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number}
+export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number;allowed_models:string[]}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];route_group:string;usage_requests:number;usage_tokens:number}
 export type RequestAttempt={attempt_no:number;provider:string;upstream_model:string;outcome:string;status_code:number;latency_ms:number;error_kind:string}
@@ -149,6 +149,9 @@ export type AccountUser={
   display_name:string
   roles:string[]
   status:number
+  /** The Account's Tenant Membership. Empty means unassigned, not a Tenant named "". */
+  tenant_id:string
+  tenant_name:string
   last_login_at:string|null
   created_at:string
 }
@@ -178,8 +181,16 @@ export type AdminSessionView={
 export class ApiError extends Error{
   status:number
   code:string
-  constructor(message:string,status:number,code=''){
-    super(message);this.name='ApiError';this.status=status;this.code=code
+  /**
+   * The server's error object beyond code and message, when it sent one.
+   *
+   * A refusal such as "this account still owns 3 keys" carries the number as a
+   * field. The console renders that instead of parsing prose, so a wording
+   * change on the server cannot silently break the message.
+   */
+  details:Record<string,unknown>
+  constructor(message:string,status:number,code='',details:Record<string,unknown>={}){
+    super(message);this.name='ApiError';this.status=status;this.code=code;this.details=details
   }
 }
 
@@ -254,9 +265,9 @@ export async function api<T>(path:string,opt:RequestInit={},retry=true):Promise<
     if(isSessionMode()&&await refreshSession())return api<T>(path,opt,false)
     clearSession()
     onUnauthenticated(code==='session_revoked'?'revoked':'expired')
-    throw new ApiError(message,401,code)
+    throw new ApiError(message,401,code,data?.error||{})
   }
-  if(!r.ok)throw new ApiError(message,r.status,code)
+  if(!r.ok)throw new ApiError(message,r.status,code,data?.error||{})
   return data as T
 }
 
@@ -360,6 +371,235 @@ export async function whoami(){
   return api<WhoAmI>('/admin/whoami',{},false)
 }
 
+/**
+ * ConsoleMe is the personal workspace's identity projection.
+ *
+ * `tenant_id` and `tenant_name` are empty when the Account has no Tenant
+ * Membership — an unassigned state, not a Tenant named "". `workspace_usable`
+ * is the same fact as a boolean, so the overview can say plainly that the
+ * account is waiting for assignment instead of rendering an empty workspace.
+ */
+export type ConsoleMe={
+  account_id:string
+  username:string
+  display_name:string
+  roles:string[]
+  status:number
+  tenant_id:string
+  tenant_name:string
+  /**
+   * The Tenant's model allowlist: ["*"], an explicit list, or [] (none).
+   * This is the ceiling the create drawer offers; the gateway enforces the same
+   * list again inside the create transaction.
+   */
+  allowed_models:string[]
+  workspace_usable:boolean
+  /** Owner-scoped count, so the overview can hint without listing every key. */
+  key_count:number
+}
+
+export async function getConsoleMe(){
+  return api<ConsoleMe>('/api/console/me',{},false)
+}
+
+/**
+ * ConsoleKey is one row of the member's own key list.
+ *
+ * It deliberately has no `api_key` field: the create response is the only
+ * place the full credential exists. `key_prefix` is enough to recognise a key
+ * and is what the table shows.
+ */
+export type ConsoleKey={
+  id:string
+  tenant_id:string
+  tenant_code:string
+  tenant_name:string
+  name:string
+  key_prefix:string
+  status:number
+  expire_at?:string
+  last_used_at?:string
+  allowed_models:string[]
+  allowed_ips:string[]
+  created_at:string
+  usage_requests:number
+  usage_tokens:number
+}
+
+export async function listConsoleKeys(){
+  const d=await api<{data:ConsoleKey[]}>('/api/console/keys')
+  return d.data||[]
+}
+
+/**
+ * createConsoleKey returns the full key exactly once.
+ *
+ * Only name and model scope are sent: owner and tenant are derived by the
+ * gateway from the session and the Tenant Membership, and the request type has
+ * no field that could override them.
+ */
+export async function createConsoleKey(input:{name:string;allowed_models:string[]}){
+  return api<ConsoleKey&{api_key:string}>('/api/console/keys',{
+    method:'POST',
+    body:JSON.stringify(input),
+  })
+}
+
+/**
+ * ConsoleKeyUpdate is the whole editable surface of a personal key.
+ *
+ * There is no tenant_id, owner_user_id or status here. The first two are facts
+ * of the row the gateway derives, and pausing is a separate operation so that
+ * an edit can never resume a key by accident.
+ */
+export type ConsoleKeyUpdate={
+  name:string
+  allowed_models:string[]
+  allowed_ips:string[]
+  /** null clears the expiry; omit only when the caller does not mean to replace it. */
+  expire_at:string|null
+}
+
+export async function getConsoleKey(id:string){
+  return api<ConsoleKey>(`/api/console/keys/${encodeURIComponent(id)}`)
+}
+
+export async function updateConsoleKey(id:string,input:ConsoleKeyUpdate){
+  return api<ConsoleKey>(`/api/console/keys/${encodeURIComponent(id)}`,{
+    method:'PUT',
+    body:JSON.stringify(input),
+  })
+}
+
+/**
+ * setConsoleKeyStatus pauses or resumes a key. The credential is untouched, so
+ * the same key works again after re-enabling.
+ */
+export async function setConsoleKeyStatus(id:string,status:1|2){
+  return api<{ok:boolean;id:string;status:number}>(`/api/console/keys/${encodeURIComponent(id)}/status`,{
+    method:'PUT',
+    body:JSON.stringify({status}),
+  })
+}
+
+/**
+ * deleteConsoleKey removes the row permanently. Request Records survive through
+ * their owner snapshot; the credential does not.
+ */
+export async function deleteConsoleKey(id:string){
+  return api<{ok:boolean;id:string;deleted:boolean}>(`/api/console/keys/${encodeURIComponent(id)}`,{
+    method:'DELETE',
+  })
+}
+
+/**
+ * ConsoleModel is the member-visible view of a Virtual Model.
+ *
+ * There is deliberately no Provider, Route, credential or upstream name here:
+ * those are management facts. `available` is true for every returned row — the
+ * catalog only contains statically routable models — and is carried so the page
+ * states availability instead of inferring it from presence.
+ */
+export type ConsoleModel={
+  alias:string
+  display_name:string
+  description:string
+  available:boolean
+}
+
+/**
+ * ConsoleModels is the personal model catalog.
+ *
+ * `empty_reason` names why `models` is empty, so the page can distinguish an
+ * unassigned account (`no_tenant`), a Tenant that permits nothing
+ * (`tenant_allows_none`), and an empty deployment (`no_eligible_models`). It is
+ * absent when there is at least one model.
+ */
+export type ConsoleModels={
+  models:ConsoleModel[]
+  empty_reason?:'no_tenant'|'tenant_allows_none'|'no_eligible_models'
+}
+
+export async function getConsoleModels(){
+  return api<ConsoleModels>('/api/console/models',{},false)
+}
+
+/**
+ * ConsoleUsageTotals is one period of the member's own traffic.
+ *
+ * `successes + failures === requests` always holds, and `error_rate` is the
+ * failure share. It is a percentage, not a fraction, because every other share
+ * the console renders (quota bands) is already in percent.
+ */
+export type ConsoleUsageTotals={
+  requests:number
+  successes:number
+  failures:number
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+  error_rate:number
+}
+
+/** One model's share of the member's own traffic, aggregated from the log. */
+export type ConsoleUsageModel={
+  alias:string
+  requests:number
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+}
+
+/**
+ * ConsoleUsageQuota is the Tenant's shared budget as a read-only aggregate.
+ *
+ * It contains no member or key detail: the page can say that the budget is
+ * shared without revealing who else spent it. A band is null when the Tenant
+ * has no configured limit for it — 未设, which must not render as 0%.
+ */
+export type ConsoleUsageQuota={
+  tenant_id:string
+  tenant_name:string
+  daily_token:QuotaDimension|null
+  monthly_token:QuotaDimension|null
+  monthly_request:QuotaDimension|null
+}
+
+/**
+ * ConsoleUsage is the personal usage page's payload.
+ *
+ * `cost_available` is false because the gateway records tokens, not prices. The
+ * page renders that as an explicit note; it must never derive a currency
+ * amount from the token counts above it.
+ */
+export type ConsoleUsage={
+  from:string
+  to:string
+  bucket:'hour'|'day'
+  totals:ConsoleUsageTotals
+  series:TrendBucket[]
+  by_model:ConsoleUsageModel[]
+  tenant_quota:ConsoleUsageQuota|null
+  cost_available:boolean
+}
+
+/**
+ * fetchConsoleUsage reads the signed-in Account's own usage for a period.
+ *
+ * Owner and Tenant are not parameters: the gateway binds the owner from the
+ * session and reads the Tenant from the Account's membership. The query string
+ * only chooses the window, exactly as the administrator trend endpoint does.
+ */
+export async function fetchConsoleUsage(from:Date,to:Date,bucket:'hour'|'day'){
+  const q=new URLSearchParams({
+    from:from.toISOString(),
+    to:to.toISOString(),
+    bucket,
+    tz_offset:String(localOffsetMinutes()),
+  })
+  return api<ConsoleUsage>(`/api/console/usage?${q}`,{},false)
+}
+
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
 }
@@ -409,6 +649,22 @@ export async function updateUser(id:string,patch:UserPatch){
     body:JSON.stringify(patch),
   })
   return {user:d.data,changes:d.changes}
+}
+
+/**
+ * assignUserTenant sets an Account's Tenant Membership, or clears it when the
+ * id is empty.
+ *
+ * The gateway refuses with 409 while the Account owns any API Key, because a
+ * key must not point at a Tenant its owner has left. The count is on the
+ * error's `owned_key_count` field so the caller can say how many.
+ */
+export async function assignUserTenant(id:string,tenantId:string){
+  const d=await api<{data:AccountUser}>(`/admin/users/${encodeURIComponent(id)}/tenant`,{
+    method:'PUT',
+    body:JSON.stringify({tenant_id:tenantId}),
+  })
+  return d.data
 }
 
 /**
@@ -523,4 +779,57 @@ export type RequestLogFacets={tenants:TenantFacet[];keys:APIKeyFacet[]}
  */
 export async function listRequestLogFacets(){
   return api<RequestLogFacets>('/admin/request-logs/facets')
+}
+
+// --- personal request records ---------------------------------------------
+
+/**
+ * ConsoleRequestLog is one Request Record owned by the signed-in Account.
+ *
+ * It is deliberately narrower than the administrator's RequestLog: there is no
+ * client_ip, tenant_id, provider, upstream_model or route_priority field,
+ * because the member endpoint does not send them. `api_key_id` is the
+ * identifier the key filter uses and remains valid after the key is deleted.
+ */
+export type ConsoleRequestLog={
+  request_id:string
+  api_key_id:string
+  requested_model:string
+  actual_model:string
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+  latency_ms:number
+  status_code:number
+  error_code:string
+  failover:boolean
+  attempt_count:number
+  created_at:string
+}
+
+/** One record plus the Routing Attempt chain, fetched only when the drawer opens. */
+export type ConsoleRequestLogDetail=ConsoleRequestLog&{attempt_chain:RequestAttempt[]}
+
+export type ConsoleRequestLogPage={
+  data:ConsoleRequestLog[]
+  limit:number
+  offset:number
+}
+
+/**
+ * listConsoleRequestLogs reads the caller's own records.
+ *
+ * The query may carry model, status, api_key_id, from, to, limit and offset. It
+ * cannot name an owner or a tenant: the gateway binds the session's account id
+ * into the query and has no field for a client-supplied one.
+ */
+export async function listConsoleRequestLogs(query:string){
+  const suffix=query?'?'+query:''
+  return api<ConsoleRequestLogPage>(`/api/console/request-logs${suffix}`)
+}
+
+/** getConsoleRequestLog reads one record and its attempt chain; not-owned is a 404. */
+export async function getConsoleRequestLog(id:string){
+  const d=await api<{data:ConsoleRequestLogDetail}>(`/api/console/request-logs/${encodeURIComponent(id)}`)
+  return d.data
 }

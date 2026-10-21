@@ -284,7 +284,7 @@ func TestRequestLogSeriesBucketsInTheCallersOffset(t *testing.T) {
 	to := time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC)
 
 	t.Run("utc", func(t *testing.T) {
-		got, err := pg.RequestLogSeries(context.Background(), from, to, "day", 0, "YYYY-MM-DD")
+		got, err := pg.RequestLogSeries(context.Background(), "", from, to, "day", 0, "YYYY-MM-DD")
 		if err != nil {
 			t.Fatalf("series: %v", err)
 		}
@@ -300,7 +300,7 @@ func TestRequestLogSeriesBucketsInTheCallersOffset(t *testing.T) {
 	})
 
 	t.Run("utc+8", func(t *testing.T) {
-		got, err := pg.RequestLogSeries(context.Background(), from, to, "day", 480, "YYYY-MM-DD")
+		got, err := pg.RequestLogSeries(context.Background(), "", from, to, "day", 480, "YYYY-MM-DD")
 		if err != nil {
 			t.Fatalf("series: %v", err)
 		}
@@ -319,7 +319,7 @@ func TestRequestLogSeriesBucketsInTheCallersOffset(t *testing.T) {
 	})
 
 	t.Run("hourly labels", func(t *testing.T) {
-		got, err := pg.RequestLogSeries(context.Background(),
+		got, err := pg.RequestLogSeries(context.Background(), "",
 			lateEvening.Add(-time.Hour), lateEvening.Add(time.Hour), "hour", 480, "YYYY-MM-DD HH24:00")
 		if err != nil {
 			t.Fatalf("hourly series: %v", err)
@@ -334,12 +334,12 @@ func TestRequestLogSeriesBucketsInTheCallersOffset(t *testing.T) {
 		// row sitting on it, or a paged trend double-counts every seam. With a
 		// UTC offset both halves bucket by UTC day, so the first covers the
 		// 15th and the second covers the 16th.
-		first, err := pg.RequestLogSeries(context.Background(),
+		first, err := pg.RequestLogSeries(context.Background(), "",
 			from, midAfternoon, "day", 0, "YYYY-MM-DD")
 		if err != nil {
 			t.Fatalf("first half: %v", err)
 		}
-		second, err := pg.RequestLogSeries(context.Background(),
+		second, err := pg.RequestLogSeries(context.Background(), "",
 			midAfternoon, to, "day", 0, "YYYY-MM-DD")
 		if err != nil {
 			t.Fatalf("second half: %v", err)

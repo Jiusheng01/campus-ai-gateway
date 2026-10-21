@@ -67,7 +67,7 @@ Business request logs, admin audit and security events are separate record class
 
 ### 🖥️ An admin console, included
 
-A React console embedded in the Go binary: tenants, API keys, channels, routes, usage, audit. Session auth with Argon2id, five RBAC roles, and a trusted-header path for campus SSO.
+A React console embedded in the Go binary: tenants, API keys, channels, routes, usage, audit. Session auth with Argon2id, five RBAC roles, and a trusted-header path for campus SSO. A personal console at `/console` gives each member their own keys, tenant-scoped models, usage and request logs.
 
 </td>
 </tr>

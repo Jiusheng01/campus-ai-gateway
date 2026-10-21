@@ -73,32 +73,66 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		r = r.WithContext(withAdminPrincipal(r.Context(), principal))
 
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
-			aw := &adminAuditResponseWriter{ResponseWriter: w}
-			next.ServeHTTP(aw, r)
-			status := aw.status
-			if status == 0 {
-				status = http.StatusOK
-			}
-			if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
-				s.invalidateRouteCache()
-			}
-			if s.pg == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
-				RequestID:  reqID,
-				Actor:      principal.User,
-				Action:     r.Method,
-				Resource:   r.URL.Path,
-				StatusCode: status,
-				ClientIP:   s.clientIPFrom(r),
-			})
+		if isStateChangingMethod(r.Method) {
+			s.auditStateChangingRequest(next, w, r, principal)
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// isStateChangingMethod reports whether a method can mutate control-plane
+// state. Reads are excluded so they never fill the audit trail.
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// auditStateChangingRequest serves next through a status-capturing writer and
+// records one admin audit row for the request. Both the administrator and the
+// personal-console middleware use it, so a write is audited the same way
+// wherever it enters.
+//
+// The writer does not touch the body: handlers that need to read it still do,
+// and Unwrap keeps per-request deadlines reachable through the wrapper.
+//
+// A successful write that can change the routing table also invalidates the
+// route cache. Console paths are under /api/console and never match that
+// predicate, so the shared helper preserves the administrator behaviour
+// without the personal middleware opting in.
+func (s *Server) auditStateChangingRequest(next http.Handler, w http.ResponseWriter, r *http.Request, principal adminPrincipal) {
+	aw := &adminAuditResponseWriter{ResponseWriter: w}
+	next.ServeHTTP(aw, r)
+	status := aw.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if status < http.StatusBadRequest && routingWriteAffectsRoutes(r.Method, r.URL.Path) {
+		s.invalidateRouteCache()
+	}
+	if s.pg == nil {
+		return
+	}
+	// The audit row answers "which person changed this". A session carries the
+	// same username in User; the trusted-header and break-glass modes carry only
+	// User, so the fallback keeps them attributed rather than blank.
+	actor := principal.Username
+	if actor == "" {
+		actor = principal.User
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.pg.InsertAdminAudit(ctx, model.AdminAuditLog{
+		RequestID:  r.Header.Get("X-Request-Id"),
+		Actor:      actor,
+		Action:     r.Method,
+		Resource:   r.URL.Path,
+		StatusCode: status,
+		ClientIP:   s.clientIPFrom(r),
 	})
 }
 
@@ -106,7 +140,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 // change the routing table. A diagnostic test is a POST under a channel path
 // but does not change routing configuration.
 func routingWriteAffectsRoutes(method, path string) bool {
-	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
+	if !isStateChangingMethod(method) {
 		return false
 	}
 	if strings.HasSuffix(path, "/test") {
@@ -609,16 +643,19 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": items})
 	case http.MethodPost:
-		var in model.Tenant
+		var in tenantWriteRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateTenant(&in); err != "" {
+		v := in.tenant()
+		// A create that omits the field gets the column default through
+		// validateTenant; an explicit [] survives as "no models".
+		if err := validateTenant(&v); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
-		out, err := s.pg.CreateTenant(r.Context(), in)
+		out, err := s.pg.CreateTenant(r.Context(), v)
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "tenant_create_failed", "Tenant could not be created", reqID)
 			return
@@ -658,16 +695,29 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
-		var in model.Tenant
+		var in tenantWriteRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateTenant(&in); err != "" {
+		v := in.tenant()
+		// An omitted field on an edit means "leave the stored allowlist alone".
+		// It must not fall through to the create default: that would turn a
+		// rename into a silent widening back to the wildcard. An explicit []
+		// still reaches the validator as the deny-all decision.
+		if in.AllowedModels != nil {
+			if reason := normalizeTenantAllowedModels(in.AllowedModels); reason != "" {
+				httpx.Error(w, http.StatusBadRequest, "invalid_tenant", reason, reqID)
+				return
+			}
+		}
+		if err := validateTenantFields(&v); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
-		out, err := s.pg.UpdateTenant(r.Context(), id, in)
+		// The pointer is the update's only allowlist input: tenant() applies it
+		// to v for validation, and UpdateTenant does not read that copy.
+		out, err := s.pg.UpdateTenant(r.Context(), id, storage.TenantUpdate{Tenant: v, AllowedModels: in.AllowedModels})
 		if err != nil {
 			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
 			return
@@ -1230,7 +1280,7 @@ func (s *Server) handleAdminTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := parseTrendOffset(q.Get("tz_offset"))
-	rows, err := s.pg.RequestLogSeries(r.Context(), from, to, unit, offset, trendLabelFormat(unit))
+	rows, err := s.pg.RequestLogSeries(r.Context(), "", from, to, unit, offset, trendLabelFormat(unit))
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the traffic trend", reqID)
 		return
@@ -1537,7 +1587,40 @@ func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	return ""
 }
 
+// tenantWriteRequest is the decode boundary for the two Tenant writes.
+//
+// It exists to tell an omitted allowed_models from an explicit []. The Tenant
+// struct cannot: both decode to a nil slice, but on an edit they mean opposite
+// things — "keep the stored allowlist" versus "deny every model". The outer
+// pointer field is shallower than the embedded Tenant's same-named field, so
+// encoding/json selects it and a present key always leaves a non-nil pointer
+// (even for []); an absent or null key leaves it nil.
+type tenantWriteRequest struct {
+	model.Tenant
+	AllowedModels *[]string `json:"allowed_models"`
+}
+
+// tenant projects the request onto the storage type. An omitted allowlist
+// stays nil here; each endpoint decides what nil means for its operation.
+func (in tenantWriteRequest) tenant() model.Tenant {
+	v := in.Tenant
+	if in.AllowedModels != nil {
+		v.AllowedModels = *in.AllowedModels
+	}
+	return v
+}
+
 func validateTenant(v *model.Tenant) string {
+	if reason := normalizeTenantAllowedModels(&v.AllowedModels); reason != "" {
+		return reason
+	}
+	return validateTenantFields(v)
+}
+
+// validateTenantFields checks everything except the model allowlist. Update
+// calls this directly when the field was omitted, so validation cannot smuggle
+// the create-time wildcard default back into an edit.
+func validateTenantFields(v *model.Tenant) string {
 	v.Code = strings.TrimSpace(v.Code)
 	v.Name = strings.TrimSpace(v.Name)
 	if v.Code == "" || v.Name == "" {
@@ -1556,6 +1639,23 @@ func validateTenant(v *model.Tenant) string {
 		return "tenant rate limit values cannot be negative"
 	}
 	return ""
+}
+
+// normalizeTenantAllowedModels applies the Tenant default before sharing the
+// key path's rules.
+//
+// A nil list is an omitted field, not the empty-list decision, so it becomes
+// the wildcard: that is the stored column default and the meaning every
+// pre-existing Tenant already has. An explicit [] stays empty and keeps
+// denying every model. Everything else — a lone wildcard, a sorted deduplicated
+// list, rejection of blank entries and of wildcard-plus-names — is the same
+// normalisation a key performs, so the two scopes cannot drift apart.
+func normalizeTenantAllowedModels(list *[]string) string {
+	if list == nil || *list == nil {
+		*list = []string{model.AllModelsWildcard}
+		return ""
+	}
+	return normalizeAllowedModels(list)
 }
 
 // normalizeAllowedModels validates and canonicalises a key's model allow-list.

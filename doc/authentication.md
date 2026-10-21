@@ -76,8 +76,9 @@ User
 - 首个 super_admin 创建后，`POST /auth/register` 仅在**显式设置**
   `PUBLIC_REGISTRATION_ENABLED=true` 时开放，且**只能**创建 `member`（后端固定，请求体
   携带 `roles` 等字段会被直接拒绝）
-- 该开关默认 `false`：生产入口是校园 SSO，member 暂时没有数据面能力，默认开放匿名密码
-  注册只会扩大滥用面；需要本地账号时由运维显式开启，账号体系其余部分不受影响
+- 该开关默认 `false`：生产入口是校园 SSO，新注册的 member 默认没有租户、也就没有数据面能力，
+  需要管理员分配租户后才能创建自己的 Key；默认开放匿名密码注册只会扩大滥用面，
+  需要本地账号时由运维显式开启，账号体系其余部分不受影响
 - 管理员角色只能由 super_admin 在「用户与权限」中授予；`/admin/users` 不在任何其它角色的
   允许列表里，gateway_admin 无法给自己提权
 - 角色与 `member` 互斥：拥有任一管理角色时 `member` 自动移除，由后端 normalize
@@ -94,6 +95,57 @@ PUBLIC_REGISTER_WINDOW=1h
 ```
 
 公开注册目前**不提供**邮箱验证、忘记密码、邀请码或管理员审批。
+
+---
+
+## 个人控制台（`/console`）
+
+管理与个人两个工作区共用同一个构建、同一套会话与同一个数据面，区别只在导航、页面和 API 边界：
+
+```text
+http://127.0.0.1:8080/console
+```
+
+成员在这里查看账号与所属租户、管理自己的 API Key（创建 / 改名 / 停用 / 删除）、查看租户允许的模型、个人用量与调用日志，并修改密码、查看登录设备。管理控制台仍在 `/admin-ui`，两者互不替代。
+
+### Account、Member 与 Tenant Membership
+
+- **Account** 是认证主体，对应 `gateway_admin_user` 一行；管理员和成员都是 Account。
+- **Member** 是不持有任何管理角色的 Account，不是另一张表；角色与 `member` 互斥，由后端 normalize。
+- **Tenant Membership**：一个 Account 最多属于一个 Tenant（`gateway_admin_user.tenant_id`）。没有成员表，也不支持多租户或租户切换。
+- 只有 `super_admin` 能在「用户」页分配或清除归属；Account 不能给自己分配。Account 仍拥有任何 API Key 时，更改归属会被拒绝（`409 user_owns_keys`，响应带 `owned_key_count`），避免 Key 悄悄花掉它主人已经离开的租户。
+- 没有 Tenant 的 Account 仍能登录个人控制台，但会看到“等待分配租户”的空状态，并且不能创建 Key。
+- 删除 Tenant 时，原本属于它的 Account 保留，归属被置空（`ON DELETE SET NULL`），回到未分配状态。
+
+### 登录后的落地页
+
+角色只决定**默认落地页**，不决定是否允许访问：
+
+- 持有任一管理角色（`super_admin`、`gateway_admin`、`operator`、`auditor`）→ `/admin-ui/dashboard`
+- 只持有 `member`、`tenant_admin`（该角色暂不授予权限，等同 member）或没有角色 → `/console/overview`
+
+任何已登录 Account 都可以打开 `/console`；`/admin-ui` 需要管理角色，打开无权限的工作区会显示明确的 403 页面，而不是重定向循环。登录前访问的深链在登录后仍会保留；刷新 `/console/keys` 这类路径也会回到同一个页面。
+
+### `/api/console/*` 的授权边界
+
+- 复用同一套 Access Token + Refresh Cookie；`consoleMiddleware` 验证 Token 后要求非空的 account id，并拒绝已停用的账号。没有第二套凭据。
+- **owner 来自会话，tenant 来自 Account 的 Tenant Membership**，两者都不读请求体或 URL。请求体里伪造 `owner_user_id` / `tenant_id` 不会生效；个人用量与日志按请求日志中的 owner 快照过滤，控制台自己的筛选条件只能收窄、不能放宽。
+- 资源级 ownership：读取、修改、停用和删除只作用于当前 Account 名下的 Key；别人的 Key 返回 **404** 而不是 403，避免接口确认资源是否存在。
+- Key 的模型范围在创建/编辑时受 Tenant 的 `allowed_models` 约束：显式列表必须是租户列表的子集；请求 `["*"]` 时，若租户是显式列表则展开为租户当前列表，若租户是 `["*"]` 则保持 `["*"]`；租户为 `[]` 时拒绝任何个人 Key 写入。数据面仍然只读 Key 自己的 `allowed_models`，不查租户列表（ADR-0020）。
+- 每个 Account 的 Key 数量上限由 `PERSONAL_KEY_LIMIT` 控制（默认 10），在创建事务内校验，并发创建也不会超过。
+- 个人控制台的写操作（创建 / 修改 / 停用 / 删除 Key）同样写入 `gateway_admin_audit_log`，actor 是发起操作 Account 的用户名。审计由 `consoleMiddleware` 统一记录，不读取请求体，因此新增的个人写接口天然被覆盖。
+- 个人控制台的删除是**永久删除行**，不同于管理端的停用/吊销；调用日志通过 owner 快照保留归属，不会随 Key 删除而丢失。
+- 个人接口按 ownership 授权，不按角色：管理员打开 `/console` 时也只能看到并操作自己名下的资源。
+
+### 为什么 trusted-header 身份被拒绝
+
+`ADMIN_AUTH_MODE=trusted-header`（以及应急的 `token` 模式）认证出的是用户名，没有稳定的 account id。个人控制台必须把 Key 绑定到可审计的 Account，因此 `/api/console/*` 对这类身份返回：
+
+```text
+403 console_identity_unavailable
+```
+
+这一版不给 trusted-header 增加账号映射或影子账号；需要使用个人控制台的成员应走 session 认证（本地账号 / 开放注册）。管理控制台在 trusted-header 下不受影响。
 
 ---
 

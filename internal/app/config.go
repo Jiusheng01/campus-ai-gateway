@@ -207,7 +207,19 @@ type Config struct {
 	// exists to stop automated account creation rather than to punish typos.
 	PublicRegisterMaxAttempts int64
 	PublicRegisterWindow      time.Duration
+
+	// PersonalKeyLimit is the maximum number of API Keys one Account may own.
+	// It bounds a personal credential's blast radius and the size of the My API
+	// Keys page. A non-positive value reads as the default — see
+	// personalKeyLimitDefault — because a zero limit would silently disable key
+	// creation for every member.
+	PersonalKeyLimit int64
 }
+
+// personalKeyLimitDefault is the per-Account key ceiling when
+// PERSONAL_KEY_LIMIT is unset. Ten keys is enough for a handful of
+// applications and small enough that the list stays reviewable.
+const personalKeyLimitDefault int64 = 10
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
@@ -243,6 +255,8 @@ func LoadConfig() (Config, error) {
 		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", false),
 		PublicRegisterMaxAttempts: getenvInt64("PUBLIC_REGISTER_MAX_ATTEMPTS", 5),
 		PublicRegisterWindow:      getenvDuration("PUBLIC_REGISTER_WINDOW", time.Hour),
+
+		PersonalKeyLimit: getenvInt64("PERSONAL_KEY_LIMIT", personalKeyLimitDefault),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -283,6 +297,12 @@ func LoadConfig() (Config, error) {
 	}
 	if cfg.AdminRefreshReplayGrace <= 0 {
 		return Config{}, errors.New("ADMIN_REFRESH_REPLAY_GRACE must be positive")
+	}
+	// PERSONAL_KEY_LIMIT=0 or a negative value is a configuration mistake, not
+	// a request to forbid keys. Fall back to the default rather than turning
+	// every member's create button into a refusal.
+	if cfg.PersonalKeyLimit <= 0 {
+		cfg.PersonalKeyLimit = personalKeyLimitDefault
 	}
 
 	switch strings.ToLower(strings.TrimSpace(cfg.AdminAuthMode)) {

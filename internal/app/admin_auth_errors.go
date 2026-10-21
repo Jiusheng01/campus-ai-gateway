@@ -54,6 +54,12 @@ var (
 	// operation requires.
 	ErrAdminForbidden = errors.New("administrator role is not permitted for this operation")
 
+	// ErrConsoleIdentityUnavailable means the caller authenticated in a mode
+	// that carries no stable account id (trusted-header, or the break-glass
+	// token). The personal console owns resources by account, so a principal
+	// with only a username cannot use it.
+	ErrConsoleIdentityUnavailable = errors.New("this authentication mode has no account identity for the personal console")
+
 	// ErrAdminSetupNotAllowed means first-run setup was attempted after an
 	// account already exists.
 	ErrAdminSetupNotAllowed = errors.New("an administrator account already exists")
@@ -119,6 +125,11 @@ var (
 	// enabled super administrator.
 	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
 
+	// ErrAdminTenantNotFound means an account update named a Tenant that does
+	// not exist. It maps to 400 rather than 404: the resource being changed is
+	// the account, and the unknown id is a field of the request.
+	ErrAdminTenantNotFound = errors.New("tenant was not found")
+
 	// ErrAdminInternal is the catch-all for unexpected storage failures. The
 	// underlying error is logged, never returned to the client.
 	ErrAdminInternal = errors.New("administrator authentication failed")
@@ -156,6 +167,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusForbidden, "account_disabled"
 	case errors.Is(err, ErrAdminForbidden):
 		return http.StatusForbidden, "admin_forbidden"
+	case errors.Is(err, ErrConsoleIdentityUnavailable):
+		return http.StatusForbidden, "console_identity_unavailable"
 	case errors.Is(err, ErrAdminSetupNotAllowed):
 		return http.StatusForbidden, "setup_not_allowed"
 	case errors.Is(err, ErrAdminSetupRemoteForbidden):
@@ -178,6 +191,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "account_created_login_failed"
 	case errors.Is(err, ErrAdminLastSuperAdmin):
 		return http.StatusConflict, "last_super_admin"
+	case errors.Is(err, ErrAdminTenantNotFound):
+		return http.StatusBadRequest, "tenant_not_found"
 	case errors.Is(err, ErrAdminPasswordWeak):
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):

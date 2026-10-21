@@ -13,6 +13,7 @@ const AUTH_ERRORS: Record<string, string> = {
   account_disabled: '当前账号已停用，请联系管理员。',
   account_not_found: '账号不存在',
   admin_forbidden: '没有权限执行该操作',
+  console_identity_unavailable: '当前登录方式没有可用的账号身份，无法使用个人控制台。',
   password_policy_violation: '密码不符合安全要求：至少 10 位，且需包含字母、数字、符号中的至少两类。',
   password_unchanged: '新密码不能与当前密码相同',
   invalid_request: '请检查填写内容',

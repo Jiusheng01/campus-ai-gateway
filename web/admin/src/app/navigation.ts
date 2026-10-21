@@ -17,6 +17,8 @@ import {
 export type Page =
   | 'dashboard'
   | 'analytics'
+  | 'overview'
+  | 'usage'
   | 'keys'
   | 'logs'
   | 'audit'
@@ -102,9 +104,63 @@ export const navGroups: NavGroup[] = [
   },
 ]
 
+/**
+ * The personal workspace's navigation. It is a second configuration over the
+ * same Shell, not a filtered copy of the administrator's: an account in
+ * /console must never see a channel, route or tenant-management entry even if
+ * it happens to hold an administrator role.
+ */
+export const consoleNavGroups: NavGroup[] = [
+  {
+    id: 'personal-console',
+    label: '个人控制台',
+    items: [
+      {id: 'overview', label: '概览', icon: LayoutDashboard, roles: EVERYONE},
+      {id: 'keys', label: 'API Key', icon: KeyRound, roles: EVERYONE},
+      {id: 'models', label: '模型', icon: Boxes, roles: EVERYONE},
+      {id: 'usage', label: '用量', icon: BarChart3, roles: EVERYONE},
+      {id: 'logs', label: '调用日志', icon: FileClock, roles: EVERYONE},
+    ],
+  },
+  {
+    id: 'personal-account',
+    label: '个人',
+    items: [
+      {id: 'profile', label: '个人资料', icon: UserRound, roles: EVERYONE},
+      {id: 'access', label: '安全', icon: ShieldCheck, roles: EVERYONE},
+    ],
+  },
+]
+
+/**
+ * Pages addressable under each workspace prefix. The resolver rejects anything
+ * else, so a typo in a URL is a not-found rather than an arbitrary page.
+ */
+export const adminRoutePages: Page[] = [
+  'dashboard',
+  'analytics',
+  'keys',
+  'logs',
+  'audit',
+  'security',
+  'providers',
+  'models',
+  'routes',
+  'calls',
+  'users',
+  'tenants',
+  'settings',
+  'profile',
+  'access',
+]
+
+export const consoleRoutePages: Page[] = ['overview', 'keys', 'models', 'usage', 'logs', 'profile', 'access']
+
 /** Title and one-line context for the topbar. */
 export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   dashboard: {title: '服务概览', subtitle: '模型服务的运行状态与配置概况'},
+  overview: {title: '概览', subtitle: '账号、租户与个人控制台状态'},
+  usage: {title: '用量', subtitle: '你的请求、Tokens 与调用趋势'},
   analytics: {title: '数据看板', subtitle: '请求量、Tokens 与延迟的时间分布'},
   keys: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
   logs: {title: '调用日志', subtitle: '检索与排查业务请求'},
@@ -121,6 +177,22 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   access: {title: '安全与访问', subtitle: '密码与登录设备'},
 }
 
+/**
+ * The personal workspace has its own titles for the pages it shares with the
+ * administrator console. It is deliberately partial: the Shell falls back to
+ * pageMeta for anything not listed, but the resolver only admits
+ * consoleRoutePages here.
+ */
+export const consolePageMeta: Partial<Record<Page, {title: string; subtitle: string}>> = {
+  overview: {title: '概览', subtitle: '你的账号、租户与工作台状态'},
+  keys: {title: 'API Key', subtitle: '管理属于你自己的调用凭据'},
+  models: {title: '模型', subtitle: '你的租户允许使用的模型'},
+  usage: {title: '用量', subtitle: '你的请求、Tokens 与调用趋势'},
+  logs: {title: '调用日志', subtitle: '你自己发起的请求记录'},
+  profile: {title: '个人资料', subtitle: '账号身份与权限范围'},
+  access: {title: '安全', subtitle: '密码与登录设备'},
+}
+
 export const allNavItems: NavItem[] = navGroups.flatMap(g => g.items)
 
 /** Pages the account may enter, in navigation order. */
@@ -131,13 +203,6 @@ export function allowedPages(roles: string[]): Page[] {
   // redirected away by the role guard.
   if (pages.includes('calls')) pages.push('keys', 'tenants')
   return pages
-}
-
-/** Where an account lands after signing in: the dashboard if it may see it, else the first page it may. */
-export function landingPage(roles: string[]): Page {
-  const allowed = allowedPages(roles)
-  if (allowed.includes('dashboard')) return 'dashboard'
-  return allowed[0] || 'profile'
 }
 
 // roleGranted is permissive about an account with no roles at all: the gateway

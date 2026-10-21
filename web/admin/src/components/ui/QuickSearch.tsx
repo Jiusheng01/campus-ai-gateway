@@ -1,7 +1,16 @@
 import {useEffect, useId, useMemo, useRef, useState, type KeyboardEvent} from 'react'
 import {Boxes, Network, Search, X, type LucideIcon} from 'lucide-react'
 import {api, type ModelConfig, type Provider} from '../../api'
-import {allNavItems, allowedPages, pageMeta, type Page} from '../../app/navigation'
+import {
+  allowedPages,
+  consoleNavGroups,
+  consolePageMeta,
+  consoleRoutePages,
+  navGroups,
+  pageMeta,
+  type Page,
+} from '../../app/navigation'
+import type {Workspace} from '../../app/routing'
 import {Modal} from './Modal'
 
 export type QuickSearchItem = {
@@ -17,6 +26,7 @@ type Props = {
   onClose: () => void
   onNavigate: (page: Page) => void
   roles?: string[]
+  workspace?: Workspace
 }
 
 /**
@@ -30,7 +40,7 @@ type Props = {
  * Mounting is controlled by the shell, so opening it starts from empty state;
  * there is no `open` flag whose reset effect could race the first keystroke.
  */
-export function QuickSearchModal({onClose, onNavigate, roles = []}: Props) {
+export function QuickSearchModal({onClose, onNavigate, roles = [], workspace = 'admin'}: Props) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const [models, setModels] = useState<ModelConfig[]>([])
@@ -43,9 +53,17 @@ export function QuickSearchModal({onClose, onNavigate, roles = []}: Props) {
   // One source of truth for who may enter which page: the navigation itself.
   // A search result that navigates to a page the account cannot open is the
   // same dead end as a nav item that 403s.
-  const pages = useMemo(() => allowedPages(roles), [roles])
-  const canSearchModels = pages.includes('models')
-  const canSearchProviders = pages.includes('providers')
+  const isPersonal = workspace === 'console'
+  const navSource = isPersonal ? consoleNavGroups : navGroups
+  const pages = useMemo(
+    () => (isPersonal ? consoleRoutePages : allowedPages(roles)),
+    [isPersonal, roles],
+  )
+  // Models and channels are administrator catalogs. The personal workspace
+  // searches its own pages only, so it neither offers an admin result nor asks
+  // for an endpoint the account may not read.
+  const canSearchModels = !isPersonal && pages.includes('models')
+  const canSearchProviders = !isPersonal && pages.includes('providers')
 
   // Modal focuses its own panel from a parent effect, and React flushes child
   // effects first. Deferring one tick is what puts the caret in the field the
@@ -76,20 +94,21 @@ export function QuickSearchModal({onClose, onNavigate, roles = []}: Props) {
 
   const navItems: QuickSearchItem[] = useMemo(
     () =>
-      allNavItems
+      navSource
+        .flatMap(group => group.items)
         .filter(item => pages.includes(item.id))
         .map(item => ({
           id: `nav-${item.id}`,
           category: '导航',
           title: item.label,
-          subtitle: pageMeta[item.id].subtitle,
+          subtitle: (isPersonal ? consolePageMeta[item.id]?.subtitle : pageMeta[item.id].subtitle) || '',
           icon: item.icon,
           action: () => {
             onNavigate(item.id)
             onClose()
           },
         })),
-    [pages, onNavigate, onClose],
+    [pages, navSource, isPersonal, onNavigate, onClose],
   )
 
   const modelItems: QuickSearchItem[] = useMemo(

@@ -1,9 +1,10 @@
 import {Fragment, useMemo, useState} from 'react'
-import {Gauge, KeyRound, Layers, Shield, Sparkles, X} from 'lucide-react'
+import {Gauge, KeyRound, Layers, Shield} from 'lucide-react'
 import type {ApiKey, ModelConfig, Tenant} from '../../api'
 import {Button} from '../ui/Button'
 import {Field} from '../ui/Field'
 import {useConfirm} from '../ui/ConfirmDialog'
+import {ModelScopePicker} from '../models/ModelScopePicker'
 import {quotaState, quotaText} from '../../lib/quota'
 
 export type KeyDraft = Partial<ApiKey> & {id?: string}
@@ -82,30 +83,19 @@ export function KeyForm({
     return tenants.find(t => t.id === v.tenant_id) || tenants[0]
   }, [tenants, v.tenant_id])
 
-  // Changing wildcard status with safe confirmation
-  const changeAllModels = async (on: boolean) => {
-    if (!on && allModels) {
-      const ok = await confirm({
-        title: '将通配符 API Key 转为显式白名单？',
-        description: `转换后未勾选的 ${models.length} 个模型将立即失去访问权限；以后新增的模型也不会自动允许。`,
-        confirmText: '确认转换',
-        danger: true,
-      })
-      if (!ok) return
-    }
-    setV(prev => ({...prev, allowed_models: on ? ['*'] : []}))
-  }
-
-  const toggleModel = (alias: string, on: boolean) => {
-    setV(prev => {
-      const current = prev.allowed_models || []
-      const next = on ? [...current.filter(x => x !== '*'), alias] : current.filter(x => x !== alias)
-      return {...prev, allowed_models: next}
+  // The picker owns the state change; this hook only asks whether the operator
+  // really meant to turn a wildcard into an explicit (and initially empty)
+  // whitelist. Returning false leaves the scope untouched. The sync return for
+  // the no-confirmation path matters: clicking the checkbox must update it in
+  // the same event, not a microtask later.
+  const changeAllModels = (on: boolean): boolean | Promise<boolean> => {
+    if (on || !allModels) return true
+    return confirm({
+      title: '将通配符 API Key 转为显式白名单？',
+      description: `转换后未勾选的 ${models.length} 个模型将立即失去访问权限；以后新增的模型也不会自动允许。`,
+      confirmText: '确认转换',
+      danger: true,
     })
-  }
-
-  const removeModel = (alias: string) => {
-    toggleModel(alias, false)
   }
 
   // Quick preset helpers for expiration date
@@ -199,87 +189,23 @@ export function KeyForm({
           <Layers aria-hidden /> 2. 模型授权
         </legend>
 
-        <div className="multiSelectWrapper">
-          <div className="multiSelectHead">
-            <span className="multiSelectTitle">允许调用的对外模型 *</span>
-            <label className="wildcardToggleLabel">
-              <input
-                type="checkbox"
-                checked={allModels}
-                onChange={e => void changeAllModels(e.target.checked)}
-              />
-              <span>全部对外模型（含以后新增）</span>
-            </label>
-          </div>
-
-          {allModels ? (
-            <div className="wildcardActiveNotice">
-              <Sparkles aria-hidden />
-              <div>
-                <b>已启用通配符授权</b>
-                <p>当前 API Key 可以调用系统内所有已发布的对外模型，未来新发布的模型也将自动允许调用。</p>
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Selected Chips Area */}
-              <div className="chipsContainer">
-                {allowed.length ? (
-                  allowed.map(alias => {
-                    const m = models.find(x => x.alias === alias)
-                    return (
-                      <span className="modelSelectChip" key={alias}>
-                        <span className="chipAlias mono">{alias}</span>
-                        {m?.display_name && (
-                          <span className="chipName">({m.display_name})</span>
-                        )}
-                        <button
-                          type="button"
-                          className="chipRemoveButton"
-                          onClick={() => removeModel(alias)}
-                          title="移除模型"
-                        >
-                          <X aria-hidden />
-                        </button>
-                      </span>
-                    )
-                  })
-                ) : (
-                  <span className="chipsEmptyPlaceholder">
-                    未选择任何模型（不勾选模型时将无法调用任何接口）
-                  </span>
-                )}
-              </div>
-
-              {/* Model Dropdown Picker */}
-              <div className="addModelDropdownRow">
-                <select
-                  className="addModelSelect"
-                  value=""
-                  onChange={e => {
-                    const alias = e.target.value
-                    if (alias) toggleModel(alias, true)
-                  }}
-                >
-                  <option value="">+ 选择要添加的模型授权…</option>
-                  {models
-                    .filter(m => !allowed.includes(m.alias))
-                    .map(m => (
-                      <option key={m.id} value={m.alias}>
-                        {m.alias} {m.display_name ? `(${m.display_name})` : ''}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            </>
-          )}
-
-          <small className="fieldHint">
-            {allModels
+        <ModelScopePicker
+          value={allowed}
+          onChange={next => setV(prev => ({...prev, allowed_models: next}))}
+          options={models.map(m => ({alias: m.alias, displayName: m.display_name}))}
+          title="允许调用的对外模型 *"
+          wildcardLabel="全部对外模型（含以后新增）"
+          wildcardNoticeTitle="已启用通配符授权"
+          wildcardNoticeText="当前 API Key 可以调用系统内所有已发布的对外模型，未来新发布的模型也将自动允许调用。"
+          emptyPlaceholder="未选择任何模型（不勾选模型时将无法调用任何接口）"
+          addPlaceholder="+ 选择要添加的模型授权…"
+          hint={
+            allModels
               ? '通配符模式：适用于校园统一网关管理系统。'
-              : `已授权 ${allowed.length} 个模型。不选模型时不允许调用任何对外模型。`}
-          </small>
-        </div>
+              : `已授权 ${allowed.length} 个模型。不选模型时不允许调用任何对外模型。`
+          }
+          confirmWildcardChange={changeAllModels}
+        />
       </fieldset>
 
       {/* Section 3: Network & Security */}

@@ -126,6 +126,40 @@ func TestPublicRegistrationRequiresSessionMode(t *testing.T) {
 	}
 }
 
+// loadConfigWithPersonalKeyLimit writes the minimum environment LoadConfig
+// needs and then the PERSONAL_KEY_LIMIT value under test. An empty value models
+// the variable being unset.
+func loadConfigWithPersonalKeyLimit(t *testing.T, raw string) Config {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://campus:campus@127.0.0.1:5432/phase1_config_test?sslmode=disable")
+	t.Setenv("API_KEY_HMAC_SECRET", "phase1-config-test-secret")
+	t.Setenv("ADMIN_SESSION_SECRET", "")
+	t.Setenv("ADMIN_AUTH_MODE", "session")
+	t.Setenv("PERSONAL_KEY_LIMIT", raw)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	return cfg
+}
+
+// The per-Account key limit defaults to ten and is configurable. A zero,
+// negative or unparseable value falls back to the default rather than
+// disabling key creation for every member.
+func TestPersonalKeyLimitDefaultAndOverride(t *testing.T) {
+	if got := loadConfigWithPersonalKeyLimit(t, "").PersonalKeyLimit; got != personalKeyLimitDefault {
+		t.Fatalf("unset PERSONAL_KEY_LIMIT = %d, want %d", got, personalKeyLimitDefault)
+	}
+	if got := loadConfigWithPersonalKeyLimit(t, "3").PersonalKeyLimit; got != 3 {
+		t.Fatalf("PERSONAL_KEY_LIMIT=3 -> %d, want 3", got)
+	}
+	for _, raw := range []string{"0", "-1", "many"} {
+		if got := loadConfigWithPersonalKeyLimit(t, raw).PersonalKeyLimit; got != personalKeyLimitDefault {
+			t.Fatalf("PERSONAL_KEY_LIMIT=%q -> %d, want the %d default", raw, got, personalKeyLimitDefault)
+		}
+	}
+}
+
 // loadConfigWithGrace writes the minimum environment LoadConfig needs and then
 // the ADMIN_REFRESH_REPLAY_GRACE value under test. An empty value models the
 // variable being unset.

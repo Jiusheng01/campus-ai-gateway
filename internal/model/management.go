@@ -190,6 +190,12 @@ type Tenant struct {
 	// than an absent one, because it reads as a guarantee. Kept so the column
 	// and any historical value survive until real metering lands.
 	MonthlyBudgetMicros int64 `json:"monthly_budget_micros"`
+	// AllowedModels bounds what a member may write to a personal API Key. The
+	// wildcard means every enabled Virtual Model and is the default; an empty
+	// list denies every model. It is deliberately not read by the data plane:
+	// the key's own list stays the only admission authority (see the personal
+	// console spec), so changing a Tenant never silently changes live traffic.
+	AllowedModels []string `json:"allowed_models"`
 }
 
 type TenantUsageStats struct {

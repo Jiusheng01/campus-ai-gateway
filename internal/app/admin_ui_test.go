@@ -126,6 +126,44 @@ func TestAdminUIContentSecurityPolicyIsStrict(t *testing.T) {
 	}
 }
 
+// The personal workspace is the same build served under /console. A direct
+// load or a refresh of an addressable page must return the shell, while a path
+// that looks like a file and does not exist stays a 404 rather than being
+// swallowed by the fallback.
+func TestConsoleUIServesTheSameShell(t *testing.T) {
+	s := &Server{cfg: testConfig()}
+
+	for _, path := range []string{"/console", "/console/", "/console/keys", "/console/usage", "/console/profile"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		s.serveConsoleUI(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: expected 200, got %d: %s", path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+			t.Fatalf("GET %s: Content-Type = %q", path, got)
+		}
+		if !strings.Contains(rec.Body.String(), `id="root"`) || !strings.Contains(rec.Body.String(), "/admin-ui/assets/") {
+			t.Fatalf("GET %s did not serve the shared app shell: %s", path, rec.Body.String())
+		}
+		for header, want := range adminUIHeaderExpectations() {
+			if got := rec.Header().Get(header); got != want {
+				t.Fatalf("GET %s: header %s = %q, want %q", path, header, got, want)
+			}
+		}
+	}
+
+	for _, path := range []string{"/console/assets/does-not-exist.js", "/console/app.js", "/admin-ui", "/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		s.serveConsoleUI(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s: expected 404, got %d", path, rec.Code)
+		}
+	}
+}
+
 // adminUIAssetFixtures returns one script and one stylesheet URL from the
 // embedded production build. Glob paths are relative to the embedded root
 // ("adminui/dist/..."); the handler mounts that root under /admin-ui/, so the

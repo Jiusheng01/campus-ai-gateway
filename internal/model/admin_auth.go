@@ -31,6 +31,11 @@ type AdminUser struct {
 	// AuthVersion invalidates every session and access token of this account
 	// when it changes. Password changes, role changes and disabling bump it.
 	AuthVersion int64
+	// TenantID is the Account's single Tenant Membership, or "" when the
+	// account has not been assigned one. TenantName is projected beside it for
+	// display; it is never used as an identifier, because names are not unique.
+	TenantID    string
+	TenantName  string
 	LastLoginAt *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

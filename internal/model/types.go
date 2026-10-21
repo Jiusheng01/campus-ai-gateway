@@ -13,15 +13,20 @@ import "time"
 const AllModelsWildcard = "*"
 
 type APIKey struct {
-	ID             string
-	TenantID       string
-	Name           string
-	KeyPrefix      string
-	KeyDigest      string
-	Status         int
-	ExpireAt       *time.Time
-	AllowedModels  []string
-	AllowedIPs     []string
+	ID       string
+	TenantID string
+	// OwnerUserID is the Account that owns the key, or "" when the key was
+	// created by an administrator and belongs to no Account. It is read with
+	// the rest of the key during identity resolution and copied onto each
+	// Request Record as a snapshot.
+	OwnerUserID   string
+	Name          string
+	KeyPrefix     string
+	KeyDigest     string
+	Status        int
+	ExpireAt      *time.Time
+	AllowedModels []string
+	AllowedIPs    []string
 	// The three minute-level limits are the OWNING TENANT's, read here as part
 	// of the key lookup (see FindAPIKeyByDigest). The key carries them only so
 	// the admission path has them after authentication; they are not the key's
@@ -59,18 +64,22 @@ func (k APIKey) TenantEnabled() bool {
 }
 
 type Identity struct {
-	TenantID      string
-	APIKeyID      string
+	TenantID string
+	APIKeyID string
+	// OwnerUserID is the key owner from the row loaded during authentication.
+	// It is carried so the Request Record can snapshot it; no admission path
+	// reads it.
+	OwnerUserID   string
 	AllowedModels map[string]struct{}
 	// AllModels reports that the key was granted the wildcard. It is kept
 	// separate from AllowedModels so that "unrestricted" and "restricted to
 	// nothing" cannot collapse into the same empty map.
-	AllModels      bool
-	AllowedIPs     []string
-	RPMLimit       int64
-	TPMLimit       int64
-	MaxConcurrency int64
-	RouteGroup     string
+	AllModels           bool
+	AllowedIPs          []string
+	RPMLimit            int64
+	TPMLimit            int64
+	MaxConcurrency      int64
+	RouteGroup          string
 	DailyTokenLimit     int64
 	MonthlyTokenLimit   int64
 	MonthlyRequestLimit int64
@@ -92,10 +101,36 @@ func (i Identity) AllowsModel(name string) bool {
 	return ok
 }
 
+// IdentityFromAllowedModels builds the admission view of a stored scope.
+//
+// It is the one place that turns the JSON list into the map AllowsModel reads,
+// so a caller holding a Tenant or key scope does not reimplement the wildcard
+// rule. The wildcard stands alone by validation; an empty or nil list yields an
+// identity that allows nothing, with a nil map so "denies all" stays
+// distinguishable from "allows all".
+func IdentityFromAllowedModels(list []string) Identity {
+	var i Identity
+	for _, name := range list {
+		if name == AllModelsWildcard {
+			i.AllModels = true
+			continue
+		}
+		if i.AllowedModels == nil {
+			i.AllowedModels = make(map[string]struct{}, len(list))
+		}
+		i.AllowedModels[name] = struct{}{}
+	}
+	return i
+}
+
 type RequestLog struct {
-	RequestID      string
-	TenantID       string
-	APIKeyID       string
+	RequestID string
+	TenantID  string
+	APIKeyID  string
+	// OwnerUserID snapshots the key owner at request time. It is deliberately
+	// not a foreign key: it must survive deletion of both the key and the
+	// Account. Empty means the key had no owner.
+	OwnerUserID    string
 	ClientIP       string
 	RequestedModel string
 	ActualModel    string

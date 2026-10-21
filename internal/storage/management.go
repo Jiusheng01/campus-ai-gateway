@@ -749,7 +749,44 @@ RETURNING `+modelReturningColumns+`
 // two writes' RETURNING clauses. Spelling it once means a column added to the
 // tenant cannot be selected by three queries and forgotten by the fourth, which
 // is exactly how a quota dimension silently reads as zero.
-const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency`
+const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models::text`
+
+// tenantRow is the one place a tenant projection is decoded. JSONB arrives as
+// text because pgx has no built-in decoder for []string; reading it here keeps
+// every query's column list and scan list in step.
+type tenantRow interface {
+	Scan(dest ...any) error
+}
+
+func scanTenant(row tenantRow) (model.Tenant, error) {
+	var v model.Tenant
+	var modelsJSON string
+	err := row.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency, &modelsJSON)
+	if err != nil {
+		return v, err
+	}
+	if err := json.Unmarshal([]byte(modelsJSON), &v.AllowedModels); err != nil {
+		return v, fmt.Errorf("decode tenant allowed_models: %w", err)
+	}
+	if v.AllowedModels == nil {
+		// The column is NOT NULL, so this is only reachable through a manual
+		// edit. Reading it as the wildcard keeps "absent" from turning into
+		// "denies everything", which is the opposite of the column default.
+		v.AllowedModels = []string{model.AllModelsWildcard}
+	}
+	return v, nil
+}
+
+// allowedModelsJSON encodes a tenant's model list. A nil slice is an omitted
+// field, not the empty-list decision: the Tenant default is the wildcard, while
+// an explicit [] is preserved and denies every model.
+func allowedModelsJSON(list []string) []byte {
+	if list == nil {
+		list = []string{model.AllModelsWildcard}
+	}
+	raw, _ := json.Marshal(list)
+	return raw
+}
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
@@ -764,8 +801,8 @@ ORDER BY name
 
 	var out []model.Tenant
 	for rows.Next() {
-		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency); err != nil {
+		v, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -774,22 +811,42 @@ ORDER BY name
 }
 
 func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	row := p.Pool.QueryRow(ctx, `
+INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
 RETURNING `+tenantColumns+`
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
+`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency, allowedModelsJSON(v.AllowedModels))
+	return scanTenant(row)
 }
 
-func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
+// TenantUpdate is the input to UpdateTenant. It folds the allowlist pointer in
+// with the editable fields so there is one source of truth: AllowedModels is
+// read, and the embedded Tenant's own same-named field is not.
+//
+// The pointer distinguishes an omitted field (nil: leave the column alone) from
+// an explicit [] (a non-nil empty slice: deny every model).
+type TenantUpdate struct {
+	model.Tenant
+	AllowedModels *[]string
+}
+
+// UpdateTenant writes the editable fields and returns the stored row.
+//
+// COALESCE keeps the stored allowlist in the omitted case, and doing it in the
+// statement rather than a read-then-write means a concurrent allowlist edit
+// cannot be reverted by a rename.
+func (p *Postgres) UpdateTenant(ctx context.Context, id string, in TenantUpdate) (model.Tenant, error) {
+	var modelsArg any
+	if in.AllowedModels != nil {
+		modelsArg = string(allowedModelsJSON(*in.AllowedModels))
+	}
+	row := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, updated_at=NOW()
+SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, allowed_models=COALESCE($12::jsonb, allowed_models), updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING `+tenantColumns+`
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
+`, id, in.Code, in.Name, in.Status, in.DailyTokenLimit, in.MonthlyTokenLimit, in.MonthlyRequestLimit, in.MonthlyBudgetMicros, in.RPMLimit, in.TPMLimit, in.MaxConcurrency, modelsArg)
+	return scanTenant(row)
 }
 
 // DeleteTenant removes a tenant and every API Key issued under it.
@@ -861,18 +918,24 @@ WHERE tenant_id=$1::uuid
 	return v, err
 }
 
-func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error) {
-	// The usage columns are aggregated from the request log rather than read
-	// from a counter on the key. A stored counter would have to be incremented
-	// on the hot path and would drift the moment a request was logged but its
-	// counter update failed; deriving it means the number is always exactly
-	// what the log says, and a revoked key keeps reporting what it served.
-	//
-	// LEFT JOIN LATERAL, not a plain join: an aggregate subquery always returns
-	// one row, so the outer join never drops a key that has served no traffic.
-	// It rides idx_gateway_request_log_api_key_created.
-	rows, err := p.Pool.Query(ctx, `
-SELECT
+// apiKeyAdminProjection is the administrator-facing key row, including the
+// usage aggregates and the Tenant's code and name.
+//
+// The administrator's list and the personal console's list/detail read the
+// same credential shape; only the WHERE clause differs. Keeping the columns,
+// the joins and the JSON decoding in one place means a column added to the row
+// cannot be selected by one surface and skipped by the other.
+//
+// The usage columns are aggregated from the request log rather than read from
+// a counter on the key. A stored counter would have to be incremented on the
+// hot path and would drift the moment a request was logged but its counter
+// update failed; deriving it means the number is always exactly what the log
+// says, and a revoked key keeps reporting what it served.
+//
+// LEFT JOIN LATERAL, not a plain join: an aggregate subquery always returns one
+// row, so the outer join never drops a key that has served no traffic. It rides
+// idx_gateway_request_log_api_key_created.
+const apiKeyAdminProjection = `
 	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
 	k.expire_at, k.last_used_at, k.allowed_models, k.allowed_ips,
 	COALESCE(k.route_group,''),
@@ -884,7 +947,34 @@ LEFT JOIN LATERAL (
 	SELECT COUNT(*) AS requests, COALESCE(SUM(COALESCE(l.total_tokens,0)),0) AS tokens
 	FROM gateway_request_log l
 	WHERE l.api_key_id = k.id
-) u ON true
+) u ON true`
+
+// keyAdminRow is the shared scan target: a pgx Rows element or a QueryRow.
+type keyAdminRow interface {
+	Scan(dest ...any) error
+}
+
+// scanAPIKeyAdmin decodes one projection row. The JSON columns arrive as bytes
+// because pgx has no native []string mapping; a malformed value stays an empty
+// list rather than failing a list that is otherwise readable.
+func scanAPIKeyAdmin(row keyAdminRow) (model.APIKeyAdmin, error) {
+	var v model.APIKeyAdmin
+	var modelsJSON, ipsJSON []byte
+	if err := row.Scan(
+		&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
+		&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
+		&v.RouteGroup, &v.CreatedAt,
+		&v.UsageRequests, &v.UsageTokens,
+	); err != nil {
+		return v, err
+	}
+	_ = json.Unmarshal(modelsJSON, &v.AllowedModels)
+	_ = json.Unmarshal(ipsJSON, &v.AllowedIPs)
+	return v, nil
+}
+
+func (p *Postgres) ListAPIKeys(ctx context.Context) ([]model.APIKeyAdmin, error) {
+	rows, err := p.Pool.Query(ctx, `SELECT `+apiKeyAdminProjection+`
 ORDER BY k.created_at DESC
 `)
 	if err != nil {
@@ -894,18 +984,10 @@ ORDER BY k.created_at DESC
 
 	var out []model.APIKeyAdmin
 	for rows.Next() {
-		var v model.APIKeyAdmin
-		var modelsJSON, ipsJSON []byte
-		if err := rows.Scan(
-			&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
-			&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
-			&v.RouteGroup, &v.CreatedAt,
-			&v.UsageRequests, &v.UsageTokens,
-		); err != nil {
+		v, err := scanAPIKeyAdmin(rows)
+		if err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal(modelsJSON, &v.AllowedModels)
-		_ = json.Unmarshal(ipsJSON, &v.AllowedIPs)
 		out = append(out, v)
 	}
 	return out, rows.Err()

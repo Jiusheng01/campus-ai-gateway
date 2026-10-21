@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -83,14 +84,45 @@ LIMIT 2
 // TenantByID returns one tenant's record (its quota limits in particular),
 // or pgx.ErrNoRows when no such tenant exists.
 func (p *Postgres) TenantByID(ctx context.Context, id string) (model.Tenant, error) {
-	var v model.Tenant
-	err := p.Pool.QueryRow(ctx, `
+	v, err := scanTenant(p.Pool.QueryRow(ctx, `
 SELECT `+tenantColumns+`
 FROM gateway_tenant
 WHERE id=$1::uuid
-`, id).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
+`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Tenant{}, pgx.ErrNoRows
 	}
 	return v, err
+}
+
+// TenantAllowedModels reads only the Tenant's model allowlist.
+//
+// The personal console needs the ceiling before it can offer a model picker;
+// reading the whole Tenant row would carry quota and status fields the page
+// does not use. A missing Tenant returns (nil, nil): the Account's foreign key
+// is ON DELETE SET NULL, so a dangling id means "no membership right now"
+// rather than a failure to report.
+func (p *Postgres) TenantAllowedModels(ctx context.Context, id string) ([]string, error) {
+	var raw []byte
+	err := p.Pool.QueryRow(ctx, `
+SELECT allowed_models
+FROM gateway_tenant
+WHERE id=$1::uuid
+`, id).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		// The column is NOT NULL; this only happens after a manual edit. Read
+		// it as the column default, which is the wildcard, not as "deny all".
+		out = []string{model.AllModelsWildcard}
+	}
+	return out, nil
 }

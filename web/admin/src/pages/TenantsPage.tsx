@@ -8,7 +8,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react'
-import {api, deleteTenant, type Tenant, type TenantUsage} from '../api'
+import {api, deleteTenant, type ModelConfig, type Tenant, type TenantUsage} from '../api'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
@@ -31,6 +31,7 @@ import {quotaState, quotaText} from '../lib/quota'
  */
 export function TenantsPage({
   tenants,
+  models = [],
   keyCounts = {},
   loading = false,
   error = '',
@@ -38,6 +39,8 @@ export function TenantsPage({
   onReload,
 }: {
   tenants: Tenant[] | null
+  /** The enabled model catalog the allowlist form offers as named choices. */
+  models?: ModelConfig[]
   /** API Keys per tenant id, so the delete confirmation can name the cost. */
   keyCounts?: Record<string, number>
   loading?: boolean
@@ -85,15 +88,21 @@ export function TenantsPage({
    * foreign key. The confirmation therefore states how many credentials go
    * with the tenant; an operator who only meant to retire the department
    * should disable it instead, which leaves the keys in place.
+   *
+   * The member Accounts are a separate fact: the foreign key on
+   * gateway_admin_user.tenant_id is ON DELETE SET NULL, so those people keep
+   * their accounts and become unassigned. Saying so matters because the key
+   * count alone reads as "the department disappears", including its people.
    */
   const remove = async (t: Tenant) => {
     const keys = keyCounts[t.id] || 0
+    const members = '租户下的成员账号不会被删除，但会变为「未分配」状态（租户归属被清除），需要管理员重新分配租户。'
     const ok = await confirm({
       title: `删除租户「${t.name}」？`,
       description:
         keys > 0
-          ? `该租户和它名下的 ${keys} 个 API Key 会被永久删除，这些 Key 立即失效且无法恢复。历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。`
-          : '该租户会被永久删除。历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。',
+          ? `该租户和它名下的 ${keys} 个 API Key 会被永久删除，这些 Key 立即失效且无法恢复。${members}历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。`
+          : `该租户会被永久删除。${members}历史请求日志会保留，但无法再关联回这个租户。如果只是要停止服务，请改用「停用」。`,
       confirmText: '确认删除',
       danger: true,
       requireText: t.name,
@@ -373,7 +382,12 @@ export function TenantsPage({
           subtitle="配额与限流均为 0 表示不限制；限流规则为该租户内所有 API Key 共享。"
           onClose={() => setDraft(null)}
         >
-          <TenantForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />
+          <TenantForm
+            value={draft}
+            models={models}
+            onSave={v => void save(v)}
+            onCancel={() => setDraft(null)}
+          />
         </Drawer>
       )}
 

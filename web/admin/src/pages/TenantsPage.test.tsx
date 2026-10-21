@@ -33,6 +33,7 @@ const tenants = [
     rpm_limit: 600,
     tpm_limit: 100000,
     max_concurrency: 50,
+    allowed_models: ['*'],
   },
 ] as Tenant[]
 
@@ -146,6 +147,11 @@ describe('TenantsPage on a narrow screen', () => {
     await user.click(buttons[0])
 
     expect(screen.getByText(/2 个 API Key/)).toBeInTheDocument()
+    // The keys go; the people do not. member Accounts survive with their
+    // Tenant membership cleared, which is a different consequence and has to
+    // be stated before the operator types the name.
+    expect(screen.getByText(/成员账号不会被删除/)).toBeInTheDocument()
+    expect(screen.getByText(/变为「未分配」状态/)).toBeInTheDocument()
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
 
     // set the whole value in one change event: userEvent types character by

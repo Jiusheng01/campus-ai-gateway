@@ -82,12 +82,12 @@ gateway_request_log
 - HTTP status / error code
 - `created_at`
 
-管理员操作与安全事件分别写入独立审计表，避免和业务请求混在一起：
+控制面写操作与安全事件分别写入独立审计表，避免和业务请求混在一起：
 
 | 表 | 内容 |
 | --- | --- |
 | `gateway_request_log` | 业务 `/v1/*` 请求记录 |
-| `gateway_admin_audit_log` | 管理员操作审计 |
+| `gateway_admin_audit_log` | 控制面写操作审计：管理端与个人控制台的写请求共用此表，actor 为操作者账号 |
 | `gateway_security_event` | 安全事件 |
 
 逐次 attempt 的明细单独落在 `gateway_request_attempt`（每次 Routing Attempt 一行：`attempt_no` / `provider` / `upstream_model` / `outcome` / `status_code` / `latency_ms` / `error_kind`），由 `request_id` 关联到请求记录。

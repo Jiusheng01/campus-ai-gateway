@@ -13,7 +13,8 @@ import {
   type WhoAmI,
 } from '../api'
 import {Shell} from './Shell'
-import {allowedPages, landingPage, type Page} from './navigation'
+import {allowedPages, type Page} from './navigation'
+import {landingPath, mayUseWorkspace, pathFor, resolveRoute} from './routing'
 import {ToastProvider, useToast} from '../components/ui/Toast'
 import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import {AuthSplash} from '../auth/AuthSplash'
@@ -21,6 +22,7 @@ import {AuthUnsupported} from '../auth/AuthUnsupported'
 import {IdentityRequired} from '../auth/IdentityRequired'
 import {LoginPage} from '../auth/LoginPage'
 import {SetupPage} from '../auth/SetupPage'
+import {WorkspaceForbidden, WorkspaceNotFound} from '../auth/WorkspaceBoundary'
 import {DashboardPage} from '../pages/DashboardPage'
 import {AnalyticsPage} from '../pages/AnalyticsPage'
 import {ProvidersPage} from '../pages/ProvidersPage'
@@ -34,6 +36,11 @@ import {UsersPage} from '../pages/UsersPage'
 import {SettingsPage} from '../pages/SettingsPage'
 import {ProfilePage} from '../pages/ProfilePage'
 import {AccessPage} from '../pages/AccessPage'
+import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
+import {ConsoleKeysPage} from '../pages/ConsoleKeysPage'
+import {ConsoleModelsPage} from '../pages/ConsoleModelsPage'
+import {ConsoleLogsPage} from '../pages/ConsoleLogsPage'
+import {ConsoleUsagePage} from '../pages/ConsoleUsagePage'
 
 // loading   — checking the auth config and trying to restore a session
 // setup     — no administrator exists yet, show the first-run form
@@ -50,13 +57,18 @@ type LogSeed = {model?: string; provider?: string; tenant_id?: string; api_key_i
 
 const authModeOf = (cfg: AuthConfig | null) => (cfg?.auth_mode || '').toLowerCase()
 
+const isWorkspacePath = (path: string) => path.startsWith('/admin-ui') || path.startsWith('/console')
+
 function Console() {
   const toast = useToast()
   const [phase, setPhase] = useState<AuthPhase>('loading')
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null)
   const [authNotice, setAuthNotice] = useState('')
   const [who, setWho] = useState<WhoAmI | null>(null)
-  const [page, setPage] = useState<Page>('dashboard')
+  // The pathname is the routing state. A direct load, a refresh and a
+  // back/forward gesture all arrive here through the URL rather than through
+  // component state that a reload would lose.
+  const [path, setPath] = useState(() => window.location.pathname)
   const [logSeed, setLogSeed] = useState<LogSeed>({})
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('campus_sidebar') === '1')
   const [dark, setDark] = useState(() => localStorage.getItem('campus_theme') === 'dark')
@@ -65,6 +77,14 @@ function Console() {
     document.documentElement.dataset.theme = dark ? 'dark' : 'light'
     localStorage.setItem('campus_theme', dark ? 'dark' : 'light')
   }, [dark])
+
+  // Back and forward move between workspaces and pages without a router. The
+  // listener is the only place the URL writes back into component state.
+  useEffect(() => {
+    const onPopState = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   // Boot sequence: read the public auth config, then resolve the identity
   // appropriate to the active mode. In session mode that means restoring from
@@ -141,26 +161,19 @@ function Console() {
   // refreshed wholesale when whoami resolves.
   const roles = who?.roles || []
   const canOpenRawLogs = roles.includes('super_admin') || roles.includes('auditor')
-  const openLogs = (filters: LogSeed) => {
-    setLogSeed(filters)
-    setPage('logs')
-  }
 
-  // Roles can change under a live session — a promotion bumps auth_version and
-  // revokes, but a demotion only resolves on the next request. Rather than
-  // rendering a page the gateway would reject, move the account to a page it
-  // may actually see.
-  //
-  // This must sit above the early returns below: a hook that is reached on some
-  // renders and not others changes the hook count, which React refuses to
-  // render at all.
+  // If the account arrives at a path that names no workspace at all (most
+  // commonly "/"), send it to the landing its roles choose. A path that names a
+  // real workspace is left alone: a member asking for /admin-ui must see the
+  // 403 page, not a redirect that hides what happened.
   useEffect(() => {
-    // Do not infer a role list from an identity that has not resolved yet.
-    // Doing so treated every session restore as a member and bounced the
-    // administrator to 个人资料 before whoami returned the real roles.
-    if (!who) return
-    if (!allowedPages(roles).includes(page)) setPage(landingPage(roles))
-  }, [roles, page, who])
+    if (phase !== 'ready' || !who) return
+    if (resolveRoute(path)) return
+    if (isWorkspacePath(path)) return
+    const target = landingPath(who.roles || [])
+    window.history.replaceState({}, '', target)
+    setPath(target)
+  }, [phase, who, path])
 
   // The public auth config is the answer to a question whose answer changes:
   // before the first super administrator exists, registration is closed, and it
@@ -208,10 +221,11 @@ function Console() {
   }, [phase, who])
 
   // onAuthenticated is called by every path that ends with a session: setup,
-  // login and registration. The roles it carries decide where the account
-  // lands, so a member never sits on a dashboard that would 403 for them.
+  // login and registration. It deliberately does not choose a page: the URL the
+  // account arrived on is honoured when it names a workspace, and the landing
+  // redirect above handles the case where it does not.
   function onAuthenticated(result?: LoginResult) {
-    const roles = result?.user?.roles || []
+    const resultRoles = result?.user?.roles || []
     setAuthNotice('')
     // Toasts are cleared on every account change: one about another user's
     // permissions must never follow a member into their own session.
@@ -221,13 +235,12 @@ function Console() {
         ? {
             user: result.user.username,
             username: result.user.username,
-            roles,
+            roles: resultRoles,
             auth_mode: authModeOf(authConfig) || 'session',
           }
         : null,
     )
     setPhase('ready')
-    setPage(landingPage(roles))
   }
 
   async function signOut() {
@@ -239,16 +252,74 @@ function Console() {
     setPhase('login')
   }
 
+  // Navigation pushes a real URL. The Shell is workspace-aware, so the same
+  // page id (profile, access) stays inside the workspace the account is in.
+  function navigate(next: Page) {
+    const current = resolveRoute(path)
+    if (!current) return
+    const target = pathFor(current.workspace, next)
+    if (window.location.pathname !== target) window.history.pushState({}, '', target)
+    setPath(target)
+  }
+
+  function goHome() {
+    const target = landingPath(roles)
+    if (window.location.pathname !== target) window.history.replaceState({}, '', target)
+    setPath(target)
+  }
+
+  const openLogs = (filters: LogSeed) => {
+    setLogSeed(filters)
+    navigate('logs')
+  }
+
   if (phase === 'loading') return <AuthSplash text="正在检查登录状态…" />
   if (phase === 'unsupported') return <AuthUnsupported config={authConfig} />
   if (phase === 'identity') return <IdentityRequired onRetry={() => window.location.reload()} />
   if (phase === 'setup') return <SetupPage config={authConfig} onDone={onAuthenticated} />
   if (phase === 'login') return <LoginPage config={authConfig} notice={authNotice} onDone={onAuthenticated} />
 
+  // The session is restored but whoami has not answered yet. Deciding the
+  // workspace before the roles arrive is what used to bounce an administrator
+  // to 个人资料; here it would briefly show a 403 to a legitimate member.
+  if (!who) return <AuthSplash text="正在读取账号身份…" />
+
+  const route = resolveRoute(path)
+  if (!route) {
+    if (isWorkspacePath(path)) return <WorkspaceNotFound onHome={goHome} />
+    return <AuthSplash text="正在打开工作台…" />
+  }
+
+  if (!mayUseWorkspace(route.workspace, roles)) {
+    return (
+      <WorkspaceForbidden
+        workspace={route.workspace}
+        onHome={goHome}
+        onSignOut={() => void signOut()}
+        sessionMode={isSessionMode()}
+      />
+    )
+  }
+
+  // The workspace is usable, but an administrator may still lack the role for
+  // one particular page. Say so rather than silently rewriting the address.
+  if (route.workspace === 'admin' && !allowedPages(roles).includes(route.page)) {
+    return (
+      <WorkspaceForbidden
+        workspace={route.workspace}
+        scope="page"
+        onHome={goHome}
+        onSignOut={() => void signOut()}
+        sessionMode={isSessionMode()}
+      />
+    )
+  }
+
   return (
     <Shell
-      page={page}
-      onNavigate={setPage}
+      page={route.page}
+      workspace={route.workspace}
+      onNavigate={navigate}
       collapsed={collapsed}
       onToggleCollapse={() => {
         const next = !collapsed
@@ -262,32 +333,46 @@ function Console() {
       refreshing={false}
       onSignOut={() => void signOut().catch(e => toast.error(e instanceof Error ? e.message : '退出登录失败'))}
     >
-      {page === 'dashboard' && <DashboardPage roles={roles} who={who} onNavigate={setPage} />}
-      {page === 'analytics' && <AnalyticsPage />}
-      {page === 'providers' && (
-        <ProvidersPage
-          canPreviewContent={roles.includes('super_admin')}
-          canOpenRawLogs={canOpenRawLogs}
-          onOpenLogs={openLogs}
-        />
+      {route.workspace === 'console' ? (
+        <>
+          {route.page === 'overview' && <ConsoleOverviewPage onNavigate={navigate} />}
+          {route.page === 'keys' && <ConsoleKeysPage />}
+          {route.page === 'models' && <ConsoleModelsPage />}
+          {route.page === 'usage' && <ConsoleUsagePage />}
+          {route.page === 'logs' && <ConsoleLogsPage />}
+          {route.page === 'profile' && <ProfilePage who={who} />}
+          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
+        </>
+      ) : (
+        <>
+          {route.page === 'dashboard' && <DashboardPage roles={roles} who={who} onNavigate={navigate} />}
+          {route.page === 'analytics' && <AnalyticsPage />}
+          {route.page === 'providers' && (
+            <ProvidersPage
+              canPreviewContent={roles.includes('super_admin')}
+              canOpenRawLogs={canOpenRawLogs}
+              onOpenLogs={openLogs}
+            />
+          )}
+          {route.page === 'models' && (
+            <PublishedModelsPage
+              canAuthorize={roles.includes('super_admin')}
+              canOpenRawLogs={canOpenRawLogs}
+              onOpenLogs={openLogs}
+            />
+          )}
+          {route.page === 'routes' && <RoutesPage />}
+          {(route.page === 'calls' || route.page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}
+          {route.page === 'tenants' && <CallsPage key="calls-tenants" initialTab="tenants" />}
+          {route.page === 'logs' && <RequestLogsPage key={JSON.stringify(logSeed)} initialFilters={logSeed} />}
+          {route.page === 'audit' && <AuditPage />}
+          {route.page === 'security' && <SecurityPage />}
+          {route.page === 'users' && <UsersPage />}
+          {route.page === 'settings' && <SettingsPage who={who} authConfig={authConfig} />}
+          {route.page === 'profile' && <ProfilePage who={who} />}
+          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
+        </>
       )}
-      {page === 'models' && (
-        <PublishedModelsPage
-          canAuthorize={roles.includes('super_admin')}
-          canOpenRawLogs={canOpenRawLogs}
-          onOpenLogs={openLogs}
-        />
-      )}
-      {page === 'routes' && <RoutesPage />}
-      {(page === 'calls' || page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}
-      {page === 'tenants' && <CallsPage key="calls-tenants" initialTab="tenants" />}
-      {page === 'logs' && <RequestLogsPage key={JSON.stringify(logSeed)} initialFilters={logSeed} />}
-      {page === 'audit' && <AuditPage />}
-      {page === 'security' && <SecurityPage />}
-      {page === 'users' && <UsersPage />}
-      {page === 'settings' && <SettingsPage who={who} authConfig={authConfig} />}
-      {page === 'profile' && <ProfilePage who={who} />}
-      {page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
     </Shell>
   )
 }

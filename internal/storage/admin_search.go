@@ -188,8 +188,14 @@ FROM gateway_request_log`+requestLogWhere,
 //
 // The caller is responsible for the range: [from, to) is a half-open interval
 // so consecutive windows never double-count the boundary row.
+//
+// ownerID is the personal console's owner predicate. An empty value is the
+// administrator's view and selects every row; a non-empty value binds the
+// request-log owner snapshot, so the member's chart and the administrator's
+// chart share one bucket implementation rather than two SQL copies that could
+// drift at a boundary.
 func (p *Postgres) RequestLogSeries(
-	ctx context.Context, from, to time.Time, unit string, offsetMinutes int, labelFormat string,
+	ctx context.Context, ownerID string, from, to time.Time, unit string, offsetMinutes int, labelFormat string,
 ) ([]model.RequestLogBucket, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT
@@ -204,9 +210,10 @@ SELECT
 	COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::float8
 FROM gateway_request_log
 WHERE created_at >= $4::timestamptz AND created_at < $5::timestamptz
+  AND ($6::uuid IS NULL OR owner_user_id = $6::uuid)
 GROUP BY bucket
 ORDER BY bucket
-`, unit, offsetMinutes, labelFormat, from, to)
+`, unit, offsetMinutes, labelFormat, from, to, optionalString(ownerID))
 	if err != nil {
 		return nil, err
 	}

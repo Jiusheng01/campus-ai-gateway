@@ -64,6 +64,10 @@ type adminStore interface {
 	AdminUserStats(ctx context.Context) (model.AdminUserStats, error)
 	FindAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error)
 	FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error)
+	// TenantAllowedModels is the model ceiling the personal console offers
+	// when creating a key. It is read separately from the account because it is
+	// the Tenant's fact, not a claim carried in the session.
+	TenantAllowedModels(ctx context.Context, tenantID string) ([]string, error)
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
 	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
@@ -71,6 +75,10 @@ type adminStore interface {
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.
 	UpdateAdminUserAccount(ctx context.Context, id string, mutation storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error)
+	// AssignAdminUserTenant is a separate mutation from the account patch: it
+	// carries its own refusal (the account still owns keys) and must not share
+	// the role/status transaction.
+	AssignAdminUserTenant(ctx context.Context, id, tenantID string) (model.AdminUser, error)
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
