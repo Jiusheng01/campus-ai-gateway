@@ -1,5 +1,4 @@
-/* ==========================================================================
-   Campus AI Gateway · Admin console design system
+/* ===================================================================   Campus AI Gateway · Admin console design system
    --------------------------------------------------------------------------
    One palette, one radius scale, one control height. Pages compose these
    primitives instead of inventing their own spacing and colour, which is what
@@ -2052,108 +2051,6 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
-/* --- 4. Quick Search Command Palette (Ctrl+K) ----------------------------- */
-.quickSearchBackdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(4px);
-  z-index: 9999;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 12vh;
-}
-.quickSearchModal {
-  width: 90vw;
-  max-width: 580px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  overflow: hidden;
-  animation: modalIn 0.15s ease-out;
-}
-.quickSearchInputWrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-.quickSearchInput {
-  flex: 1;
-  border: none;
-  font-size: 15px;
-  color: var(--text);
-  background: transparent;
-  outline: none;
-}
-.quickSearchInput::placeholder {
-  color: var(--text-muted);
-}
-.quickSearchList {
-  max-height: 360px;
-  overflow-y: auto;
-  padding: 8px;
-}
-.quickSearchItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background 0.1s;
-}
-.quickSearchItem:hover, .quickSearchItem.selected {
-  background: var(--primary-soft);
-}
-.quickSearchItemLeft {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.quickSearchItemLeft svg {
-  width: 16px;
-  height: 16px;
-  color: var(--primary);
-}
-.quickSearchTitle {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-}
-.quickSearchSub {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-left: 8px;
-}
-.quickSearchFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: var(--surface-subtle);
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.quickSearchKbd {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.quickSearchKbd kbd {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 4px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
 /* --- 5. Image 1: Dashboard Page Sections ---------------------------------- */
 .dashboardHeroContent {
   display: flex;
@@ -3183,6 +3080,894 @@ input:focus, select:focus, textarea:focus {
   color: var(--text-muted);
   font-weight: normal;
 }
+
+/* --- tenants (ticket 09) --- */
+
+/* The tenant page renders the table and the card list together and lets the
+   `.desktopOnly` / `.mobileOnly` pair in the responsive block pick one. That
+   pair switches at 900px; the shell's own chrome breakpoints are reconciled in
+   the shell, so the page follows the sheet rather than inventing a second one.
+
+   `.cardsList` asks for `display: flex` to keep its column gap, but
+   `.mobileOnly` sets `display` too and wins on source order at equal
+   specificity, stacking the cards flush. Restate the display inside the same
+   breakpoint and only for the pair, so neither name changes meaning on its
+   own. */
+@media (max-width: 900px) {
+  .cardsList.mobileOnly { display: flex; }
+}
+
+/* `.miniCardRows span` is the label rule and also matches the three-state
+   quota tags nested in the value cell: left alone it turns the number muted
+   and drops 无限制's colour. The card has to read the same three states as the
+   table, so the nested tags keep their own presentation. */
+.miniCardRows .tenantQuotaValue span { display: inline-block; font-size: 11.5px; }
+.miniCardRows .tenantQuotaValue .quotaNumericValue { font-size: 13px; color: var(--text); }
+.miniCardRows .tenantQuotaValue .quotaUnlimitedTag { color: #059669; }
+
+/* --- shell chrome (ticket 02) --------------------------------------------- */
+
+/* The topbar is the one row every page shares, so its controls use the same
+   control height and radius as the buttons below them. Before this block none
+   of these names had a rule and the whole right-hand cluster fell back to
+   unstyled buttons: full-width, default font, no separation from the title. */
+.topbarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: none;
+}
+.topbarActionItem {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The search entry is a button that opens the palette, not an input: clicking
+   it must not focus a field that cannot be typed into. It is sized like a
+   field so it reads as the search affordance it stands for. */
+.topbarSearchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  min-width: 0;
+  width: 300px;
+  max-width: 34vw;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-faint);
+  text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.topbarSearchBar:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.topbarSearchBar:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.searchBarIcon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-muted);
+}
+.searchBarPlaceholder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+/* The shortcut hint is a key cap, so it is monospaced and never wraps away
+   from the label it belongs to. */
+.searchBarKbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+
+/* Square icon controls in the topbar. Transparent border keeps the four of
+   them on one baseline with the bordered search entry beside them. */
+.topbarIconBtn {
+  position: relative;
+  width: var(--control-h);
+  height: var(--control-h);
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+}
+.topbarIconBtn:hover { background: var(--surface-hover); color: var(--text); }
+.topbarIconBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.topbarIconBtn svg { width: 17px; height: 17px; }
+
+/* The dot sits on the bell's shoulder. The ring is painted in the surface
+   colour rather than a fixed white, so it still separates from the button on
+   the dark theme. */
+.badgeDot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.topbarIconBtn.hasBadge { color: var(--text); }
+
+/* User menu. The trigger carries the identity; the dropdown repeats it because
+   the trigger collapses to an avatar on narrow screens. */
+.userMenuWrapper { position: relative; }
+.userMenuTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+.userMenuTrigger:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.userMenuTrigger.open { border-color: var(--primary); background: var(--surface-subtle); }
+.userMenuTrigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.userAvatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.userMeta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.userName {
+  font-size: 12.5px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userRole {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userChevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.userMenuTrigger.open .userChevron { transform: rotate(180deg); }
+
+/* The dropdown is positioned against the trigger's wrapper, not the viewport,
+   so it stays attached while the topbar scrolls. */
+.userDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 244px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: pop 0.12s ease-out;
+}
+.userDropdownHead {
+  padding: 8px 10px 9px;
+  min-width: 0;
+}
+.dropdownUsername {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdownRoles {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userDropdownDivider {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--border);
+}
+.userDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+.userDropdownItem svg { width: 15px; height: 15px; color: var(--text-muted); flex: none; }
+.userDropdownItem:hover { background: var(--surface-subtle); }
+.userDropdownItem:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.userDropdownItem.danger { color: var(--danger); }
+.userDropdownItem.danger svg { color: var(--danger); }
+.userDropdownItem.danger:hover { background: var(--danger-soft); }
+
+/* Brand row: the left cluster takes the free width so the collapse control
+   stays at the right edge instead of drifting with the title's length. */
+.brandLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.brandCollapseBtn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+}
+.brandCollapseBtn:hover { background: var(--surface-subtle); color: var(--text); }
+.brandCollapseBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.brandCollapseBtn svg { width: 16px; height: 16px; }
+
+.navItemIcon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.navItemLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Help dialog. The code sample scrolls sideways rather than widening the
+   dialog: a request example is one long line per header. */
+.helpContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.helpSection h3 {
+  margin: 0 0 6px;
+
+/* --- Ticket 05: Call management summary and data flow --------------------- */
+/* The key and tenant tables render these wrappers and cells, but the sheet had
+   no rules for them, so the tables sat flush against the card edge and their
+   names fell back to default typography. Named here rather than reusing an
+   existing selector: this block must not change pages it was not written for. */
+.keysTableWrap,
+.tenantsTableWrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  background: var(--surface);
+}
+.tableRecordCount {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.tenantCode {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.tenantNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tenantNameTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.helpSection p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+.helpCodeBlock {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+.helpList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.9;
+}
+.helpList kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The notification panel shows /admin/security-events rows. Rows read as one
+   list: the icon column is fixed so the event text lines up across rows of
+   different lengths. */
+.notificationList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notificationItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+}
+.notificationItem + .notificationItem { border-top: 1px solid var(--border); border-radius: 0; }
+.notificationIcon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+.notificationIcon svg { width: 16px; height: 16px; }
+.notificationIcon.danger { background: var(--danger-soft); color: var(--danger); }
+.notificationIcon.warning { background: var(--warning-soft); color: var(--warning); }
+.notificationIcon.info { background: var(--info-soft); color: var(--info); }
+.notificationIcon.neutral { background: var(--surface-subtle); color: var(--text-muted); }
+.notificationContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.notificationContent b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.notificationContent p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.notificationTime {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.notificationMore {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+/* Sidebar promo card. It is a block inside a 240px column, so every child has
+   to shrink with it; the artwork is inline SVG with a viewBox and no fixed
+   width, which is what lets it fill the card instead of overflowing it. */
+.campusPromoCard {
+  margin: 12px 10px 4px;
+  padding: 12px 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--primary-soft) 0%, var(--surface) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* The card is not rendered at the collapsed width; this keeps it out of the
+   layout if a caller ever renders it there. */
+.sidebar.collapsed .campusPromoCard { display: none; }
+.campusPromoVisual {
+  width: 100%;
+  min-width: 0;
+  line-height: 0;
+}
+.campusPromoIllustration {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 68px;
+}
+.campusPromoText {
+  min-width: 0;
+  text-align: center;
+}
+.campusPromoTitle {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campusPromoSub {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The sparkline is inline SVG sized by attributes; this keeps it from
+   stretching inside the flex card row and from overflowing on a phone. */
+.miniSparkline {
+  display: block;
+  flex: none;
+  max-width: 100%;
+}
+
+/* The shell's drawer class. The body scroll lock is set from the component;
+   this stops the workspace itself from rubber-banding behind the backdrop on
+   touch devices, where `overflow: hidden` on the body is not always honoured. */
+.shell.isMobileOpen { overflow: hidden; }
+.shell.isMobileOpen .workspace { touch-action: none; }
+
+/* The sidebar drawer breakpoint is 780px everywhere in this sheet. The shell
+   used to close the drawer at 960px, which left a 180px band where the drawer
+   could be opened but the layout never showed its trigger. */
+@media (max-width: 780px) {
+  .topbarSearchBar {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+    padding: 0;
+    justify-content: center;
+  }
+  .topbarSearchBar .searchBarPlaceholder,
+  .topbarSearchBar .searchBarKbd { display: none; }
+  .userMeta { display: none; }
+  .userMenuTrigger { padding: 0 4px; }
+  .userChevron { display: none; }
+  .campusPromoCard { margin: 10px 8px 4px; }
+}
+
+@media (max-width: 480px) {
+  .topbarIconBtn { width: 32px; height: 32px; }
+  .topbarRight { gap: 4px; }
+}
+
+
+/* --- key drawer (ticket 08) ----------------------------------------------- */
+/* Only the section holding focus is lit. Inactive steps keep their number and
+   label readable but drop the filled disc, so the bar reads as "you are here"
+   rather than "three things are done". */
+.formStep {
+  color: var(--text-muted);
+}
+.formStep .stepNumber {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.formStep .stepLabel {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.formStep.active .stepNumber {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.formStep.active .stepLabel {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* The three-state limit labels. Colour carries the distinction as well as the
+   words: an unlimited cap is a green permission, an unset one is neutral
+   information, and a number is plain text. */
+.quotaMetricValue.quotaUnlimitedTag,
+.quotaMetricValue.quotaUnsetTag {
+  font-size: 15px;
+}
+.quotaMetricValue.quotaUnsetTag {
+  font-weight: 500;
+}
+
+/* Model chips in the key form: the alias is the value the operator recognises,
+   the display name is supporting context. */
+.chipAlias {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+.chipName {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+/* Length hint beside the one-time secret; secondary to the value itself. */
+.secretLengthNotice {
+  font-size: 11px;
+  color: var(--text-muted);
+
+/* Shown in place of the today figure when /admin/status fails. It has to read
+   as an absence, not as a low value: a muted red distinguishes "we could not
+   measure today" from "today was quiet". */
+.callsStatUnavailable {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+.callsStatUnavailable:hover {
+  text-decoration: underline;
+}
+
+/* --- quick search (ticket 03) --- */
+/* The dialog frame, scrim and Escape handling belong to .modal/.overlay; these
+   rules cover only the search surface rendered inside the modal body. */
+.quickSearch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quickSearchField {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+/* The field is a single composite control: the ring belongs to the bar, not to
+   the raw input, so the icon and clear button look focused with it. */
+.quickSearchField:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.quickSearchFieldIcon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+.quickSearchInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+.quickSearchInput::placeholder {
+  color: var(--text-muted);
+}
+.quickSearchClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.quickSearchClear:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.quickSearchClear svg {
+  width: 14px;
+  height: 14px;
+}
+.quickSearchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.quickSearchItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+/* aria-selected is the source of truth for the highlight; the class only
+   mirrors it because the stylesheet cannot select on ARIA alone in old
+   browsers. */
+.quickSearchItem:hover,
+.quickSearchItem.selected {
+  background: var(--primary-soft);
+}
+.quickSearchItemIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--primary);
+}
+.quickSearchItemIcon svg {
+  width: 15px;
+  height: 15px;
+}
+.quickSearchItemText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.quickSearchItemHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.quickSearchItemTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quickSearchItemCategory {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.quickSearchItemSub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quickSearchEmpty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.quickSearchFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.quickSearchFoot kbd {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+
+/* --- channels (ticket 06) --- */
+/* The three summary cards describe the whole channel configuration. They sit
+   above the table and keep their own row so a filter that narrows the table
+   cannot narrow them. */
+.providersSummarySection { width: 100%; }
+.providersSummaryHeader {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.providersSummaryStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  flex: 1 1 520px;
+}
+.providersSummaryAction { display: flex; align-items: flex-end; }
+.compactStat { padding: 14px 16px; gap: 8px; }
+@media (max-width: 900px) {
+  .providersSummaryStats { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Channel identity and dependency cells. */
+.channelMainName { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+.channelFriendlyName { font-size: 11.5px; color: var(--text-muted); }
+.channelDescText {
+  margin: 0;
+  max-width: 260px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.providerTypeBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.protocolBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.baseUrlText { max-width: 200px; color: var(--text-faint); font-size: 11.5px; }
+
+/* Status and this instance's Provider Circuit. The circuit chip is deliberately
+   not a green "healthy" badge: closed just means this process has not tripped
+   the breaker, and the local state resets when the process does. */
+.channelStatusStack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.circuitChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.circuitScope { font-weight: 600; }
+.circuitValue { font-family: var(--font-mono); font-weight: 700; }
+.circuitRetry { font-weight: 600; }
+.circuitChip.open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.circuitChip.half-open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.circuitChip.closed { color: var(--text-muted); }
+.circuitChip.none,
+.circuitChip.unknown { color: var(--text-faint); }
+.channelFactCircuit { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+.channelRefs { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.candidateCountBadge {
+  display: inline-flex;
+  min-width: 24px;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.channelRefCounts { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+
+/* Diagnostic column. */
+.lastTestCell { display: flex; flex-direction: column; gap: 2px; }
+.lastTestTime { font-size: 12px; color: var(--text); }
+.lastTestLatency { font-size: 11.5px; font-weight: 600; }
+.lastTestLatency.success { color: var(--success); }
+.lastTestLatency.danger { color: var(--danger); }
+
+/* Table selection and batch actions. */
+.selectionCell { width: 36px; }
+.selectedRow { background: var(--primary-soft); }
+.batchActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+}
+.batchSelectionCount { font-size: 12.5px; color: var(--text-muted); }
+.batchSelectionCount b { color: var(--text); }
+.batchButtons { display: flex; gap: 8px; }
+
+.tablePaginationFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.paginationInfo { font-size: 12px; color: var(--text-muted); }
+.paginationControls { display: flex; align-items: center; gap: 8px; }
+.paginationCurrentPage { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 700; }
 
 
 /* --- overview (ticket 04) -------------------------------------------------- */
