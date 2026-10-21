@@ -15,7 +15,7 @@ export function PageBanner({
   subtitle,
   badge,
   actions,
-  illustration = true,
+  illustration = false,
   className = '',
 }: PageBannerProps) {
   return (

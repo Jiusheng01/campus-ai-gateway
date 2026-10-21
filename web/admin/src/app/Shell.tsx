@@ -20,7 +20,7 @@ import {consoleNavGroups, consolePageMeta, navGroups, pageMeta, type NavItem, ty
 import type {Workspace} from './routing'
 import {primaryRole, roleLabel} from '../lib/roles'
 import {api, type SecurityEvent, type WhoAmI} from '../api'
-import {CampusSidebarCard} from '../components/ui/CampusIllustrations'
+import {containTab} from '../components/ui/focus'
 import {QuickSearchModal} from '../components/ui/QuickSearch'
 import {Modal} from '../components/ui/Modal'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
@@ -88,6 +88,7 @@ export function Shell({
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
   // Stable identity: Modal re-runs its focus/restore effect when onClose
   // changes, and a new callback on every shell render would pull focus out of
   // the search input.
@@ -154,11 +155,17 @@ export function Shell({
   // Close mobile drawer on Escape key
   useEffect(() => {
     if (!mobileNavOpen) return
+    const restoreTo = document.activeElement as HTMLElement | null
+    sidebarRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMobileNavOpen(false)
+      if (sidebarRef.current) containTab(e, sidebarRef.current)
     }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      restoreTo?.focus()
+    }
   }, [mobileNavOpen])
 
   // Prevent background scroll while mobile drawer is open
@@ -203,7 +210,15 @@ export function Shell({
       )}
 
       {/* Main Left Sidebar */}
-      <aside id="admin-sidebar" className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileNavOpen ? 'mobileShown' : ''}`}>
+      <aside
+        id="admin-sidebar"
+        ref={sidebarRef}
+        tabIndex={-1}
+        role={mobileNavOpen ? 'dialog' : undefined}
+        aria-modal={mobileNavOpen ? true : undefined}
+        aria-label={mobileNavOpen ? '工作区导航' : undefined}
+        className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileNavOpen ? 'mobileShown' : ''}`}
+      >
         <div className="brand">
           <div className="brandLeft">
             <div className="brandMark" aria-hidden>
@@ -212,7 +227,7 @@ export function Shell({
             {(!collapsed || mobileNavOpen) && (
               <div className="brandText">
                 <b>校园模型网关</b>
-                <span>Campus AI Gateway</span>
+                <span>{isPersonal ? '个人工作台' : '管理工作台'}</span>
               </div>
             )}
           </div>
@@ -267,9 +282,6 @@ export function Shell({
             </div>
           ))}
         </nav>
-
-        {/* Bottom promo illustration card (visible when expanded) */}
-        {(!collapsed || mobileNavOpen) && <CampusSidebarCard />}
 
         {/* Sidebar Collapse Toggle at Bottom */}
         <button
