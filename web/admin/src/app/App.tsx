@@ -37,10 +37,10 @@ import {SettingsPage} from '../pages/SettingsPage'
 import {ProfilePage} from '../pages/ProfilePage'
 import {AccessPage} from '../pages/AccessPage'
 import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
+import {ConsoleModelsPage} from '../pages/ConsoleModelsPage'
 import {
   ConsoleKeysPage,
   ConsoleLogsPage,
-  ConsoleModelsPage,
   ConsoleUsagePage,
 } from '../pages/ConsolePlaceholderPages'
 

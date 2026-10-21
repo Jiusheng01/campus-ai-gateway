@@ -394,6 +394,38 @@ export async function getConsoleMe(){
   return api<ConsoleMe>('/api/console/me',{},false)
 }
 
+/**
+ * ConsoleModel is the member-visible view of a Virtual Model.
+ *
+ * There is deliberately no Provider, Route, credential or upstream name here:
+ * those are management facts. `available` is true for every returned row — the
+ * catalog only contains statically routable models — and is carried so the page
+ * states availability instead of inferring it from presence.
+ */
+export type ConsoleModel={
+  alias:string
+  display_name:string
+  description:string
+  available:boolean
+}
+
+/**
+ * ConsoleModels is the personal model catalog.
+ *
+ * `empty_reason` names why `models` is empty, so the page can distinguish an
+ * unassigned account (`no_tenant`), a Tenant that permits nothing
+ * (`tenant_allows_none`), and an empty deployment (`no_eligible_models`). It is
+ * absent when there is at least one model.
+ */
+export type ConsoleModels={
+  models:ConsoleModel[]
+  empty_reason?:'no_tenant'|'tenant_allows_none'|'no_eligible_models'
+}
+
+export async function getConsoleModels(){
+  return api<ConsoleModels>('/api/console/models',{},false)
+}
+
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
 }
