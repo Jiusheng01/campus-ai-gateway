@@ -83,6 +83,8 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleKeys(w, r)
 	case "/api/console/models":
 		s.handleConsoleModels(w, r)
+	case "/api/console/usage":
+		s.handleConsoleUsage(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/console/keys/") {
 			s.handleConsoleKeyByID(w, r)

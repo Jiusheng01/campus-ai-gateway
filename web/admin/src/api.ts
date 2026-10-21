@@ -522,6 +522,82 @@ export async function getConsoleModels(){
   return api<ConsoleModels>('/api/console/models',{},false)
 }
 
+/**
+ * ConsoleUsageTotals is one period of the member's own traffic.
+ *
+ * `successes + failures === requests` always holds, and `error_rate` is the
+ * failure share. It is a percentage, not a fraction, because every other share
+ * the console renders (quota bands) is already in percent.
+ */
+export type ConsoleUsageTotals={
+  requests:number
+  successes:number
+  failures:number
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+  error_rate:number
+}
+
+/** One model's share of the member's own traffic, aggregated from the log. */
+export type ConsoleUsageModel={
+  alias:string
+  requests:number
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+}
+
+/**
+ * ConsoleUsageQuota is the Tenant's shared budget as a read-only aggregate.
+ *
+ * It contains no member or key detail: the page can say that the budget is
+ * shared without revealing who else spent it. A band is null when the Tenant
+ * has no configured limit for it — 未设, which must not render as 0%.
+ */
+export type ConsoleUsageQuota={
+  tenant_id:string
+  tenant_name:string
+  daily_token:QuotaDimension|null
+  monthly_token:QuotaDimension|null
+  monthly_request:QuotaDimension|null
+}
+
+/**
+ * ConsoleUsage is the personal usage page's payload.
+ *
+ * `cost_available` is false because the gateway records tokens, not prices. The
+ * page renders that as an explicit note; it must never derive a currency
+ * amount from the token counts above it.
+ */
+export type ConsoleUsage={
+  from:string
+  to:string
+  bucket:'hour'|'day'
+  totals:ConsoleUsageTotals
+  series:TrendBucket[]
+  by_model:ConsoleUsageModel[]
+  tenant_quota:ConsoleUsageQuota|null
+  cost_available:boolean
+}
+
+/**
+ * fetchConsoleUsage reads the signed-in Account's own usage for a period.
+ *
+ * Owner and Tenant are not parameters: the gateway binds the owner from the
+ * session and reads the Tenant from the Account's membership. The query string
+ * only chooses the window, exactly as the administrator trend endpoint does.
+ */
+export async function fetchConsoleUsage(from:Date,to:Date,bucket:'hour'|'day'){
+  const q=new URLSearchParams({
+    from:from.toISOString(),
+    to:to.toISOString(),
+    bucket,
+    tz_offset:String(localOffsetMinutes()),
+  })
+  return api<ConsoleUsage>(`/api/console/usage?${q}`,{},false)
+}
+
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
 }
