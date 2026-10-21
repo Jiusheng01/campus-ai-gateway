@@ -83,12 +83,11 @@ LIMIT 2
 // TenantByID returns one tenant's record (its quota limits in particular),
 // or pgx.ErrNoRows when no such tenant exists.
 func (p *Postgres) TenantByID(ctx context.Context, id string) (model.Tenant, error) {
-	var v model.Tenant
-	err := p.Pool.QueryRow(ctx, `
+	v, err := scanTenant(p.Pool.QueryRow(ctx, `
 SELECT `+tenantColumns+`
 FROM gateway_tenant
 WHERE id=$1::uuid
-`, id).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
+`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Tenant{}, pgx.ErrNoRows
 	}

@@ -184,6 +184,7 @@ export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
       ) : (
         <TenantsPage
           tenants={bundle.data ? tenants : null}
+          models={bundle.data?.models ?? []}
           keyCounts={keyCounts}
           loading={bundle.loading}
           error={bundle.error}

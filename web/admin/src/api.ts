@@ -34,7 +34,7 @@ export type CatalogModel={upstream_model:string;opened:boolean;providers:Catalog
  * the idempotent repeat — the model and Route already covered this binding.
  */
 export type CatalogOpenResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean}
-export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number}
+export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number;allowed_models:string[]}
 export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];route_group:string;usage_requests:number;usage_tokens:number}
 export type RequestAttempt={attempt_no:number;provider:string;upstream_model:string;outcome:string;status_code:number;latency_ms:number;error_kind:string}

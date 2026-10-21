@@ -749,7 +749,44 @@ RETURNING `+modelReturningColumns+`
 // two writes' RETURNING clauses. Spelling it once means a column added to the
 // tenant cannot be selected by three queries and forgotten by the fourth, which
 // is exactly how a quota dimension silently reads as zero.
-const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency`
+const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models::text`
+
+// tenantRow is the one place a tenant projection is decoded. JSONB arrives as
+// text because pgx has no built-in decoder for []string; reading it here keeps
+// every query's column list and scan list in step.
+type tenantRow interface {
+	Scan(dest ...any) error
+}
+
+func scanTenant(row tenantRow) (model.Tenant, error) {
+	var v model.Tenant
+	var modelsJSON string
+	err := row.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency, &modelsJSON)
+	if err != nil {
+		return v, err
+	}
+	if err := json.Unmarshal([]byte(modelsJSON), &v.AllowedModels); err != nil {
+		return v, fmt.Errorf("decode tenant allowed_models: %w", err)
+	}
+	if v.AllowedModels == nil {
+		// The column is NOT NULL, so this is only reachable through a manual
+		// edit. Reading it as the wildcard keeps "absent" from turning into
+		// "denies everything", which is the opposite of the column default.
+		v.AllowedModels = []string{model.AllModelsWildcard}
+	}
+	return v, nil
+}
+
+// allowedModelsJSON encodes a tenant's model list. A nil slice is an omitted
+// field, not the empty-list decision: the Tenant default is the wildcard, while
+// an explicit [] is preserved and denies every model.
+func allowedModelsJSON(list []string) []byte {
+	if list == nil {
+		list = []string{model.AllModelsWildcard}
+	}
+	raw, _ := json.Marshal(list)
+	return raw
+}
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
@@ -764,8 +801,8 @@ ORDER BY name
 
 	var out []model.Tenant
 	for rows.Next() {
-		var v model.Tenant
-		if err := rows.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency); err != nil {
+		v, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -774,22 +811,22 @@ ORDER BY name
 }
 
 func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	row := p.Pool.QueryRow(ctx, `
+INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
 RETURNING `+tenantColumns+`
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
+`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency, allowedModelsJSON(v.AllowedModels))
+	return scanTenant(row)
 }
 
 func (p *Postgres) UpdateTenant(ctx context.Context, id string, v model.Tenant) (model.Tenant, error) {
-	err := p.Pool.QueryRow(ctx, `
+	row := p.Pool.QueryRow(ctx, `
 UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, updated_at=NOW()
+SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, allowed_models=$12::jsonb, updated_at=NOW()
 WHERE id=$1::uuid
 RETURNING `+tenantColumns+`
-`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency).Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency)
-	return v, err
+`, id, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency, allowedModelsJSON(v.AllowedModels))
+	return scanTenant(row)
 }
 
 // DeleteTenant removes a tenant and every API Key issued under it.
