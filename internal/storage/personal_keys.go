@@ -31,6 +31,11 @@ var (
 	// longer exists. It cannot normally happen while a session is valid; it is
 	// kept distinct so the handler does not turn it into a generic 500.
 	ErrPersonalAccountNotFound = errors.New("account not found")
+
+	// ErrPersonalKeyNotFound means the id does not name a key owned by the
+	// session's account. A key owned by another Account deliberately produces
+	// the same value: the endpoint must not reveal that it exists.
+	ErrPersonalKeyNotFound = errors.New("personal API key not found")
 )
 
 // PersonalKeyLimitError reports that the Account already owns the maximum
@@ -76,6 +81,19 @@ type PersonalKeyCreate struct {
 	// Limit is the per-Account ceiling. A non-positive value is treated as the
 	// handler's default, so a hand-built Config cannot disable creation.
 	Limit int64
+}
+
+// PersonalKeyUpdate is the write-side input of a personal edit.
+//
+// Like PersonalKeyCreate it has no TenantID, no OwnerUserID and no Status.
+// Disable/re-enable is a separate operation (SetPersonalAPIKeyStatus), so an
+// edit body has nowhere to land a status change even if a client sends one.
+type PersonalKeyUpdate struct {
+	OwnerUserID   string
+	Name          string
+	AllowedModels []string
+	AllowedIPs    []string
+	ExpireAt      *time.Time
 }
 
 // ListAPIKeysByOwner returns only the keys the Account owns. The owner is a
@@ -243,6 +261,192 @@ RETURNING id::text, created_at
 	v.AllowedIPs = allowedIPs
 	v.ExpireAt = in.ExpireAt
 	return v, nil
+}
+
+// GetPersonalAPIKey returns one key owned by the Account.
+//
+// The owner is part of the WHERE clause rather than a check after the read, so
+// another Account's id is indistinguishable from an id that does not exist. The
+// projection is the list's: no digest, and no full credential is selectable.
+func (p *Postgres) GetPersonalAPIKey(ctx context.Context, id, ownerID string) (model.APIKeyAdmin, error) {
+	var v model.APIKeyAdmin
+	var modelsJSON, ipsJSON []byte
+	err := p.Pool.QueryRow(ctx, `
+SELECT
+	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
+	k.expire_at, k.last_used_at, k.allowed_models, k.allowed_ips,
+	COALESCE(k.route_group,''),
+	k.created_at,
+	COALESCE(u.requests,0)::bigint, COALESCE(u.tokens,0)::bigint
+FROM gateway_api_key k
+JOIN gateway_tenant t ON t.id=k.tenant_id
+LEFT JOIN LATERAL (
+	SELECT COUNT(*) AS requests, COALESCE(SUM(COALESCE(l.total_tokens,0)),0) AS tokens
+	FROM gateway_request_log l
+	WHERE l.api_key_id = k.id
+) u ON true
+WHERE k.id=$1::uuid AND k.owner_user_id=$2::uuid
+`, id, ownerID).Scan(
+		&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
+		&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
+		&v.RouteGroup, &v.CreatedAt,
+		&v.UsageRequests, &v.UsageTokens,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.APIKeyAdmin{}, ErrPersonalKeyNotFound
+	}
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+	_ = json.Unmarshal(modelsJSON, &v.AllowedModels)
+	_ = json.Unmarshal(ipsJSON, &v.AllowedIPs)
+	return v, nil
+}
+
+// UpdatePersonalAPIKey replaces the editable part of a key: name, model scope,
+// IP allowlist and expiry.
+//
+// The row is locked through the owner-scoped lookup first. Its tenant_id is read
+// from the row, never from the caller, and the new model scope is resolved
+// against that Tenant's current allowlist with the same three rules as
+// creation. Nothing else on the row is written: status has its own operation,
+// and tenant and owner have no input path at all.
+func (p *Postgres) UpdatePersonalAPIKey(ctx context.Context, id string, in PersonalKeyUpdate) (model.APIKeyAdmin, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var tenantID string
+	err = tx.QueryRow(ctx, `
+SELECT tenant_id::text
+FROM gateway_api_key
+WHERE id=$1::uuid AND owner_user_id=$2::uuid
+FOR UPDATE
+`, id, in.OwnerUserID).Scan(&tenantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.APIKeyAdmin{}, ErrPersonalKeyNotFound
+	}
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+
+	var tenantCode, tenantName, tenantModelsJSON string
+	err = tx.QueryRow(ctx, `
+SELECT code, name, allowed_models::text
+FROM gateway_tenant
+WHERE id=$1::uuid
+`, tenantID).Scan(&tenantCode, &tenantName, &tenantModelsJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The key's tenant_id is NOT NULL, so this is only reachable if the
+		// Tenant was deleted in the same instant. Report the state the write
+		// depends on rather than a generic database error.
+		return model.APIKeyAdmin{}, ErrPersonalTenantUnassigned
+	}
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+	var tenantModels []string
+	if err := json.Unmarshal([]byte(tenantModelsJSON), &tenantModels); err != nil {
+		return model.APIKeyAdmin{}, fmt.Errorf("decode tenant allowed_models: %w", err)
+	}
+	if tenantModels == nil {
+		tenantModels = []string{model.AllModelsWildcard}
+	}
+
+	effectiveModels, err := resolvePersonalKeyModels(tenantModels, in.AllowedModels)
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+
+	allowedIPs := in.AllowedIPs
+	if allowedIPs == nil {
+		allowedIPs = []string{}
+	}
+	modelsJSON, _ := json.Marshal(effectiveModels)
+	ipsJSON, _ := json.Marshal(allowedIPs)
+
+	var v model.APIKeyAdmin
+	err = tx.QueryRow(ctx, `
+UPDATE gateway_api_key
+SET name=$3,
+	expire_at=$4,
+	allowed_models=$5::jsonb,
+	allowed_ips=$6::jsonb,
+	updated_at=NOW()
+WHERE id=$1::uuid AND owner_user_id=$2::uuid
+RETURNING key_prefix, status, last_used_at, created_at
+`, id, in.OwnerUserID, in.Name, in.ExpireAt, string(modelsJSON), string(ipsJSON)).
+		Scan(&v.KeyPrefix, &v.Status, &v.LastUsedAt, &v.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.APIKeyAdmin{}, ErrPersonalKeyNotFound
+	}
+	if err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+
+	// Usage stays derived from the log, exactly as the list reports it.
+	if err := tx.QueryRow(ctx, `
+SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(total_tokens,0)),0)::bigint
+FROM gateway_request_log
+WHERE api_key_id=$1::uuid
+`, id).Scan(&v.UsageRequests, &v.UsageTokens); err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.APIKeyAdmin{}, err
+	}
+
+	v.ID = id
+	v.TenantID = tenantID
+	v.TenantCode = tenantCode
+	v.TenantName = tenantName
+	v.Name = in.Name
+	v.AllowedModels = effectiveModels
+	v.AllowedIPs = allowedIPs
+	v.ExpireAt = in.ExpireAt
+	return v, nil
+}
+
+// SetPersonalAPIKeyStatus enables or disables a key the Account owns.
+//
+// This is a dedicated operation rather than a field on the edit body: pausing
+// an integration and renaming it are different decisions, and keeping them
+// apart means neither request can carry the other's change. The credential is
+// untouched, so re-enabling restores service with the same key. Only status and
+// updated_at are written.
+func (p *Postgres) SetPersonalAPIKeyStatus(ctx context.Context, id, ownerID string, status int) error {
+	tag, err := p.Pool.Exec(ctx, `
+UPDATE gateway_api_key
+SET status=$3, updated_at=NOW()
+WHERE id=$1::uuid AND owner_user_id=$2::uuid
+`, id, ownerID, status)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrPersonalKeyNotFound
+	}
+	return nil
+}
+
+// DeletePersonalAPIKey removes the key row outright.
+//
+// The credential dies with the row. Request Records are not deleted: they keep
+// api_key_id (there is no foreign key) and the owner snapshot that migration
+// 0018 added, so the owner's history stays attributable after the key is gone.
+func (p *Postgres) DeletePersonalAPIKey(ctx context.Context, id, ownerID string) error {
+	tag, err := p.Pool.Exec(ctx,
+		`DELETE FROM gateway_api_key WHERE id=$1::uuid AND owner_user_id=$2::uuid`, id, ownerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrPersonalKeyNotFound
+	}
+	return nil
 }
 
 // resolvePersonalKeyModels applies the Tenant allowlist to a requested scope.

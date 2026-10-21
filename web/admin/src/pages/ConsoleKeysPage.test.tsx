@@ -68,6 +68,9 @@ function stubConsole(options: {
   keys?: unknown[]
   keysStatus?: number
   create?: unknown
+  updateStatus?: number
+  statusStatus?: number
+  deleteStatus?: number
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -103,6 +106,34 @@ function stubConsole(options: {
       }
       if (url === '/api/console/keys' && method === 'POST') {
         return jsonResponse(options.create ?? {...keys[0], api_key: 'sk-campus-revealed-once'}, 201)
+      }
+      if (/^\/api\/console\/keys\/[^/]+\/status$/.test(url) && method === 'PUT') {
+        const status = options.statusStatus && options.statusStatus >= 400
+        return jsonResponse(
+          status
+            ? {error: {code: 'api_key_not_found', message: 'API key was not found'}}
+            : {ok: true, id: url.split('/')[4], status: JSON.parse(init?.body as string).status},
+          options.statusStatus || 200,
+        )
+      }
+      if (/^\/api\/console\/keys\/[^/]+$/.test(url) && method === 'PUT') {
+        const id = url.split('/')[4]
+        const row = keys.find(k => k.id === id) || keys[0]
+        const body = JSON.parse(init?.body as string)
+        return jsonResponse(
+          options.updateStatus && options.updateStatus >= 400
+            ? {error: {code: 'model_not_allowed', message: 'not allowed', model: 'campus-forbidden'}}
+            : {...row, ...body},
+          options.updateStatus || 200,
+        )
+      }
+      if (/^\/api\/console\/keys\/[^/]+$/.test(url) && method === 'DELETE') {
+        return jsonResponse(
+          options.deleteStatus && options.deleteStatus >= 400
+            ? {error: {code: 'api_key_not_found', message: 'API key was not found'}}
+            : {ok: true, id: url.split('/')[4], deleted: true},
+          options.deleteStatus || 200,
+        )
       }
       return jsonResponse({error: {code: 'not_found', message: `unexpected ${method} ${url}`}}, 404)
     }),
@@ -209,6 +240,134 @@ describe('personal console API keys', () => {
 
     // The secret exists only in the reveal dialog; the list still has none.
     expect(screen.queryByText(/sk-campus-revealed-once/, {selector: 'code.keyPrefixCode'})).not.toBeInTheDocument()
+  })
+
+  it('pauses a key through the dedicated status call, never through the edit body', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('教学系统')
+
+    const row = screen.getByText('教学系统').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /停用/}))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.method === 'PUT' && c.url === '/api/console/keys/k-1/status')
+      expect(put).toBeTruthy()
+      expect(JSON.parse(put!.body || '{}')).toEqual({status: 2})
+    })
+    // No edit request was issued, so the rename/model fields were not resent.
+    expect(calls.some(c => c.method === 'PUT' && c.url === '/api/console/keys/k-1')).toBe(false)
+
+    expect(await screen.findByText(/已停用「教学系统」：凭据仍然保留/)).toBeInTheDocument()
+  })
+
+  it('re-enables a disabled key with the same status endpoint', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('实验平台')
+
+    const row = screen.getByText('实验平台').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /启用/}))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.method === 'PUT' && c.url === '/api/console/keys/k-2/status')
+      expect(put).toBeTruthy()
+      expect(JSON.parse(put!.body || '{}')).toEqual({status: 1})
+    })
+  })
+
+  it('edits only the editable fields and leaves the key paused', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('教学系统')
+
+    const row = screen.getByText('教学系统').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /编辑/}))
+
+    const drawer = await screen.findByRole('dialog')
+    fireEvent.change(within(drawer).getByPlaceholderText('请输入 API Key 名称'), {
+      target: {value: '教学系统 - 新'},
+    })
+    fireEvent.change(within(drawer).getByPlaceholderText(/192.168.1.0\/24/), {
+      target: {value: '10.0.0.0/8\n192.168.1.1'},
+    })
+    fireEvent.change(within(drawer).getByPlaceholderText(/永久有效/), {
+      target: {value: '2027-01-01T00:00:00Z'},
+    })
+    fireEvent.click(within(drawer).getByRole('button', {name: '保存修改'}))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.method === 'PUT' && c.url === '/api/console/keys/k-1')
+      expect(put).toBeTruthy()
+      const body = JSON.parse(put!.body || '{}')
+      expect(body).toEqual({
+        name: '教学系统 - 新',
+        allowed_models: ['campus-chat'],
+        allowed_ips: ['10.0.0.0/8', '192.168.1.1'],
+        expire_at: '2027-01-01T00:00:00.000Z',
+      })
+      // tenant, owner and status have no field in an edit.
+      expect(body).not.toHaveProperty('tenant_id')
+      expect(body).not.toHaveProperty('owner_user_id')
+      expect(body).not.toHaveProperty('status')
+    })
+  })
+
+  it('reports a model outside the tenant bound without closing the drawer', async () => {
+    stubConsole({updateStatus: 400})
+    renderPage()
+    await screen.findByText('教学系统')
+
+    const row = screen.getByText('教学系统').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /编辑/}))
+    const drawer = await screen.findByRole('dialog')
+    fireEvent.click(within(drawer).getByRole('button', {name: '保存修改'}))
+
+    expect(await screen.findByText(/不在你的租户允许范围内/)).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('requires the key name to be typed before a permanent delete', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('教学系统')
+
+    const row = screen.getByText('教学系统').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /删除/}))
+
+    const dialog = await screen.findByRole('dialog')
+    // The copy distinguishes deletion from the reversible pause beside it.
+    expect(within(dialog).getByText(/永久移除这条 Key 及其凭据/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/请改用「停用」/)).toBeInTheDocument()
+
+    const confirmButton = within(dialog).getByRole('button', {name: '确认删除'})
+    expect(confirmButton).toBeDisabled()
+
+    fireEvent.change(within(dialog).getByLabelText(/输入 Key 名称「教学系统」以确认/), {
+      target: {value: '教学系统'},
+    })
+    expect(confirmButton).not.toBeDisabled()
+    fireEvent.click(confirmButton)
+
+    await waitFor(() => {
+      expect(calls.find(c => c.method === 'DELETE' && c.url === '/api/console/keys/k-1')).toBeTruthy()
+    })
+    expect(await screen.findByText(/已删除「教学系统」：凭据已移除/)).toBeInTheDocument()
+  })
+
+  it('does not delete when the typed name does not match', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('教学系统')
+
+    const row = screen.getByText('教学系统').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /删除/}))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText(/输入 Key 名称「教学系统」以确认/), {
+      target: {value: '教学'},
+    })
+    expect(within(dialog).getByRole('button', {name: '确认删除'})).toBeDisabled()
+    expect(calls.some(c => c.method === 'DELETE')).toBe(false)
   })
 
   it('renders a loading skeleton before the first response arrives', async () => {

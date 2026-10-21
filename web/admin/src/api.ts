@@ -444,6 +444,53 @@ export async function createConsoleKey(input:{name:string;allowed_models:string[
 }
 
 /**
+ * ConsoleKeyUpdate is the whole editable surface of a personal key.
+ *
+ * There is no tenant_id, owner_user_id or status here. The first two are facts
+ * of the row the gateway derives, and pausing is a separate operation so that
+ * an edit can never resume a key by accident.
+ */
+export type ConsoleKeyUpdate={
+  name:string
+  allowed_models:string[]
+  allowed_ips:string[]
+  /** null clears the expiry; omit only when the caller does not mean to replace it. */
+  expire_at:string|null
+}
+
+export async function getConsoleKey(id:string){
+  return api<ConsoleKey>(`/api/console/keys/${encodeURIComponent(id)}`)
+}
+
+export async function updateConsoleKey(id:string,input:ConsoleKeyUpdate){
+  return api<ConsoleKey>(`/api/console/keys/${encodeURIComponent(id)}`,{
+    method:'PUT',
+    body:JSON.stringify(input),
+  })
+}
+
+/**
+ * setConsoleKeyStatus pauses or resumes a key. The credential is untouched, so
+ * the same key works again after re-enabling.
+ */
+export async function setConsoleKeyStatus(id:string,status:1|2){
+  return api<{ok:boolean;id:string;status:number}>(`/api/console/keys/${encodeURIComponent(id)}/status`,{
+    method:'PUT',
+    body:JSON.stringify({status}),
+  })
+}
+
+/**
+ * deleteConsoleKey removes the row permanently. Request Records survive through
+ * their owner snapshot; the credential does not.
+ */
+export async function deleteConsoleKey(id:string){
+  return api<{ok:boolean;id:string;deleted:boolean}>(`/api/console/keys/${encodeURIComponent(id)}`,{
+    method:'DELETE',
+  })
+}
+
+/**
  * ConsoleModel is the member-visible view of a Virtual Model.
  *
  * There is deliberately no Provider, Route, credential or upstream name here:

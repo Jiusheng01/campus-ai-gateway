@@ -14,6 +14,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -83,6 +84,10 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	case "/api/console/models":
 		s.handleConsoleModels(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/console/keys/") {
+			s.handleConsoleKeyByID(w, r)
+			return
+		}
 		httpx.Error(w, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
 	}
 }
@@ -170,13 +175,14 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// consoleKeyCreateRequest is the whole of a personal create body.
+// consoleKeyWriteRequest is the whole of a personal create or edit body.
 //
 // It has no tenant_id, no owner_user_id and no status field. Decoding into
 // this struct is what makes a forged body inert: the fields a personal key
 // must not accept simply have nowhere to land, so there is no "ignored field"
-// path that a later refactor could accidentally honour.
-type consoleKeyCreateRequest struct {
+// path that a later refactor could accidentally honour. Status is a separate
+// sub-action, so an edit can never pause or resume a key either.
+type consoleKeyWriteRequest struct {
 	Name          string     `json:"name"`
 	AllowedModels []string   `json:"allowed_models"`
 	AllowedIPs    []string   `json:"allowed_ips"`
@@ -184,6 +190,19 @@ type consoleKeyCreateRequest struct {
 }
 
 const consoleKeyNameMaxRunes = 128
+
+// validateConsoleKeyWrite trims the name and normalises the model scope. It
+// returns a human-readable reason, or "" when the body may be written.
+func validateConsoleKeyWrite(in *consoleKeyWriteRequest) string {
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" {
+		return "name is required"
+	}
+	if utf8.RuneCountInString(in.Name) > consoleKeyNameMaxRunes {
+		return "name is too long"
+	}
+	return normalizeAllowedModels(&in.AllowedModels)
+}
 
 // handleConsoleKeys serves GET and POST /api/console/keys.
 //
@@ -223,22 +242,12 @@ func (s *Server) handleConsoleKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createConsoleKey(w http.ResponseWriter, r *http.Request, principal adminPrincipal, reqID string) {
-	var in consoleKeyCreateRequest
+	var in consoleKeyWriteRequest
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 		return
 	}
-
-	in.Name = strings.TrimSpace(in.Name)
-	if in.Name == "" {
-		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", "name is required", reqID)
-		return
-	}
-	if utf8.RuneCountInString(in.Name) > consoleKeyNameMaxRunes {
-		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", "name is too long", reqID)
-		return
-	}
-	if reason := normalizeAllowedModels(&in.AllowedModels); reason != "" {
+	if reason := validateConsoleKeyWrite(&in); reason != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", reason, reqID)
 		return
 	}
@@ -265,7 +274,7 @@ func (s *Server) createConsoleKey(w http.ResponseWriter, r *http.Request, princi
 		Limit:         limit,
 	})
 	if err != nil {
-		s.writePersonalKeyCreateError(w, reqID, err)
+		s.writePersonalKeyWriteError(w, reqID, err, "API key could not be created")
 		return
 	}
 
@@ -274,20 +283,173 @@ func (s *Server) createConsoleKey(w http.ResponseWriter, r *http.Request, princi
 	writeJSON(w, http.StatusCreated, model.APIKeyCreateResult{APIKeyAdmin: out, APIKey: plain})
 }
 
-// writePersonalKeyCreateError maps the create transaction's refusals onto
-// stable codes. Status codes distinguish "your input names a model you may not
-// use" (400) from "your account is not currently in a state that can issue a
-// key" (409), which the console renders differently.
-func (s *Server) writePersonalKeyCreateError(w http.ResponseWriter, reqID string, err error) {
+// handleConsoleKeyByID serves GET, PUT and DELETE on /api/console/keys/{id},
+// plus PUT /api/console/keys/{id}/status.
+//
+// Disable/re-enable is a dedicated sub-action rather than a status field on the
+// edit body. The edit replaces name, model scope, IPs and expiry; letting the
+// same body carry status would make "pause this integration" and "rename it"
+// one write, and a client that only meant to rename could silently resume a
+// key it had deliberately paused. Neither request can express the other's
+// change.
+//
+// Every branch resolves the key with the session's account id in SQL. A key
+// owned by another Account is answered 404, not 403, so the endpoint does not
+// confirm that the id exists.
+func (s *Server) handleConsoleKeyByID(w http.ResponseWriter, r *http.Request) {
+	writeAuthNoStore(w)
+	reqID := r.Header.Get("X-Request-Id")
+	principal, ok := adminPrincipalFrom(r.Context())
+	if !ok || principal.UserID == "" {
+		writeAdminError(w, reqID, ErrConsoleIdentityUnavailable)
+		return
+	}
+	if s.pg == nil {
+		writeAdminError(w, reqID, ErrAdminInternal)
+		return
+	}
+
+	// A trailing "status" segment is the only sub-action. Anything else — an
+	// empty id, an extra segment, or a non-UUID — cannot name a readable row,
+	// so it is the same answer as a key that does not exist and never reaches
+	// the database, where the uuid cast would fail the statement.
+	rest := strings.TrimPrefix(r.URL.Path, "/api/console/keys/")
+	id, action, hasAction := strings.Cut(rest, "/")
+	if id == "" || (hasAction && action != "status") {
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+
+	if hasAction {
+		if r.Method != http.MethodPut {
+			w.Header().Set("Allow", "PUT")
+			httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+			return
+		}
+		s.setConsoleKeyStatus(w, r, principal, id, reqID)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		key, err := s.pg.GetPersonalAPIKey(r.Context(), id, principal.UserID)
+		if err != nil {
+			s.writePersonalKeyReadError(w, reqID, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, key)
+	case http.MethodPut:
+		s.updateConsoleKey(w, r, principal, id, reqID)
+	case http.MethodDelete:
+		s.deleteConsoleKey(w, r, principal, id, reqID)
+	default:
+		w.Header().Set("Allow", "GET, PUT, DELETE")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	}
+}
+
+// updateConsoleKey replaces the editable fields. Tenant and owner are read from
+// the row inside the update transaction; the request type has no field for them.
+func (s *Server) updateConsoleKey(w http.ResponseWriter, r *http.Request, principal adminPrincipal, id, reqID string) {
+	var in consoleKeyWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+		return
+	}
+	if reason := validateConsoleKeyWrite(&in); reason != "" {
+		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", reason, reqID)
+		return
+	}
+
+	out, err := s.pg.UpdatePersonalAPIKey(r.Context(), id, storage.PersonalKeyUpdate{
+		OwnerUserID:   principal.UserID,
+		Name:          in.Name,
+		AllowedModels: in.AllowedModels,
+		AllowedIPs:    in.AllowedIPs,
+		ExpireAt:      in.ExpireAt,
+	})
+	if err != nil {
+		s.writePersonalKeyWriteError(w, reqID, err, "API key could not be updated")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// consoleKeyStatusRequest carries only the new status. A pointer distinguishes
+// an absent field from 0, which is not a status this API accepts.
+type consoleKeyStatusRequest struct {
+	Status *int `json:"status"`
+}
+
+func (s *Server) setConsoleKeyStatus(w http.ResponseWriter, r *http.Request, principal adminPrincipal, id, reqID string) {
+	var in consoleKeyStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+		return
+	}
+	// Only the two stored values are accepted. The zero value is a third state
+	// that means "unknown", and granting or denying on it would be a guess.
+	if in.Status == nil || (*in.Status != 1 && *in.Status != 2) {
+		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_status", "status must be 1 (enabled) or 2 (disabled)", reqID)
+		return
+	}
+	if err := s.pg.SetPersonalAPIKeyStatus(r.Context(), id, principal.UserID, *in.Status); err != nil {
+		if errors.Is(err, storage.ErrPersonalKeyNotFound) {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		log.Printf("console keys: set status for %s: %v", reqID, err)
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "API key status could not be updated", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "status": *in.Status})
+}
+
+func (s *Server) deleteConsoleKey(w http.ResponseWriter, r *http.Request, principal adminPrincipal, id, reqID string) {
+	if err := s.pg.DeletePersonalAPIKey(r.Context(), id, principal.UserID); err != nil {
+		if errors.Is(err, storage.ErrPersonalKeyNotFound) {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		log.Printf("console keys: delete for %s: %v", reqID, err)
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "API key could not be deleted", reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted": true})
+}
+
+// writePersonalKeyReadError keeps a missing key distinct from a database
+// failure: the first is the expected answer for another Account's id.
+func (s *Server) writePersonalKeyReadError(w http.ResponseWriter, reqID string, err error) {
+	if errors.Is(err, storage.ErrPersonalKeyNotFound) {
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+		return
+	}
+	log.Printf("console keys: read for %s: %v", reqID, err)
+	httpx.Error(w, http.StatusInternalServerError, "database_error", "API key could not be read", reqID)
+}
+
+// writePersonalKeyWriteError maps the write transactions' refusals onto stable
+// codes. Status codes distinguish "your input names a model you may not use"
+// (400) from "the account or Tenant is not currently in a state that can issue
+// a key" (409), which the console renders differently. fallback is the message
+// for an unexpected failure, so create and update do not claim to be each other.
+func (s *Server) writePersonalKeyWriteError(w http.ResponseWriter, reqID string, err error, fallback string) {
 	var limitErr *storage.PersonalKeyLimitError
 	var modelErr *storage.PersonalModelNotAllowedError
 	switch {
+	case errors.Is(err, storage.ErrPersonalKeyNotFound):
+		httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
 	case errors.Is(err, storage.ErrPersonalTenantUnassigned):
 		httpx.Error(w, http.StatusConflict, "tenant_not_assigned",
 			"Your account is not assigned to a tenant yet. Ask an administrator to assign one.", reqID)
 	case errors.Is(err, storage.ErrPersonalTenantModelsEmpty):
 		httpx.Error(w, http.StatusConflict, "tenant_models_empty",
-			"Your tenant does not allow any models, so no key can be created.", reqID)
+			"Your tenant does not allow any models, so no key can be written.", reqID)
 	case errors.As(err, &limitErr):
 		writeConsoleError(w, http.StatusConflict, reqID, "key_limit_reached",
 			"You have reached the maximum number of API keys for your account.", map[string]any{"limit": limitErr.Limit})
@@ -297,8 +459,8 @@ func (s *Server) writePersonalKeyCreateError(w http.ResponseWriter, reqID string
 	case errors.Is(err, storage.ErrPersonalAccountNotFound):
 		httpx.Error(w, http.StatusNotFound, "account_not_found", "Account was not found", reqID)
 	default:
-		log.Printf("console keys: create for %s: %v", reqID, err)
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "API key could not be created", reqID)
+		log.Printf("console keys: write for %s: %v", reqID, err)
+		httpx.Error(w, http.StatusInternalServerError, "database_error", fallback, reqID)
 	}
 }
 
