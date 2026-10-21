@@ -3184,3 +3184,172 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
+
+/* --- overview (ticket 04) -------------------------------------------------- */
+/* These names were rendered by the dashboard with no rule at all, so the
+   tiles, the banner greeting and the snapshot actions fell back to browser
+   defaults. They are scoped to this page's own names instead of restyling a
+   primitive another page relies on. */
+.bannerGreetingRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.bannerGreeting {
+  font-size: var(--fs-lead);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.bannerTitleMain {
+  font-size: var(--fs-title);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.configTilesGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.configTile {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+.configTileHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.configTileIcon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.configTileIcon svg {
+  width: 17px;
+  height: 17px;
+}
+.configTileIcon.blue {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.configTileIcon.green {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.configTileIcon.purple {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+.configTileIcon.amber {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.configTileName {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.configTileValue {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--text);
+}
+.configTileValue b {
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.configTileValue small {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+.configTileSub {
+  margin-top: 4px;
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+}
+
+.sideBySidePanels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.halfPanel {
+  min-width: 0;
+}
+.panelActionGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.linkActionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
+}
+.linkActionBtn:hover {
+  color: var(--primary-hover);
+}
+.linkActionBtn svg {
+  width: 14px;
+  height: 14px;
+}
+.routeModeTag {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+}
+/* The response says the cache is stale; the notice must sit above the table
+   rather than inside the empty state, because a stale cache still serves rows. */
+.overviewCacheWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.overviewCacheWarning svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+}
+
+@media (max-width: 860px) {
+  .sideBySidePanels {
+    grid-template-columns: 1fr;
+  }
+}
