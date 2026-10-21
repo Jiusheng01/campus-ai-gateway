@@ -1682,48 +1682,6 @@ input:focus, select:focus, textarea:focus {
   .pageBannerIllustrationWrap { display: none; }
   .pageBannerContent { max-width: none; }
 }
-.campusIllustrationWrap svg {
-  display: block;
-  max-height: 110px;
-  width: auto;
-}
-
-/* Sidebar Campus Promo Card */
-.campusSidebarPromo {
-  padding: 12px 14px;
-  margin: 12px 10px 4px;
-  background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%);
-  border: 1px solid #bfdbfe;
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.campusSidebarPromoIllustration {
-  display: flex;
-  justify-content: center;
-}
-.campusSidebarPromoIllustration svg {
-  max-width: 140px;
-  height: auto;
-}
-.campusSidebarPromoText {
-  text-align: center;
-}
-.campusSidebarPromoTitle {
-  display: block;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #1e40af;
-  letter-spacing: 0.02em;
-}
-.campusSidebarPromoSub {
-  display: block;
-  font-size: 10.5px;
-  color: #3b82f6;
-  margin-top: 1px;
-}
-
 /* --- 2. Stat Grid & Standardized Stat Cards ------------------------------- */
 .statGrid {
   display: grid;
@@ -2058,202 +2016,11 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
-/* --- 5. Dashboard page sections ------------------------------------------- */
-.dashboardHeroContent {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.dashboardHeroTitle {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text);
-  margin: 0;
-}
-.dashboardHeroSubtitle {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 0;
-}
-
-.infraGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-.infraCard {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.infraCardHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.infraName {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-.infraStatusTag {
-  font-size: 11.5px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.infraStatusTag.ok { color: #059669; }
-.infraStatusTag.down { color: #dc2626; }
-.infraCardMetric {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.configOverviewGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-.configOverviewCard {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  box-shadow: var(--shadow-sm);
-}
-.configCardIcon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: #eff6ff;
-  color: #2563eb;
-  flex: none;
-}
-.configCardContent {
-  display: flex;
-  flex-direction: column;
-}
-.configCardTitle {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.configCardValue {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.snapshotTwoColsGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-.snapshotCard {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 18px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.snapshotCardHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.snapshotCardTitle {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-  margin: 0;
-}
-
 /* --- 6. Upstream channels (Providers) ------------------------------------- */
 .channelNameCell {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-.channelNameTitle {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--text);
-}
-.channelUrl {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.channelProtocolBadge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: #f1f5f9;
-  color: #475569;
-  text-transform: uppercase;
-}
-.latencyBadge {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.latencyBadge.fast {
-  background: #ecfdf5;
-  color: #065f46;
-}
-.latencyBadge.normal {
-  background: #eff6ff;
-  color: #1e40af;
-}
-.latencyBadge.slow {
-  background: #fffbeb;
-  color: #92400e;
-}
-
-/* Provider Drawer Tabs */
-.providerDrawerTabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-  gap: 4px;
-  margin-bottom: 18px;
-}
-.providerTabBtn {
-  border: none;
-  background: none;
-  padding: 10px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.providerTabBtn:hover {
-  color: var(--text);
-}
-.providerTabBtn.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
 }
 
 /* --- 7. Published models grid cards --------------------------------------- */
@@ -2311,15 +2078,6 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-.modelCardMetaRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-top: 1px dashed var(--border-subtle);
-  padding-top: 10px;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 .modelCardActions {
   display: flex;
@@ -2733,11 +2491,6 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   margin-bottom: 4px;
-}
-.formStep {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .stepNumber {
   width: 20px;
@@ -3431,8 +3184,7 @@ input:focus, select:focus, textarea:focus {
    no rules for them, so the tables sat flush against the card edge and their
    names fell back to default typography. Named here rather than reusing an
    existing selector: this block must not change pages it was not written for. */
-.keysTableWrap,
-.tenantsTableWrap {
+.keysTableWrap {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow-x: auto;
@@ -3445,16 +3197,6 @@ input:focus, select:focus, textarea:focus {
 .tenantCode {
   font-size: 12px;
   color: var(--text-muted);
-}
-.tenantNameCell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.tenantNameTitle {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--text);
 }
 .helpSection p {
   margin: 0 0 8px;
@@ -3647,6 +3389,9 @@ input:focus, select:focus, textarea:focus {
    label readable but drop the filled disc, so the bar reads as "you are here"
    rather than "three things are done". */
 .formStep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
 }
 .formStep .stepNumber {

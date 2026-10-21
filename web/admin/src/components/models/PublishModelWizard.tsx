@@ -3,7 +3,7 @@ import {Info} from 'lucide-react'
 import {api, type Provider, type ProviderModel, type PublishResult} from '../../api'
 import {Drawer} from '../ui/Drawer'
 import {Button} from '../ui/Button'
-import {Field} from '../ui/Field'
+import {Field, Notice} from '../ui/Field'
 import {useToast} from '../ui/Toast'
 
 export function PublishModelWizard({onClose, onPublished}: {onClose: () => void; onPublished: () => void}) {
@@ -145,10 +145,10 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
       }
     >
       <div className="drawerStack">
-        <div className="notice info" role="status">
+        <Notice>
           <Info aria-hidden />
           <span>首先选择上游渠道及其提供的模型，之后可在「路由策略」中追加备用或加权线路。</span>
-        </div>
+        </Notice>
 
         <Field label="上游渠道" hint="选择提供模型的上游渠道（仅显示已启用渠道）。">
           <select

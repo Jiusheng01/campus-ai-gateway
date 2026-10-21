@@ -4,29 +4,33 @@ import {describe, expect, it} from 'vitest'
 
 /**
  * The styling contract: every class name a component can render must resolve to
- * a rule in the one stylesheet. `tsc`, vitest and vite build cannot see this
- * gap, and the redesign showed what happens without it: roughly two hundred
- * class names resolved to no rule, so whole surfaces fell back to browser
- * defaults while the suite stayed green.
+ * a rule in the one stylesheet, and every rule in the block this remediation
+ * appended must belong to a class a component actually renders. `tsc`, vitest
+ * and vite build cannot see either gap, and the redesign showed what happens
+ * without them: roughly two hundred class names resolved to no rule, while the
+ * sheet also carried rules for surfaces that no longer existed.
  *
- * There is no allowlist: a name a component can render either has a rule or
- * the contract fails, so the gap cannot reopen through a tolerated entry.
+ * There is no allowlist for missing rules. The variant vocabulary below is not
+ * one: each entry is a value a component assembles through an interpolation (a
+ * tone, a size, a state) and styles through its base class. The reverse check
+ * near the end of this file enforces the other direction for the appended
+ * block, and the variant tests enforce that every declared value has a rule.
  */
 
 // Vitest's jsdom environment resolves module URLs to http, so the project root
 // is taken from vitest's own cwd (the web/admin package).
 const srcDir = join(process.cwd(), 'src')
 const stylesheetPath = join(srcDir, 'styles.css')
+const appendedBanner = 'Campus AI Gateway - Modern SaaS Console Redesign'
 
 /**
- * Tokens a component emits as a dynamic variant (a tone, a size, a state).
- * They are not selectors of their own: each one is styled through its base
- * class (`.statCard.success`, `.btn.sm`, `.latencyBadge.fast`). The contract
- * still requires the base class, and the primitives this ticket owns require
- * every variant they accept to have a rule; this list only stops the scanner
- * from demanding a bare `.ok { }` of its own.
+ * Values a component emits as the dynamic half of a class. They are not
+ * selectors of their own: each is styled through its base class
+ * (`.statCard.success`, `.btn.sm`, `.circuitChip.half-open`). The forward check
+ * must not demand a bare `.success { }`, and the reverse check reads the base
+ * class of a selector rather than every token.
  */
-const VARIANT_TOKENS = new Set([
+const VARIANT_VOCABULARY = new Set([
   'active',
   'column',
   'cols-2',
@@ -69,6 +73,27 @@ const VARIANT_TOKENS = new Set([
   'up',
   'warning',
   'wildcard',
+])
+
+/**
+ * Class values built into a variable and put on the element later, which the
+ * scanner cannot follow: `const rowClass = [...]` in UsageQuotaSection, the
+ * circuit tone returned by `circuitTone`, and the route-mode key `gm.mode`.
+ *
+ * The scanner's limit, stated rather than papered over: it reads literal text
+ * in a className attribute. A class assembled by concatenation across modules,
+ * or computed by a function it does not model, is invisible in both directions.
+ * This list names the known cases in this tree; the test below asserts each
+ * one still occurs in a component, so a rename cannot leave a stale entry.
+ */
+const VARIABLE_HELD_CLASSES = new Set([
+  'advanced',
+  'closed',
+  'clickRow',
+  'drilledRow',
+  'half-open',
+  'none',
+  'weighted',
 ])
 
 function filesWithExtension(dir: string, extension: string): string[] {
@@ -246,7 +271,7 @@ function isComparisonOperand(source: string, start: number, end: number): boolea
 
 function expandInterpolatedPrefix(token: string): string[] {
   if (!token.endsWith('-')) return [token]
-  const completed = [...VARIANT_TOKENS].filter((variant) => variant.startsWith(token))
+  const completed = [...VARIANT_VOCABULARY].filter((variant) => variant.startsWith(token))
   return completed.length ? completed : [token]
 }
 
@@ -276,8 +301,63 @@ function unmatchedClassNames(): string[] {
     for (const name of referencedClassNames(file)) referenced.add(name)
   }
   return [...referenced]
-    .filter((name) => !styled.has(name) && !VARIANT_TOKENS.has(name))
+    .filter((name) => !styled.has(name) && !VARIANT_VOCABULARY.has(name))
     .sort()
+}
+
+function tsxSources(): string[] {
+  return filesWithExtension(srcDir, '.tsx').map((file) => readFileSync(file, 'utf8'))
+}
+
+/**
+ * The base class of every selector in the remediation's appended block.
+ *
+ * The block is new in this branch, so every rule in it should be backed by a
+ * component. Pre-existing selectors above the banner are deliberately not
+ * checked: untouched pages may still use them. A selector's base class is its
+ * first class token, which is the one a component writes literally; later
+ * tokens are variants (`success`, `sm`) emitted through an interpolation.
+ */
+function appendedBlockBaseClasses(css: string): Set<string> {
+  const start = css.indexOf(appendedBanner)
+  if (start < 0) throw new Error('redesign banner comment not found in styles.css')
+  const block = css.slice(start).replace(/\/\*[\s\S]*?\*\//g, '')
+  const bases = new Set<string>()
+  for (const match of block.matchAll(/([^{}]+)\{/g)) {
+    const prelude = match[1].trim()
+    if (!prelude || prelude.startsWith('@')) continue
+    for (const selector of prelude.split(',')) {
+      const first = selector.match(/\.(-?[A-Za-z_][\w-]*)/)
+      if (first) bases.add(first[1])
+    }
+  }
+  return bases
+}
+
+function declaredUnion(source: string, declaration: RegExp): string[] {
+  const match = source.match(declaration)
+  expect(match, `declaration ${declaration} not found`).toBeTruthy()
+  return [...(match?.[1] ?? '').matchAll(/'([a-z-]+)'/g)].map((value) => value[1])
+}
+
+/**
+ * Each declared value must have a selector of its own, except the one the base
+ * class already represents (Badge's `neutral` is `.badge`, Button's `md` is
+ * `.btn`). This catches the original defect class: a value in the union that
+ * renders indistinguishably because no rule mentions it.
+ */
+function expectVariantRules(css: string, baseClass: string, values: string[], defaultVariant?: string) {
+  expect(values.length).toBeGreaterThan(0)
+  for (const value of values) {
+    const selector =
+      value === defaultVariant
+        ? new RegExp(`\\.${baseClass}(?![\\w-])`)
+        : new RegExp(`\\.${baseClass}\\.${value}(?![\\w-])`)
+    expect(
+      css,
+      `${baseClass} declares "${value}" but styles.css has no matching rule`,
+    ).toMatch(selector)
+  }
 }
 
 describe('style contract', () => {
@@ -306,21 +386,54 @@ describe('style contract', () => {
     expect(depth, 'styles.css has an unclosed block').toBe(0)
   })
 
-  it('styles every tone StatCard accepts', () => {
-    // The contract above cannot catch this: a tone is a variant token, so
-    // `.statCard.danger` is only checked here. The union in StatCard.tsx is the
-    // source of truth, and `danger` was once in the union with no rule, leaving
-    // an error stat visually identical to an ordinary one.
-    const statCardSource = readFileSync(join(srcDir, 'components', 'ui', 'StatCard.tsx'), 'utf8')
-    const union = statCardSource.match(/tone\?:\s*([^\n]+)/)
-    expect(union, 'tone union not found in StatCard.tsx').toBeTruthy()
-    const tones = [...(union?.[1] ?? '').matchAll(/'([a-z]+)'/g)].map((match) => match[1])
-    expect(tones.length).toBeGreaterThan(0)
+  it('styles every variant its primitives declare', () => {
+    // The forward contract cannot catch this: a tone is a variant token, so
+    // `.statCard.danger` is only checked here. The unions are the source of
+    // truth, and `danger` was once in StatCard's with no rule, leaving an error
+    // stat visually identical to an ordinary one.
     const css = readFileSync(stylesheetPath, 'utf8')
-    for (const tone of tones) {
-      expect(css, `StatCard accepts tone="${tone}" but styles.css has no .statCard.${tone} rule`).toMatch(
-        new RegExp(`\\.statCard\\.${tone}(?![\\w-])`),
-      )
+    const read = (file: string) => readFileSync(join(srcDir, 'components', 'ui', file), 'utf8')
+
+    expectVariantRules(css, 'statCard', declaredUnion(read('StatCard.tsx'), /tone\?:\s*([^\n]+)/))
+    expectVariantRules(css, 'btn', declaredUnion(read('Button.tsx'), /ButtonVariant\s*=\s*([^\n]+)/))
+    expectVariantRules(css, 'btn', declaredUnion(read('Button.tsx'), /ButtonSize\s*=\s*([^\n]+)/), 'md')
+    // `neutral` is the base `.badge` rule; the other tones are modifiers.
+    expectVariantRules(css, 'badge', declaredUnion(read('Badge.tsx'), /export type Tone\s*=\s*([^\n]+)/), 'neutral')
+    expectVariantRules(css, 'toast', declaredUnion(read('Toast.tsx'), /ToastTone\s*=\s*([^\n]+)/))
+  })
+
+  it('references every selector the remediation block defines', () => {
+    // The opposite gap: rules left behind by a surface that was renamed or
+    // deleted. Scoped to the block this branch appended; a pre-existing
+    // selector may belong to an untouched page and is left alone.
+    const css = readFileSync(stylesheetPath, 'utf8')
+    const bases = appendedBlockBaseClasses(css)
+    // Guard against a parsing regression that would make the assertion vacuous.
+    expect(bases.size).toBeGreaterThan(50)
+    const referenced = new Set<string>()
+    for (const file of filesWithExtension(srcDir, '.tsx')) {
+      for (const name of referencedClassNames(file)) referenced.add(name)
+    }
+    const orphaned = [...bases]
+      .filter((name) => !referenced.has(name) && !VARIABLE_HELD_CLASSES.has(name))
+      .sort()
+    expect(
+      orphaned,
+      `Selectors in the remediation block with no component reference:\n${orphaned.join('\n')}`,
+    ).toEqual([])
+  })
+
+  it('covers the class names built in variables', () => {
+    // The scanner reads className attributes, so a name assembled into
+    // `rowClass` (or returned by `circuitTone`) is invisible to both checks.
+    // These are the known cases; assert each still exists in a component so a
+    // rename cannot leave the exception list silently stale.
+    const sources = tsxSources().join('\n')
+    const styled = styledClassNames(readFileSync(stylesheetPath, 'utf8'))
+    for (const name of VARIABLE_HELD_CLASSES) {
+      expect(sources, `${name} is in VARIABLE_HELD_CLASSES but no component builds it`).toContain(`'${name}'`)
+      // The forward check cannot see these names, so check their rules here.
+      expect(styled.has(name), `${name} is built in a variable but styles.css has no rule for it`).toBe(true)
     }
   })
 

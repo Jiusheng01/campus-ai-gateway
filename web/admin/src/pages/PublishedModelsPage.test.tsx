@@ -118,7 +118,34 @@ describe('PublishedModelsPage', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input)
-        if (url.startsWith('/admin/models')) return jsonResponse({data: models})
+        if (url === '/admin/models') return jsonResponse({data: models})
+        if (url.endsWith('/impact')) {
+          return jsonResponse({
+            alias: 'campus-vision',
+            enabled_routes: 1,
+            enabled_providers: 1,
+            explicit_keys: 2,
+            wildcard_keys: 1,
+          })
+        }
+        if (url.includes('/authorizations')) return jsonResponse({alias: 'campus-vision', data: []})
+        if (url.includes('/runtime-summary')) {
+          return jsonResponse({
+            alias: 'campus-vision',
+            from: '2026-01-01T00:00:00Z',
+            to: '2026-01-02T00:00:00Z',
+            totals: {requests: 0, errors: 0, success_rate: 0, p95_latency_ms: 0, failover: 0, tokens: 0},
+            recent: [],
+          })
+        }
+        if (url.startsWith('/admin/models/')) {
+          const id = url.slice('/admin/models/'.length)
+          const model = models.find(m => m.id === id) ?? models[0]
+          return jsonResponse({model, routes: routes.filter(r => r.model_id === id), version: model.config_version})
+        }
+        if (url.startsWith('/admin/model-test-options')) {
+          return jsonResponse({data: models.map(m => ({id: m.id, alias: m.alias, status: m.status}))})
+        }
         if (url.startsWith('/admin/providers')) return jsonResponse({data: providers})
         if (url.startsWith('/admin/routes')) return jsonResponse({data: routes})
         if (url.startsWith('/admin/tenants')) return jsonResponse({data: tenants})
@@ -195,5 +222,97 @@ describe('PublishedModelsPage', () => {
     expect(screen.queryByText('启用租户', {selector: '.statCardLabel'})).toBeNull()
     const tenantCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith('/admin/tenants'))
     expect(tenantCalls).toHaveLength(0)
+  })
+})
+
+/**
+ * These two workflows predate the redesign and were dropped from the card
+ * layout. They are operator-facing capabilities, not decoration: a diagnostic
+ * the dashboard can start must also be startable from the model it concerns,
+ * and a model must not be disabled before its impact is shown.
+ */
+describe('PublishedModelsPage restored workflows', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url === '/admin/models') return jsonResponse({data: models})
+        if (url.endsWith('/impact')) {
+          return jsonResponse({
+            alias: 'campus-vision',
+            enabled_routes: 1,
+            enabled_providers: 1,
+            explicit_keys: 2,
+            wildcard_keys: 1,
+          })
+        }
+        if (url.includes('/authorizations')) return jsonResponse({alias: 'campus-vision', data: []})
+        if (url.includes('/runtime-summary')) {
+          return jsonResponse({
+            alias: 'campus-vision',
+            from: '2026-01-01T00:00:00Z',
+            to: '2026-01-02T00:00:00Z',
+            totals: {requests: 0, errors: 0, success_rate: 0, p95_latency_ms: 0, failover: 0, tokens: 0},
+            recent: [],
+          })
+        }
+        if (url.startsWith('/admin/models/')) {
+          const id = url.slice('/admin/models/'.length)
+          const model = models.find(m => m.id === id) ?? models[0]
+          return jsonResponse({model, routes: routes.filter(r => r.model_id === id), version: model.config_version})
+        }
+        if (url.startsWith('/admin/model-test-options')) {
+          return jsonResponse({data: models.map(m => ({id: m.id, alias: m.alias, status: m.status}))})
+        }
+        if (url.startsWith('/admin/providers')) return jsonResponse({data: providers})
+        if (url.startsWith('/admin/routes')) return jsonResponse({data: routes})
+        if (url.startsWith('/admin/tenants')) return jsonResponse({data: tenants})
+        return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+      }),
+    )
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('runs a model diagnostic from the model detail drawer', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('campus-vision')).closest('article')
+    expect(card).not.toBeNull()
+
+    await user.click(within(card as HTMLElement).getByRole('button', {name: /详情/}))
+    expect(await screen.findByText('模型详情：campus-vision')).toBeInTheDocument()
+
+    await user.click(await screen.findByRole('button', {name: /运行模型诊断/}))
+
+    expect(await screen.findByText('模型连通测试')).toBeInTheDocument()
+    // The drawer opens on the model whose detail was being read.
+    expect(screen.getByLabelText(/对外模型/)).toHaveValue('campus-vision')
+  })
+
+  it('previews the disabling impact before it disables a model', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('campus-vision')).closest('article')
+    expect(card).not.toBeNull()
+
+    await user.click(within(card as HTMLElement).getByRole('button', {name: '停用'}))
+
+    // The preview describes what will change; it must appear before the PUT.
+    expect(await screen.findByText('停用模型：campus-vision')).toBeInTheDocument()
+    expect(screen.getByText(/启用线路：1 条/)).toBeInTheDocument()
+    expect(screen.getByText(/显式允许该 alias 的 Key：2 个/)).toBeInTheDocument()
+    expect(
+      vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'PUT'),
+    ).toBe(false)
+
+    await user.click(screen.getByRole('button', {name: '确认停用'}))
+
+    await waitFor(() => {
+      const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PUT')
+      expect(put).toBeTruthy()
+      expect(String(put?.[0])).toBe('/admin/models/model-vision')
+      expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({status: 2, expected_version: 1})
+    })
   })
 })

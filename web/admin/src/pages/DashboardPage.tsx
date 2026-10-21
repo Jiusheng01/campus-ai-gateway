@@ -19,6 +19,7 @@ import {
   fetchTrend,
   listModelTestOptions,
   type DashboardStatus,
+  type ModelConfig,
   type ModelTestOption,
   type RequestLog,
   type RouteView,
@@ -172,16 +173,25 @@ export function DashboardPage({
   )
 
   /**
-   * The whole route list, not a five-row page.
+   * The route list feeding the snapshot table.
    *
-   * One request answers both questions on this page: the tile counts every
-   * route the endpoint returned, and the table beside it shows a sample of
-   * that same list. A `limit=5` here would make the count a page size.
+   * The tile's count does not come from here: `/admin/routes` caps one page at
+   * 200 rows (500 with an explicit limit) in the storage layer, so an
+   * unparameterised read silently truncates a larger deployment. The models
+   * response carries `route_count` per model, and every Route belongs to a
+   * model, so that sum is the whole count without a backend change.
    */
   const routes = useResource(() =>
     canReadRoutes
       ? api<{data: RouteView[] | null}>('/admin/routes').then(d => d.data || [])
       : Promise.resolve(null as RouteView[] | null),
+  )
+
+  /** The per-model route counts; same role gate as the route collection. */
+  const models = useResource(() =>
+    canReadRoutes
+      ? api<{data: ModelConfig[] | null}>('/admin/models').then(d => d.data || [])
+      : Promise.resolve(null as ModelConfig[] | null),
   )
 
   /** Tenant inventory; only super administrators may read the collection. */
@@ -238,7 +248,15 @@ export function DashboardPage({
 
   // Absent counts are unknown, not zero: `0` would claim an empty inventory.
   const counts = data?.config_counts
-  const routeCount = routes.data ? routes.data.length : null
+  // Sum the per-model counts rather than the page returned above. A model with
+  // no `route_count` contributes nothing; if no model reports the field at all
+  // the total is unknown, not zero.
+  const routeCount =
+    models.data === null
+      ? null
+      : models.data.length === 0 || models.data.some(m => typeof m.route_count === 'number')
+        ? models.data.reduce((total, m) => total + (m.route_count ?? 0), 0)
+        : null
   const routeSample = routes.data ? routes.data.slice(0, 5) : []
   const tenantCount = tenants.data ? tenants.data.length : null
 
@@ -379,7 +397,7 @@ export function DashboardPage({
                   <b>{routeCount === null ? '—' : routeCount}</b> <small>条</small>
                 </div>
                 <div className="configTileSub">
-                  {canReadRoutes ? (routes.error ? '线路清单读取失败' : '（来自路由表快照）') : '当前角色不可读取线路清单'}
+                  {canReadRoutes ? (models.error ? '线路总数读取失败' : '（按对外模型的线路计数汇总）') : '当前角色不可读取线路清单'}
                 </div>
               </div>
 

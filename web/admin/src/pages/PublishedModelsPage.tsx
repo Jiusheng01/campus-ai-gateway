@@ -2,6 +2,7 @@ import {useCallback, useMemo, useState} from 'react'
 import {
   Boxes,
   Eye,
+  FlaskConical,
   KeyRound,
   Play,
   Plus,
@@ -14,8 +15,11 @@ import {
 } from 'lucide-react'
 import {
   api,
+  listModelTestOptions,
   type ModelConfig,
   type ModelDetail,
+  type ModelImpact,
+  type ModelTestOption,
   type Provider,
   type RouteView,
   type Tenant,
@@ -30,6 +34,7 @@ import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
 import {PublishModelWizard} from '../components/models/PublishModelWizard'
+import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {PageBanner} from '../components/ui/PageBanner'
@@ -119,6 +124,11 @@ export function PublishedModelsPage({
   const [editingRoutesModel, setEditingRoutesModel] = useState<{id: string; alias: string} | null>(null)
   const [disableBusy, setDisableBusy] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  // Disabling is irreversible for callers until the model is enabled again, so
+  // the card opens the impact preview instead of a bare confirmation.
+  const [impact, setImpact] = useState<{model: ModelConfig; preview: ModelImpact} | null>(null)
+  const [impactError, setImpactError] = useState('')
+  const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('')
@@ -139,6 +149,7 @@ export function PublishedModelsPage({
         }),
       })
       toast.success(status === 2 ? '模型已停用；已发布 alias 不会自动从 Key 白名单移除' : '模型已启用')
+      setImpact(null)
       if (detail && detail.model.id === model.id) {
         await open(model)
       }
@@ -150,15 +161,31 @@ export function PublishedModelsPage({
     }
   }
 
+  const openTest = async () => {
+    try {
+      setTesting(await listModelTestOptions())
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '无法加载模型测试选项')
+    }
+  }
+
+  /**
+   * Read the impact preview before disabling. The server recomputes it on the
+   * PUT, so this is a preview, not a reservation; showing it first is what
+   * lets the operator see the affected Routes and Keys before the outage.
+   */
+  const loadImpact = async (m: ModelConfig) => {
+    setImpactError('')
+    try {
+      setImpact({model: m, preview: await api<ModelImpact>(`/admin/models/${m.id}/impact`)})
+    } catch (e) {
+      setImpactError(e instanceof Error ? e.message : '无法读取停用影响')
+    }
+  }
+
   const toggleModelStatus = async (m: ModelConfig) => {
     if (m.status === 1) {
-      const ok = await confirm({
-        title: `停用模型「${m.alias}」？`,
-        description: '停用后该 alias 将立即从静态可路由集合中移除，调用将返回 404；已授权的 Key 白名单保留，重新启用后可继续调用。',
-        confirmText: '确认停用',
-        danger: true,
-      })
-      if (ok) await setModelStatus(m, 2)
+      await loadImpact(m)
     } else {
       const ok = await confirm({
         title: `启用模型「${m.alias}」？`,
@@ -567,6 +594,21 @@ export function PublishedModelsPage({
               />
             </div>
 
+            {/* The diagnostic predates the redesign and must stay reachable
+                from the model it concerns, not only from the dashboard. */}
+            <Panel title="模型测试" sub="管理诊断不经过业务 API Key、租户配额或业务请求日志。">
+              <div className="formActions">
+                <Button icon={<FlaskConical />} onClick={() => void openTest()}>运行模型诊断</Button>
+              </div>
+              <p className="hint">
+                真实业务链路验证请使用环境变量中的 Key；该请求会经过鉴权、配额、路由、熔断和日志，不由管理诊断替代。
+              </p>
+              <pre className="mono responseText curlSample">{`curl "$GATEWAY_BASE_URL/v1/chat/completions" \\
+  -H "Authorization: Bearer $CAMPUS_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${detail.model.alias}","messages":[{"role":"user","content":"hello"}]}'`}</pre>
+            </Panel>
+
             {/* Runtime Summary Telemetry Panel */}
             <RuntimeSummaryPanel
               kind="model"
@@ -579,6 +621,43 @@ export function PublishedModelsPage({
             />
           </div>
         </Drawer>
+      )}
+
+      {testing && (
+        <ModelTestDrawer
+          models={testing}
+          initialModel={detail?.model.alias}
+          onClose={() => setTesting(null)}
+        />
+      )}
+
+      {/* Disabling preview: the server recomputes this on the PUT, so the
+          dialog states it is a preview rather than a reservation. */}
+      {impact && (
+        <Modal
+          title={`停用模型：${impact.preview.alias}`}
+          subtitle="这是影响预览；提交后服务端会重新校验并立即停用。"
+          onClose={() => setImpact(null)}
+          footer={
+            <>
+              <Button onClick={() => setImpact(null)}>取消</Button>
+              <Button variant="danger" loading={disableBusy} onClick={() => void setModelStatus(impact.model, 2)}>
+                确认停用
+              </Button>
+            </>
+          }
+        >
+          <div className="drawerStack">
+            <p>{`启用线路：${impact.preview.enabled_routes} 条；启用渠道：${impact.preview.enabled_providers} 个。`}</p>
+            <p>{`显式允许该 alias 的 Key：${impact.preview.explicit_keys} 个；通配符 Key：${impact.preview.wildcard_keys} 个。`}</p>
+            <p className="hint">停用不会修改任何 Key 的白名单。通配符 Key 仍允许全部模型，但该 alias 不再出现在静态可路由集合中。</p>
+            <p className="hint">本实例保存后立即生效；其他实例在 5 秒 TTL 内收敛；数据库故障时可能继续使用旧快照。</p>
+          </div>
+        </Modal>
+      )}
+
+      {impactError && (
+        <div className="notice warning" role="alert">{impactError}</div>
       )}
     </div>
   )

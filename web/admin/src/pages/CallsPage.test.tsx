@@ -157,7 +157,7 @@ describe('CallsPage', () => {
     // The tenant view renders the desktop table and the phone cards from the
     // same data; CSS hides one, but both are in the DOM.
     await waitFor(() => expect(screen.getAllByText('校园信息化').length).toBeGreaterThan(0))
-    fireEvent.click(screen.getByRole('button', {name: 'API 密钥'}))
+    fireEvent.click(screen.getByRole('button', {name: 'API Key'}))
     await waitFor(() => expect(screen.getByText('校园问答')).toBeInTheDocument())
 
     // Remounting either table must not reload what the page already owns: both

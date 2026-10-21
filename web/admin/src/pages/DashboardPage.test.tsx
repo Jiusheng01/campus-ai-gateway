@@ -77,11 +77,19 @@ function tenant(id: string) {
 type StubOptions = {
   dashboard?: unknown
   trend?: unknown
-  routes?: unknown[]
+  routes?: ReturnType<typeof route>[]
+  models?: unknown[]
   tenants?: unknown[]
 }
 
-function stubFetch({dashboard = status, trend = zeroTrend, routes = [], tenants = []}: StubOptions = {}) {
+function modelForRoute(r: ReturnType<typeof route>) {
+  return {id: r.model_id, alias: r.model_alias, route_count: 1}
+}
+
+function stubFetch({dashboard = status, trend = zeroTrend, routes = [], models, tenants = []}: StubOptions = {}) {
+  // The models response is the count source: default it to one route per model
+  // so the sum equals the route list unless a test supplies its own rows.
+  const modelRows = models ?? routes.map(modelForRoute)
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     // The trend path shares the /admin/status prefix, so it has to be matched
@@ -89,12 +97,15 @@ function stubFetch({dashboard = status, trend = zeroTrend, routes = [], tenants 
     if (url.startsWith('/admin/status/trend')) return jsonResponse(trend)
     if (url.startsWith('/admin/status')) return jsonResponse(dashboard)
     if (url.startsWith('/admin/routes')) {
-      // Honour the page size, so a regression back to `limit=5` shows up as a
-      // five-route count rather than being hidden by an all-rows stub.
-      const limit = new URL(url, 'http://console.local').searchParams.get('limit')
-      const size = limit ? Number(limit) : routes.length
-      return jsonResponse({data: routes.slice(0, size), limit: size, offset: 0})
+      // Mirror the storage layer: one page is 200 rows by default and never
+      // more than 500, however large a limit the caller asks for. A stub that
+      // echoes the request would hide a count taken from one truncated page.
+      const params = new URL(url, 'http://console.local').searchParams
+      const limit = Math.min(Number(params.get('limit') ?? 200), 500)
+      const offset = Number(params.get('offset') ?? 0)
+      return jsonResponse({data: routes.slice(offset, offset + limit), limit, offset})
     }
+    if (url.startsWith('/admin/models')) return jsonResponse({data: modelRows})
     if (url.startsWith('/admin/tenants')) return jsonResponse({data: tenants})
     // A fresh database has no request rows; the API sends data: null.
     if (url.startsWith('/admin/request-logs')) return jsonResponse({data: null})
@@ -191,17 +202,37 @@ describe('DashboardPage trends', () => {
 describe('DashboardPage route facts', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('prints the returned route total, not the five-row snapshot size', async () => {
+  it('prints the whole route total, not the five-row snapshot size', async () => {
     const routes = Array.from({length: 12}, (_, i) => route(`m${i + 1}`))
     stubFetch({routes})
     renderPage()
 
     const tile = (await screen.findByText('模型线路')).closest('.configTile')
     expect(tile).not.toBeNull()
-    // The count arrives with the route list, after the tile label renders.
+    // The count arrives with the model list, after the tile label renders.
     expect(await within(tile as HTMLElement).findByText('12')).toBeInTheDocument()
     // The table beside it is still a five-row sample.
     expect(screen.queryByText('m6')).toBeNull()
+  })
+
+  it('counts every route when the route endpoint truncates its page at 200', async () => {
+    // 250 routes are more than one page: /admin/routes returns 200 by default.
+    // Counting the page would print 200 for a deployment that has 250.
+    const routes = Array.from({length: 250}, (_, i) => route(`m${i + 1}`))
+    stubFetch({
+      routes,
+      models: [
+        {id: 'model-a', alias: 'a', route_count: 100},
+        {id: 'model-b', alias: 'b', route_count: 100},
+        {id: 'model-c', alias: 'c', route_count: 50},
+      ],
+    })
+    renderPage()
+
+    const tile = (await screen.findByText('模型线路')).closest('.configTile')
+    expect(tile).not.toBeNull()
+    expect(await within(tile as HTMLElement).findByText('250')).toBeInTheDocument()
+    expect(within(tile as HTMLElement).queryByText('200')).toBeNull()
   })
 
   it('shows the staleness warning with its reason only when the cache is stale', async () => {

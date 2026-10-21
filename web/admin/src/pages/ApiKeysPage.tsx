@@ -96,12 +96,12 @@ export function ApiKeysPage({
         method: v.id ? 'PUT' : 'POST',
         body: JSON.stringify(v),
       })
-      toast.success(v.id ? 'API 密钥已更新' : 'API 密钥已创建')
+      toast.success(v.id ? 'API Key 已更新' : 'API Key 已创建')
       setDraft(null)
       if (out.api_key) setSecret(out.api_key)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '保存 API 密钥失败')
+      toast.error(e instanceof Error ? e.message : '保存 API Key 失败')
     }
   }
 
@@ -130,10 +130,10 @@ export function ApiKeysPage({
   return (
     <div className="stack">
       {/* The list card owns its header, filters and table as one surface. */}
-      <section className="keysSectionCard" aria-label="API 密钥列表">
+      <section className="keysSectionCard" aria-label="API Key 列表">
         <header className="keysSectionHeader">
           <div className="keysSectionTitleBlock">
-            <h2 className="keysSectionTitle">API 密钥</h2>
+            <h2 className="keysSectionTitle">API Key</h2>
             <p className="keysSectionSub">
               业务系统调用 /v1/* 使用的虚拟凭证。完整 Key 只在创建时显示一次，数据仅保存前缀与 HMAC 摘要。
             </p>
@@ -147,7 +147,7 @@ export function ApiKeysPage({
               setDraft({status: 1, allowed_models: [], allowed_ips: []})
             }
           >
-            + 创建 API 密钥
+            + 创建 API Key
           </Button>
         </header>
 
@@ -354,7 +354,7 @@ export function ApiKeysPage({
         ) : (
           <EmptyState
             icon={<KeyRound />}
-            title="暂无匹配的 API 密钥"
+            title="暂无匹配的 API Key"
             description={
               canCreate
                 ? '创建 Key 后，校园各业务系统即可调用受控对外模型。'
@@ -381,8 +381,8 @@ export function ApiKeysPage({
       {draft && (
         <Drawer
           size="lg"
-          title={draft.id ? '编辑 API 密钥' : '创建 API 密钥'}
-          subtitle="为租户创建新的 API 调用密钥，创建后仅显示一次完整 Key。"
+          title={draft.id ? '编辑 API Key' : '创建 API Key'}
+          subtitle="为租户创建新的 API Key，创建后仅显示一次完整 Key。"
           onClose={() => setDraft(null)}
         >
           <KeyForm

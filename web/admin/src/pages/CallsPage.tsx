@@ -99,7 +99,7 @@ export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
               aria-pressed={tab === 'keys'}
               onClick={() => setTab('keys')}
             >
-              API 密钥
+              API Key
             </button>
             <button
               type="button"

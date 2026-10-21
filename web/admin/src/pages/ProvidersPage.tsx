@@ -25,7 +25,7 @@ import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard} from '../components/ui/StatCard'
 import {Detail} from '../components/ui/Detail'
 import {useResource} from '../lib/useResource'
-import {ago, ms, when} from '../lib/format'
+import {ago, ms, ratio, when} from '../lib/format'
 
 const PAGE_SIZE = 15
 
@@ -305,8 +305,10 @@ export function ProvidersPage({
   const channelTotal = data?.counts?.providers ?? null
   const onlineCount = data?.counts?.enabled_providers ?? null
   const offlineCount = channelTotal !== null && onlineCount !== null ? channelTotal - onlineCount : null
-  const onlinePct = channelTotal ? Math.round(((onlineCount ?? 0) / channelTotal) * 100) : null
-  const offlinePct = channelTotal ? Math.round(((offlineCount ?? 0) / channelTotal) * 100) : null
+  // One percentage formatter across the console: provider shares rounded
+  // locally drifted from the call-management and overview figures.
+  const onlinePct = channelTotal ? ratio(onlineCount ?? 0, channelTotal) : null
+  const offlinePct = channelTotal ? ratio(offlineCount ?? 0, channelTotal) : null
 
   const circuits = useMemo(
     () => new Map((data?.circuits ?? []).map(c => [c.provider, c])),
@@ -336,7 +338,7 @@ export function ProvidersPage({
       {/* Top Banner with Campus Illustration */}
       <PageBanner
         title="连接全球优质模型服务"
-        subtitle="统一管理多种模型供应商的接入配置，支持快速切换与健康监控。"
+        subtitle="统一管理多种模型渠道的接入配置，支持快速切换与健康监控。"
       />
 
       <section aria-label="渠道概览统计" className="providersSummarySection">
@@ -352,7 +354,7 @@ export function ProvidersPage({
             <StatCard
               label="在线"
               value={onlineCount ?? '—'}
-              subtext={onlinePct === null ? undefined : `(${onlinePct}%)`}
+              subtext={onlinePct === null ? undefined : `(${onlinePct})`}
               icon={<CheckCircle2 />}
               tone="success"
               className="compactStat"
@@ -360,7 +362,7 @@ export function ProvidersPage({
             <StatCard
               label="异常 / 停用"
               value={offlineCount ?? '—'}
-              subtext={offlinePct === null ? undefined : `(${offlinePct}%)`}
+              subtext={offlinePct === null ? undefined : `(${offlinePct})`}
               icon={<AlertCircle />}
               tone={offlineCount ? 'warning' : 'default'}
               className="compactStat"
@@ -396,7 +398,7 @@ export function ProvidersPage({
           </label>
 
           <label className="filterFieldInline">
-            <span className="filterLabel">供应商类型</span>
+            <span className="filterLabel">渠道类型</span>
             <select
               className="filterSelect"
               value={draftFilters.provider_type}
@@ -497,7 +499,7 @@ export function ProvidersPage({
                   onChange={toggleAll}
                 />,
                 '渠道名称',
-                '供应商类型',
+                '渠道类型',
                 '接口协议',
                 'Base URL',
                 '状态',
@@ -688,7 +690,7 @@ export function ProvidersPage({
       {draft && (
         <Drawer
           title={draft.id ? `编辑渠道：${draft.name}` : '新增渠道'}
-          subtitle="密钥加密保存，只写不读；也可以改为引用环境变量。"
+          subtitle="凭据加密保存，只写不读；也可以改为引用环境变量。"
           size="lg"
           onClose={() => setDraft(null)}
         >

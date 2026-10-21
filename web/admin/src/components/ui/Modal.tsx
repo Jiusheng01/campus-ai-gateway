@@ -22,6 +22,36 @@ export function Modal({title, subtitle, onClose, children, footer, dismissable =
     panelRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && dismissable) onClose()
+      if (e.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      // The dialog is modal, so Tab keeps cycling within the panel instead of
+      // reaching controls behind the scrim. Only focusable descendants count;
+      // the panel itself is a focus target (tabIndex -1) but not in the cycle.
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (!focusable.length) {
+        e.preventDefault()
+        panel.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      // Focus outside the panel (or nowhere) is pulled back in, so the page
+      // behind the scrim never becomes the tab sequence.
+      if (!active || !panel.contains(active)) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+        return
+      }
+      if (e.shiftKey ? active === first : active === last) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      }
     }
     document.addEventListener('keydown', onKey)
     return () => {

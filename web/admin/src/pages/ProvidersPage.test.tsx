@@ -90,9 +90,9 @@ describe('ProvidersPage channel summary', () => {
     const totalCard = await waitFor(() => summaryCard('渠道总数'))
     expect(within(totalCard).getByText('9', {selector: '.statCardValue'})).toBeInTheDocument()
     expect(within(summaryCard('在线')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('(33%)')).toBeInTheDocument()
+    expect(within(summaryCard('在线')).getByText('(33.33%)')).toBeInTheDocument()
     expect(within(summaryCard('异常 / 停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('(67%)')).toBeInTheDocument()
+    expect(within(summaryCard('异常 / 停用')).getByText('(66.67%)')).toBeInTheDocument()
 
     await userEvent.type(screen.getByPlaceholderText('请输入渠道名称'), 'alpha')
     await userEvent.click(screen.getByRole('button', {name: '筛选'}))

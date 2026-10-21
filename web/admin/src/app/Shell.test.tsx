@@ -74,7 +74,7 @@ describe('Shell notification surface', () => {
     await waitFor(() => expect(bell.querySelector('.badgeDot')).not.toBeNull())
     await userEvent.click(bell)
 
-    expect(await screen.findByText('无效 API 密钥')).toBeInTheDocument()
+    expect(await screen.findByText('无效 API Key')).toBeInTheDocument()
     expect(screen.getByText(/凭据已失效/)).toBeInTheDocument()
     expect(screen.getByText(/10\.0\.0\.7/)).toBeInTheDocument()
     expect(screen.getByText('3 天前')).toBeInTheDocument()
