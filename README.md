@@ -67,7 +67,7 @@ Business request logs, admin audit and security events are separate record class
 
 ### 🖥️ An admin console, included
 
-A React console embedded in the Go binary: tenants, keys, providers, routes, usage, audit. Session auth with Argon2id, five RBAC roles, and a trusted-header path for campus SSO.
+A React console embedded in the Go binary: tenants, API keys, channels, routes, usage, audit. Session auth with Argon2id, five RBAC roles, and a trusted-header path for campus SSO.
 
 </td>
 </tr>
@@ -135,7 +135,7 @@ To start over from an empty database, run `.\scripts\reset.ps1` (it asks for con
 
 Then open <http://127.0.0.1:8080/admin-ui> and create the first administrator there. **There is no built-in account or default password.**
 
-The first hop stays in the console: **create the first administrator → add a channel (paste the vendor API key into the password field) → open a model from the catalog on the 模型 page in one click → call it**. The 模型服务 navigation group is now 渠道 / 模型: the 渠道 page manages access and credential source, while the 模型 page opens on a cross-channel Model Catalog where 开放 makes a model callable. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.
+The first hop stays in the console: **create the first administrator → add a channel (paste the vendor API key into the password field) → publish a model from that channel's candidate list on the 对外模型 page → call it**. The 模型服务 group is 服务概览 / 上游渠道 / 对外模型 / 路由策略 / 调用管理 / 调用日志: 上游渠道 manages access and credential source, 对外模型 lists the published virtual models and publishes a new alias from a channel's candidates, 路由策略 shows the route set behind each alias, and 调用管理 issues API keys and sets tenant quota. The key is sealed with AES-256-GCM on save and never returned — the console only shows that it is configured and its last four characters. If you would rather use an environment variable, switch the channel to "reference an environment variable" and enter its name instead.
 
 > All configuration comes from **process environment variables**; no `.env` file is read. Provider API keys are the exception: paste them into the channel form and the gateway seals them in PostgreSQL. [`.env.example`](.env.example) is a reference list of names — see [Configuration](doc/configuration.md).
 

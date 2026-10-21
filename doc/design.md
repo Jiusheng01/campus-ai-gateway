@@ -133,6 +133,7 @@ gateway_request_log
 - [x] RPM / TPM / 最大并发
 - [x] 请求日志 / 管理审计 / 安全事件
 - [x] Admin UI v3
+- [x] Admin UI v4（P1–P5 重设计：服务概览 / 上游渠道 / 对外模型 / 路由策略 / 调用管理；每个展示的数字都可追溯到响应）
 - [x] 管理员 Session Auth v2
 - [x] RBAC
 - [x] trusted-header SSO 接入边界
