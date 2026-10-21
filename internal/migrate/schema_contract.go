@@ -53,7 +53,7 @@ type contractFK struct {
 	Column     string
 	RefTable   string
 	RefColumn  string
-	DeleteCode string // pg_constraint.confdeltype: a=no action, c=cascade
+	DeleteCode string // pg_constraint.confdeltype: a=no action, c=cascade, n=set null
 }
 
 // contractIndex is one expected named index the runtime relies on. Unique is
@@ -95,6 +95,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"rpm_limit", "bigint", true},
 				{"tpm_limit", "bigint", true},
 				{"max_concurrency", "bigint", true},
+				{"allowed_models", "jsonb", true},
 			},
 		},
 		{
@@ -111,6 +112,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"allowed_models", "jsonb", true},
 				{"allowed_ips", "jsonb", true},
 				{"route_group", "character varying", false},
+				{"owner_user_id", "uuid", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
 			},
@@ -138,6 +140,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"route_priority", "integer", false},
 				{"attempts", "integer", false},
 				{"failover", "boolean", false},
+				{"owner_user_id", "uuid", false},
 			},
 		},
 		{
@@ -268,6 +271,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"last_login_at", "timestamp with time zone", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
+				{"tenant_id", "uuid", false},
 			},
 		},
 		{
@@ -328,6 +332,10 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_model_route", "model_id", "gateway_model", "id", "c"},
 		{"gateway_model_route", "provider_id", "gateway_provider", "id", "a"},
 		{"gateway_admin_session", "user_id", "gateway_admin_user", "id", "c"},
+		// 0018: an Account's Tenant and a key's owner are optional memberships.
+		// Removing either parent clears the link instead of removing the row.
+		{"gateway_admin_user", "tenant_id", "gateway_tenant", "id", "n"},
+		{"gateway_api_key", "owner_user_id", "gateway_admin_user", "id", "n"},
 	}
 
 	indexes = []contractIndex{
@@ -353,6 +361,11 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_admin_user", "idx_gateway_admin_user_status", false, []string{"status"}, `CREATE INDEX idx_gateway_admin_user_status ON gateway_admin_user(status)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_user", false, []string{"user_id", "created_at DESC"}, `CREATE INDEX idx_gateway_admin_session_user ON gateway_admin_session(user_id, created_at DESC)`},
 		{"gateway_admin_session", "idx_gateway_admin_session_expires", false, []string{"expires_at"}, `CREATE INDEX idx_gateway_admin_session_expires ON gateway_admin_session(expires_at)`},
+		// 0018: Tenant Membership lookup, "my keys" lookup, and the personal
+		// Request Record query (owner within a time window).
+		{"gateway_admin_user", "idx_gateway_admin_user_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_admin_user_tenant ON gateway_admin_user(tenant_id)`},
+		{"gateway_api_key", "idx_gateway_api_key_owner", false, []string{"owner_user_id"}, `CREATE INDEX idx_gateway_api_key_owner ON gateway_api_key(owner_user_id)`},
+		{"gateway_request_log", "idx_gateway_request_log_owner_created", false, []string{"owner_user_id", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_owner_created ON gateway_request_log(owner_user_id, created_at DESC)`},
 	}
 
 	checks = []contractCheck{
@@ -382,8 +395,8 @@ func finalColumnLengths() map[string]int {
 		"gateway_provider.provider_type": 32, "gateway_provider.description": 512,
 		"gateway_provider.last_test_upstream_model": 128, "gateway_provider.last_test_error_kind": 64,
 		"gateway_provider_model.upstream_model": 128, "gateway_provider_model.source": 16,
-		"gateway_model.alias":                128,
-		"gateway_model.display_name":         128, "gateway_model.description": 1024,
+		"gateway_model.alias":        128,
+		"gateway_model.display_name": 128, "gateway_model.description": 1024,
 		"gateway_model_route.upstream_model": 128,
 		"gateway_admin_audit_log.request_id": 64, "gateway_admin_audit_log.actor": 128, "gateway_admin_audit_log.action": 64,
 		"gateway_admin_audit_log.resource": 256, "gateway_admin_audit_log.client_ip": 64,
@@ -407,6 +420,7 @@ func finalColumnDefaults() map[string]string {
 		"gateway_tenant.daily_token_limit": "0", "gateway_tenant.monthly_token_limit": "0",
 		"gateway_tenant.monthly_request_limit": "0", "gateway_tenant.monthly_budget_micros": "0",
 		"gateway_tenant.rpm_limit": "0", "gateway_tenant.tpm_limit": "0", "gateway_tenant.max_concurrency": "0",
+		"gateway_tenant.allowed_models": `'["*"]'::jsonb`,
 
 		"gateway_api_key.id": "gen_random_uuid()", "gateway_api_key.status": "1",
 		"gateway_api_key.allowed_models": "'[]'::jsonb", "gateway_api_key.allowed_ips": "'[]'::jsonb",

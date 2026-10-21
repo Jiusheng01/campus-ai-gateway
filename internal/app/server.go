@@ -452,6 +452,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		id := model.Identity{
 			TenantID:            k.TenantID,
 			APIKeyID:            k.ID,
+			OwnerUserID:         k.OwnerUserID,
 			AllowedModels:       allowed,
 			AllModels:           allModels,
 			AllowedIPs:          k.AllowedIPs,
@@ -499,6 +500,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 			RequestID:      reqID,
 			TenantID:       id.TenantID,
 			APIKeyID:       id.APIKeyID,
+			OwnerUserID:    id.OwnerUserID,
 			ClientIP:       s.clientIPFrom(r),
 			RequestedModel: envelope.Model,
 			ActualModel:    actualModel,
