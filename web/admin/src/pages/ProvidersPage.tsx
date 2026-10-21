@@ -45,7 +45,7 @@ import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSum
 import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
-import {MiniSparkline} from '../components/ui/CampusIllustrations'
+import {Detail} from '../components/ui/Detail'
 import {useResource} from '../lib/useResource'
 import {ago, ms, when} from '../lib/format'
 
@@ -58,13 +58,127 @@ type Tab = 'basic' | 'models' | 'test' | 'usage'
 
 type Bundle = {
   providers: Provider[]
+  /** How many channels match the table's current filters; the pager's denominator. */
   total: number
-  circuits: CircuitView[]
+  /**
+   * The whole configuration, not the filtered page. The summary cards describe
+   * every channel, so their counts must not move when the operator narrows the
+   * table. `null` means the status request failed and there is no number to
+   * show — which is different from zero.
+   */
+  counts: NonNullable<DashboardStatus['config_counts']> | null
+  /**
+   * Provider Circuit state per channel. It lives in this gateway process only,
+   * so it is an instance-scoped observation rather than a stored verdict.
+   * `null` means /admin/status was unavailable, not "no circuits".
+   */
+  circuits: CircuitView[] | null
   sampledAt: Date
 }
 
 async function deleteImpact(providerID: string): Promise<ProviderImpact> {
   return api<ProviderImpact>(`/admin/providers/${providerID}/impact`)
+}
+
+/**
+ * A Provider Circuit is bucketed by Provider name in this process's breaker,
+ * so the row is matched by name rather than by id.
+ */
+function circuitTone(circuit: CircuitView | undefined, unavailable: boolean) {
+  if (unavailable) return 'unknown'
+  if (!circuit) return 'none'
+  if (circuit.state === 'open') return 'open'
+  if (circuit.state === 'half-open') return 'half-open'
+  return 'closed'
+}
+
+/**
+ * Circuit state is an observation of this gateway instance, not a stored health
+ * verdict: the breaker lives in memory and resets with the process. The label
+ * therefore names the instance and prints the state verbatim, never "healthy".
+ */
+function CircuitChip({
+  circuit,
+  unavailable,
+  sampledAt,
+}: {
+  circuit: CircuitView | undefined
+  unavailable: boolean
+  sampledAt?: Date
+}) {
+  const tone = circuitTone(circuit, unavailable)
+  const state = unavailable ? '未知' : circuit ? circuit.state : '未观测'
+  return (
+    <span
+      className={`circuitChip ${tone}`}
+      title={sampledAt ? `本实例内存状态，采样于 ${sampledAt.toLocaleTimeString()}` : '本实例内存状态'}
+    >
+      <span className="circuitScope">本实例熔断</span>
+      <b className="circuitValue">{state}</b>
+      {circuit && circuit.retry_in_ms > 0 && (
+        <span className="circuitRetry">{Math.ceil(circuit.retry_in_ms / 1000)} 秒后探测</span>
+      )}
+    </span>
+  )
+}
+
+function credentialText(p: Provider): string {
+  const credential = p.credential
+  if (!credential) return '未配置'
+  if (credential.source_type === 'env') {
+    return `环境变量 ${p.credential_env || '—'}${credential.configured ? '（已就绪）' : '（未读取到值）'}`
+  }
+  if (credential.source_type === 'inline') {
+    return `内联凭据${credential.last4 ? ` · 尾号 ${credential.last4}` : ''}`
+  }
+  return credential.source_type || '—'
+}
+
+function lastTestText(p: Provider): string | null {
+  const test = p.last_test
+  if (!test) return null
+  const upstream = test.upstream_model ? ` · ${test.upstream_model}` : ''
+  const error = test.error_kind ? ` · ${test.error_kind}` : ''
+  return `${test.ok ? '成功' : '失败'} · HTTP ${test.status_code} · ${ms(test.latency_ms)} · ${when(test.at)}${upstream}${error}`
+}
+
+/**
+ * The read-only facts an operator needs before disabling or deleting a channel:
+ * what depends on it, how its last diagnostic went, and this instance's circuit.
+ */
+function ChannelFacts({
+  provider,
+  circuit,
+  unavailable,
+  sampledAt,
+}: {
+  provider: Provider
+  circuit: CircuitView | undefined
+  unavailable: boolean
+  sampledAt?: Date
+}) {
+  return (
+    <Detail
+      title="渠道事实"
+      rows={[
+        ['凭据', credentialText(provider)],
+        ['候选模型', provider.candidate_model_count == null ? null : `${provider.candidate_model_count} 个`],
+        ['引用线路', provider.referenced_route_count == null ? null : `${provider.referenced_route_count} 条`],
+        ['关联对外模型', provider.referenced_model_count == null ? null : `${provider.referenced_model_count} 个`],
+        ['最近一次诊断', lastTestText(provider)],
+        [
+          '实例熔断',
+          <span key="circuit" className="channelFactCircuit">
+            <CircuitChip circuit={circuit} unavailable={unavailable} sampledAt={sampledAt} />
+            <span className="muted">
+              {circuit ? ` · ${circuit.failures} 次连续失败` : ''}
+              {sampledAt ? `（本实例内存，采样于 ${sampledAt.toLocaleTimeString()}）` : ''}
+            </span>
+          </span>,
+        ],
+      ]}
+    />
+  )
 }
 
 export function ProvidersPage({
@@ -106,7 +220,8 @@ export function ProvidersPage({
     return {
       providers: p.data || [],
       total: p.total ?? (p.data || []).length,
-      circuits: status?.circuits || [],
+      counts: status?.config_counts ?? null,
+      circuits: status ? status.circuits ?? [] : null,
       sampledAt: new Date(),
     }
   }, [query])
@@ -202,10 +317,23 @@ export function ProvidersPage({
 
   const items = data?.providers || []
   const total = data?.total || 0
-  const onlineCount = items.filter(p => p.status === 1).length
-  const offlineCount = items.filter(p => p.status !== 1).length
-  const onlinePct = total > 0 ? Math.round((onlineCount / total) * 100) : 0
-  const offlinePct = total > 0 ? Math.round((offlineCount / total) * 100) : 0
+
+  // The summary cards describe the whole configuration, so they use the
+  // unfiltered counts the status endpoint computes over every channel. The
+  // table's `total` is the filter's denominator and must not feed these cards:
+  // "在线 3" over nine channels cannot become "在线 1" because a name filter
+  // left one row on screen. When the status request failed there is no count to
+  // show, and a dash is the honest rendering rather than zero.
+  const channelTotal = data?.counts?.providers ?? null
+  const onlineCount = data?.counts?.enabled_providers ?? null
+  const offlineCount = channelTotal !== null && onlineCount !== null ? channelTotal - onlineCount : null
+  const onlinePct = channelTotal ? Math.round(((onlineCount ?? 0) / channelTotal) * 100) : null
+  const offlinePct = channelTotal ? Math.round(((offlineCount ?? 0) / channelTotal) * 100) : null
+
+  const circuits = useMemo(
+    () => new Map((data?.circuits ?? []).map(c => [c.provider, c])),
+    [data?.circuits],
+  )
 
   const [activeProvider, setActiveProvider] = useState<Provider | null>(null)
 
@@ -239,35 +367,25 @@ export function ProvidersPage({
           <div className="providersSummaryStats">
             <StatCard
               label="渠道总数"
-              value={total}
+              value={channelTotal ?? '—'}
               icon={<Network />}
               tone="default"
               className="compactStat"
             />
             <StatCard
               label="在线"
-              value={
-                <span className="statWithIndicator">
-                  <i className="dot on" aria-hidden />
-                  {onlineCount} <small className="statSubPct">({onlinePct}%)</small>
-                </span>
-              }
+              value={onlineCount ?? '—'}
+              subtext={onlinePct === null ? undefined : `(${onlinePct}%)`}
               icon={<CheckCircle2 />}
-              sparkline={<MiniSparkline data={[20, 40, 60, 80, 70, 90]} color="#10b981" />}
               tone="success"
               className="compactStat"
             />
             <StatCard
               label="异常 / 停用"
-              value={
-                <span className="statWithIndicator">
-                  <i className={`dot ${offlineCount > 0 ? 'down' : 'unknown'}`} aria-hidden />
-                  {offlineCount} <small className="statSubPct">({offlinePct}%)</small>
-                </span>
-              }
+              value={offlineCount ?? '—'}
+              subtext={offlinePct === null ? undefined : `(${offlinePct}%)`}
               icon={<AlertCircle />}
-              sparkline={<MiniSparkline data={[10, 15, 12, 20, 18, 25]} color="#f59e0b" />}
-              tone={offlineCount > 0 ? 'warning' : 'default'}
+              tone={offlineCount ? 'warning' : 'default'}
               className="compactStat"
             />
           </div>
@@ -410,7 +528,7 @@ export function ProvidersPage({
                 '状态',
                 '凭据状态',
                 '最后测试时间',
-                '候选模型',
+                '候选 / 引用',
                 '操作',
               ]}
               minWidth={1180}
@@ -452,10 +570,17 @@ export function ProvidersPage({
                       </span>
                     </td>
                     <td>
-                      <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
-                        <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
-                        {isOnline ? '在线' : '已停用'}
-                      </span>
+                      <div className="channelStatusStack">
+                        <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
+                          <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
+                          {isOnline ? '在线' : '已停用'}
+                        </span>
+                        <CircuitChip
+                          circuit={circuits.get(p.name)}
+                          unavailable={data?.circuits === null}
+                          sampledAt={data?.sampledAt}
+                        />
+                      </div>
                     </td>
                     <td>
                       {hasCred ? (
@@ -488,9 +613,15 @@ export function ProvidersPage({
                       )}
                     </td>
                     <td>
-                      <span className="candidateCountBadge">
-                        {p.candidate_model_count ?? 0}
-                      </span>
+                      <div className="channelRefs">
+                        <span className="candidateCountBadge" title="候选上游模型数">
+                          {p.candidate_model_count ?? '—'}
+                        </span>
+                        <span className="channelRefCounts">
+                          {p.referenced_route_count != null && <span>线路 {p.referenced_route_count}</span>}
+                          {p.referenced_model_count != null && <span>对外模型 {p.referenced_model_count}</span>}
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <div className="rowActions">
@@ -589,6 +720,14 @@ export function ProvidersPage({
         >
           {draft.id ? (
             <div className="drawerStack">
+              {activeProvider && (
+                <ChannelFacts
+                  provider={activeProvider}
+                  circuit={circuits.get(activeProvider.name)}
+                  unavailable={data?.circuits === null}
+                  sampledAt={data?.sampledAt}
+                />
+              )}
               {/* Tabs for editing existing channel */}
               <div className="segmented" role="group" aria-label="渠道配置视图">
                 <button

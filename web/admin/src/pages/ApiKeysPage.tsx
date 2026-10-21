@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 import {api, revokeApiKey, type ApiKey, type ModelConfig, type Tenant} from '../api'
 import {Button} from '../components/ui/Button'
-import {Badge} from '../components/ui/Badge'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {Drawer} from '../components/ui/Drawer'
@@ -21,55 +20,35 @@ import {useToast} from '../components/ui/Toast'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {KeyForm, type KeyDraft} from '../components/keys/KeyForm'
 import {SecretModal} from '../components/keys/SecretModal'
-import {useResource} from '../lib/useResource'
-import {ago, copyText, fmt, num} from '../lib/format'
+import {ago, copyText, fmt, num, when} from '../lib/format'
 
-type Bundle = {keys: ApiKey[]; tenants: Tenant[]; models: ModelConfig[]}
+export type ApiKeysBundle = {keys: ApiKey[]; tenants: Tenant[]; models: ModelConfig[]}
 
-// Helper to format expiration display
-function formatExpiration(expireAt?: string): {text: string; isPermanent: boolean} {
-  if (!expireAt) return {text: '永久有效', isPermanent: true}
-  const date = new Date(expireAt)
-  if (isNaN(date.getTime())) return {text: expireAt, isPermanent: false}
-  return {
-    text: date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }),
-    isPermanent: false,
-  }
-}
-
+/**
+ * The key table for the page's bundle.
+ *
+ * Every mount is inside CallsPage, which already loads keys, tenants and
+ * models for the summary cards. The bundle is therefore required: a local
+ * loader here would issue a second request for each of the three and, with
+ * `bundle || local`, run both.
+ */
 export function ApiKeysPage({
   bundle,
+  loading = false,
+  error = '',
+  errorStatus = 0,
   onReload,
 }: {
-  bundle?: Bundle
-  onReload?: () => void
+  bundle: ApiKeysBundle | null
+  loading?: boolean
+  error?: string
+  errorStatus?: number
+  /** Reloads the page-level bundle; the table owns no request of its own. */
+  onReload: () => void
 }) {
   const toast = useToast()
   const confirm = useConfirm()
-
-  // Local fallback resource loader if bundle not provided by parent
-  const {data: localData, loading, error, errorStatus, reload: localReload} = useResource(
-    async (): Promise<Bundle> => {
-      const [k, t, m] = await Promise.all([
-        api<{data: ApiKey[]}>('/admin/api-keys'),
-        api<{data: Tenant[]}>('/admin/tenants'),
-        api<{data: ModelConfig[]}>('/admin/models'),
-      ])
-      return {keys: k.data || [], tenants: t.data || [], models: m.data || []}
-    },
-    [],
-  )
-
-  const data = bundle || localData
-  const reload = onReload || localReload
+  const reload = onReload
 
   const [draft, setDraft] = useState<KeyDraft | null>(null)
   const [secret, setSecret] = useState<string | null>(null)
@@ -81,9 +60,9 @@ export function ApiKeysPage({
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [tenantFilter, setTenantFilter] = useState<string>('')
 
-  const keys = data?.keys || []
-  const tenants = data?.tenants || []
-  const models = data?.models || []
+  const keys = bundle?.keys || []
+  const tenants = bundle?.tenants || []
+  const models = bundle?.models || []
   const canCreate = tenants.length > 0
 
   // Filter keys
@@ -150,7 +129,7 @@ export function ApiKeysPage({
 
   return (
     <div className="stack">
-      {/* API Key Section Card matching Image 5 */}
+      {/* The list card owns its header, filters and table as one surface. */}
       <section className="keysSectionCard" aria-label="API 密钥列表">
         <header className="keysSectionHeader">
           <div className="keysSectionTitleBlock">
@@ -172,7 +151,7 @@ export function ApiKeysPage({
           </Button>
         </header>
 
-        {/* Filter Bar matching Image 5 */}
+        {/* Filters apply to the loaded bundle; they issue no request. */}
         <div className="filterCard">
           <div className="filtersBar">
             <div className="searchFieldGroup">
@@ -232,8 +211,7 @@ export function ApiKeysPage({
           </div>
         </div>
 
-        {/* Table matching Image 5 */}
-        {loading && !data ? (
+        {loading && !bundle ? (
           <SkeletonRows rows={6} columns={7} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
@@ -252,7 +230,6 @@ export function ApiKeysPage({
               minWidth={1080}
             >
               {filteredKeys.map(k => {
-                const exp = formatExpiration(k.expire_at)
                 const isAllModels = (k.allowed_models || []).includes('*')
                 const modelsList = k.allowed_models || []
                 const visibleModels = modelsList.slice(0, 2)
@@ -322,10 +299,12 @@ export function ApiKeysPage({
 
                     <td>
                       <div className="expireCell">
-                        {exp.isPermanent ? (
-                          <span className="permanentTag">永久有效</span>
+                        {k.expire_at ? (
+                          // Shared formatter: a timestamp reads the same here as
+                          // on every other page.
+                          <span className="expireDate mono">{when(k.expire_at)}</span>
                         ) : (
-                          <span className="expireDate mono">{exp.text}</span>
+                          <span className="permanentTag">永久有效</span>
                         )}
                       </div>
                     </td>
@@ -336,7 +315,8 @@ export function ApiKeysPage({
                           {k.last_used_at ? ago(k.last_used_at) : '从未调用'}
                         </span>
                         <small className="usageSummary muted">
-                          {num(k.usage_requests)} 次 · {fmt(k.usage_tokens)} Tokens
+                          {/* Lifetime totals for this key, not a period figure. */}
+                          累计 {num(k.usage_requests)} 次 · {fmt(k.usage_tokens)} Tokens
                         </small>
                       </div>
                     </td>
@@ -397,7 +377,7 @@ export function ApiKeysPage({
         )}
       </section>
 
-      {/* Drawer matching Image 5 Right Panel */}
+      {/* Create/edit happens in a slide-over so the list stays in view. */}
       {draft && (
         <Drawer
           size="lg"
