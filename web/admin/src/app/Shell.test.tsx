@@ -7,10 +7,11 @@ function jsonResponse(body: unknown, status = 200) {
   return {ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body)} as Response
 }
 
-function renderShell(roles: string[]) {
+function renderShell(roles: string[], workspace: 'admin' | 'console' = 'admin') {
   return render(
     <Shell
-      page="dashboard"
+      page={workspace === 'console' ? 'overview' : 'dashboard'}
+      workspace={workspace}
       onNavigate={() => {}}
       collapsed={false}
       onToggleCollapse={() => {}}
@@ -116,6 +117,39 @@ describe('Shell notification surface', () => {
 
     expect(await screen.findByText('加载失败')).toBeInTheDocument()
     expect(screen.queryByText('暂无安全事件')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * The personal workspace has its own navigation over the same Shell. It must
+ * not offer an administrator entry even when the account holds an
+ * administrator role, and the administrator feed must not be fetched there.
+ */
+describe('Shell personal workspace navigation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('renders the personal entries and no administrator entries', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({data: []}))
+    vi.stubGlobal('fetch', fetchMock)
+    renderShell(['member'], 'console')
+
+    for (const label of ['概览', 'API Key', '模型', '用量', '调用日志', '个人资料', '安全']) {
+      expect(await screen.findByRole('button', {name: label})).toBeInTheDocument()
+    }
+    for (const label of ['服务概览', '上游渠道', '对外模型', '路由策略', '用户', '系统设置', '审计日志']) {
+      expect(screen.queryByRole('button', {name: label})).not.toBeInTheDocument()
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the personal navigation for an administrator visiting /console', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({data: []})))
+    renderShell(['super_admin'], 'console')
+
+    expect(await screen.findByRole('button', {name: '概览'})).toBeInTheDocument()
+    expect(screen.queryByRole('button', {name: '用户'})).not.toBeInTheDocument()
+    // The security feed is an administrator surface, not part of this workspace.
+    expect(screen.queryByRole('button', {name: '系统通知'})).not.toBeInTheDocument()
   })
 })
 

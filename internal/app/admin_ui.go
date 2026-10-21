@@ -54,8 +54,21 @@ func setAdminUISecurityHeaders(w http.ResponseWriter) {
 }
 
 func (s *Server) serveAdminUI(w http.ResponseWriter, r *http.Request) {
+	s.serveUIPrefix(w, r, "/admin-ui")
+}
+
+// serveConsoleUI serves the same single-page build under the personal console
+// prefix. Assets keep their /admin-ui/ URLs inside index.html, so this handler
+// only needs the shell and the same asset-miss rule: a path that looks like a
+// file and is not one is a 404, while an addressable page falls back to
+// index.html and survives a refresh.
+func (s *Server) serveConsoleUI(w http.ResponseWriter, r *http.Request) {
+	s.serveUIPrefix(w, r, "/console")
+}
+
+func (s *Server) serveUIPrefix(w http.ResponseWriter, r *http.Request, prefix string) {
 	setAdminUISecurityHeaders(w)
-	if r.URL.Path != "/admin-ui" && !strings.HasPrefix(r.URL.Path, "/admin-ui/") {
+	if r.URL.Path != prefix && !strings.HasPrefix(r.URL.Path, prefix+"/") {
 		http.NotFound(w, r)
 		return
 	}
@@ -66,8 +79,8 @@ func (s *Server) serveAdminUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := strings.TrimPrefix(r.URL.Path, "/admin-ui/")
-	if r.URL.Path == "/admin-ui" || name == "" {
+	name := strings.TrimPrefix(r.URL.Path, prefix+"/")
+	if r.URL.Path == prefix || name == "" {
 		name = "index.html"
 	}
 	name = path.Clean(strings.TrimPrefix(name, "/"))

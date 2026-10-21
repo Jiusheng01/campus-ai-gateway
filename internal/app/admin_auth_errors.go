@@ -54,6 +54,12 @@ var (
 	// operation requires.
 	ErrAdminForbidden = errors.New("administrator role is not permitted for this operation")
 
+	// ErrConsoleIdentityUnavailable means the caller authenticated in a mode
+	// that carries no stable account id (trusted-header, or the break-glass
+	// token). The personal console owns resources by account, so a principal
+	// with only a username cannot use it.
+	ErrConsoleIdentityUnavailable = errors.New("this authentication mode has no account identity for the personal console")
+
 	// ErrAdminSetupNotAllowed means first-run setup was attempted after an
 	// account already exists.
 	ErrAdminSetupNotAllowed = errors.New("an administrator account already exists")
@@ -161,6 +167,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusForbidden, "account_disabled"
 	case errors.Is(err, ErrAdminForbidden):
 		return http.StatusForbidden, "admin_forbidden"
+	case errors.Is(err, ErrConsoleIdentityUnavailable):
+		return http.StatusForbidden, "console_identity_unavailable"
 	case errors.Is(err, ErrAdminSetupNotAllowed):
 		return http.StatusForbidden, "setup_not_allowed"
 	case errors.Is(err, ErrAdminSetupRemoteForbidden):

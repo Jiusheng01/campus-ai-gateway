@@ -350,8 +350,17 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.handleV1)))
+
+	// The personal console API is registered before the static handlers. Its
+	// paths must resolve to JSON handlers, never to the SPA fallback that serves
+	// both workspaces.
+	s.mux.Handle("/api/console", s.consoleMiddleware(http.HandlerFunc(s.handleConsole)))
+	s.mux.Handle("/api/console/", s.consoleMiddleware(http.HandlerFunc(s.handleConsole)))
+
 	s.mux.HandleFunc("/admin-ui", s.serveAdminUI)
 	s.mux.HandleFunc("/admin-ui/", s.serveAdminUI)
+	s.mux.HandleFunc("/console", s.serveConsoleUI)
+	s.mux.HandleFunc("/console/", s.serveConsoleUI)
 
 	// Public authentication endpoints. They must be registered with an exact
 	// pattern so they win over the catch-all "/admin/" registration below,

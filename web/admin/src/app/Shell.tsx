@@ -16,7 +16,8 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import {navGroups, pageMeta, type NavItem, type Page} from './navigation'
+import {consoleNavGroups, consolePageMeta, navGroups, pageMeta, type NavItem, type Page} from './navigation'
+import type {Workspace} from './routing'
 import {primaryRole, roleLabel} from '../lib/roles'
 import {api, type SecurityEvent, type WhoAmI} from '../api'
 import {CampusSidebarCard} from '../components/ui/CampusIllustrations'
@@ -43,6 +44,8 @@ const mayReadSecurityEvents = (roles: string[]) =>
 
 type Props = {
   page: Page
+  /** Which workspace the Shell is rendering. Defaults to the admin console. */
+  workspace?: Workspace
   onNavigate: (p: Page) => void
   collapsed: boolean
   onToggleCollapse: () => void
@@ -55,14 +58,15 @@ type Props = {
   children: ReactNode
 }
 
-function visibleItems(roles: string[]): NavItem[] {
-  return navGroups
+function visibleItems(groups: typeof navGroups, roles: string[]): NavItem[] {
+  return groups
     .flatMap(g => g.items)
     .filter(item => roles.some(r => item.roles.includes(r)))
 }
 
 export function Shell({
   page,
+  workspace = 'admin',
   onNavigate,
   collapsed,
   onToggleCollapse,
@@ -74,8 +78,10 @@ export function Shell({
   onSignOut,
   children,
 }: Props) {
-  const meta = pageMeta[page]
-  const items = visibleItems(who?.roles || [])
+  const isPersonal = workspace === 'console'
+  const navSource = isPersonal ? consoleNavGroups : navGroups
+  const meta = (isPersonal ? consolePageMeta[page] : undefined) ?? pageMeta[page]
+  const items = visibleItems(navSource, who?.roles || [])
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
@@ -88,7 +94,9 @@ export function Shell({
   const closeSearch = useCallback(() => setSearchOpen(false), [])
 
   const roles = who?.roles || []
-  const canReadSecurity = mayReadSecurityEvents(roles)
+  // The security feed is an administrator surface. Even an administrator
+  // visiting /console must not see it in the personal workspace.
+  const canReadSecurity = !isPersonal && mayReadSecurityEvents(roles)
 
   // Only fetched for roles the endpoint accepts. Asking with any other role
   // would 403 on every page load and light the bell for an error the operator
@@ -177,7 +185,7 @@ export function Shell({
     return () => wide.removeEventListener('change', closeIfWide)
   }, [mobileNavOpen])
 
-  const groups = navGroups
+  const groups = navSource
     .map(g => ({...g, items: g.items.filter(i => items.includes(i))}))
     .filter(g => g.items.length > 0)
 
@@ -308,7 +316,9 @@ export function Shell({
               aria-haspopup="dialog"
             >
               <Search className="searchBarIcon" aria-hidden />
-              <span className="searchBarPlaceholder">搜索页面、渠道或模型...</span>
+              <span className="searchBarPlaceholder">
+                {isPersonal ? '搜索个人控制台页面...' : '搜索页面、渠道或模型...'}
+              </span>
               <kbd className="searchBarKbd">Ctrl K</kbd>
             </button>
 
@@ -447,6 +457,7 @@ export function Shell({
           onClose={closeSearch}
           onNavigate={onNavigate}
           roles={roles}
+          workspace={workspace}
         />
       )}
 

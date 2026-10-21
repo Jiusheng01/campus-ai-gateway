@@ -371,6 +371,29 @@ export async function whoami(){
   return api<WhoAmI>('/admin/whoami',{},false)
 }
 
+/**
+ * ConsoleMe is the personal workspace's identity projection.
+ *
+ * `tenant_id` and `tenant_name` are empty when the Account has no Tenant
+ * Membership — an unassigned state, not a Tenant named "". `workspace_usable`
+ * is the same fact as a boolean, so the overview can say plainly that the
+ * account is waiting for assignment instead of rendering an empty workspace.
+ */
+export type ConsoleMe={
+  account_id:string
+  username:string
+  display_name:string
+  roles:string[]
+  status:number
+  tenant_id:string
+  tenant_name:string
+  workspace_usable:boolean
+}
+
+export async function getConsoleMe(){
+  return api<ConsoleMe>('/api/console/me',{},false)
+}
+
 export async function revokeSession(id:string){
   return api<{ok:boolean}>(`/admin/sessions/${encodeURIComponent(id)}/revoke`,{method:'POST'})
 }
