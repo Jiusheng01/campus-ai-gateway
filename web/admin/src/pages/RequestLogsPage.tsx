@@ -10,6 +10,7 @@ import {Drawer} from '../components/ui/Drawer'
 import {Table} from '../components/ui/Table'
 import {useToast} from '../components/ui/Toast'
 import {LogDetail} from '../components/logs/LogDetail'
+import {LogFilterField} from '../components/logs/LogFilterField'
 import {UsageQuotaSection} from '../components/logs/UsageQuotaSection'
 import {useResource} from '../lib/useResource'
 import {copyText, ms, num, shortId, when} from '../lib/format'
@@ -82,24 +83,6 @@ function filtersToQuery(f: Filters): URLSearchParams {
 /** Number of filters currently narrowing the table, for the reset affordance. */
 function activeCount(f: Filters): number {
   return Object.values(f).filter(v => v.trim() !== '').length
-}
-
-/**
- * One filter cell.
- *
- * Every control carries its label rather than relying on a placeholder: the
- * placeholders disappear as soon as a value is typed, which leaves a row of
- * nine anonymous boxes, and a `datetime-local` input shows no placeholder at all
- * — two of them side by side are indistinguishable without one. Wrapping the
- * input in the label also makes the caption a click target for it.
- */
-function Filter({label, children}: {label: string; children: React.ReactNode}) {
-  return (
-    <label className="filterField">
-      <span>{label}</span>
-      {children}
-    </label>
-  )
 }
 
 function seededFilters(seed?: Partial<Filters>): Filters {
@@ -216,28 +199,28 @@ export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filt
         }
       >
         <div className="filters">
-          <Filter label="模型">
+          <LogFilterField label="模型">
             <input placeholder="全部模型" value={filters.model} onChange={f('model')} />
-          </Filter>
-          <Filter label="渠道">
+          </LogFilterField>
+          <LogFilterField label="渠道">
             <input placeholder="全部渠道" value={filters.provider} onChange={f('provider')} />
-          </Filter>
-          <Filter label="HTTP 状态">
+          </LogFilterField>
+          <LogFilterField label="HTTP 状态">
             <input placeholder="任意状态" value={filters.status} onChange={f('status')} />
-          </Filter>
-          <Filter label="Request ID">
+          </LogFilterField>
+          <LogFilterField label="Request ID">
             <input placeholder="精确匹配" value={filters.request_id} onChange={f('request_id')} />
-          </Filter>
-          <Filter label="故障切换">
+          </LogFilterField>
+          <LogFilterField label="故障切换">
             <select value={filters.failover} onChange={f('failover')}>
               <option value="">全部</option>
               <option value="true">发生故障切换</option>
               <option value="false">未发生故障切换</option>
             </select>
-          </Filter>
+          </LogFilterField>
 
           {facets.data?.tenants?.length ? (
-            <Filter label="租户">
+            <LogFilterField label="租户">
               <select value={filters.tenant_id} onChange={f('tenant_id')}>
                 <option value="">全部租户</option>
                 {facets.data.tenants.map(t => (
@@ -246,15 +229,15 @@ export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filt
                   </option>
                 ))}
               </select>
-            </Filter>
+            </LogFilterField>
           ) : (
-            <Filter label="租户 ID">
+            <LogFilterField label="租户 ID">
               <input placeholder="UUID" value={filters.tenant_id} onChange={f('tenant_id')} />
-            </Filter>
+            </LogFilterField>
           )}
 
           {keyOptions.length ? (
-            <Filter label="API 密钥">
+            <LogFilterField label="API 密钥">
               <select value={filters.api_key_id} onChange={f('api_key_id')}>
                 <option value="">全部 API 密钥</option>
                 {drilledKeyMissing && (
@@ -268,19 +251,19 @@ export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filt
                   </option>
                 ))}
               </select>
-            </Filter>
+            </LogFilterField>
           ) : (
-            <Filter label="API 密钥 ID">
+            <LogFilterField label="API 密钥 ID">
               <input placeholder="UUID" value={filters.api_key_id} onChange={f('api_key_id')} />
-            </Filter>
+            </LogFilterField>
           )}
 
-          <Filter label="起始时间">
+          <LogFilterField label="起始时间">
             <input type="datetime-local" value={filters.from} onChange={f('from')} />
-          </Filter>
-          <Filter label="结束时间">
+          </LogFilterField>
+          <LogFilterField label="结束时间">
             <input type="datetime-local" value={filters.to} onChange={f('to')} />
-          </Filter>
+          </LogFilterField>
 
           <div className="filterActions">
             <Button variant="primary" icon={<Search />} onClick={search}>

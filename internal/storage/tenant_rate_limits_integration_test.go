@@ -39,7 +39,7 @@ func TestTenantRateLimitsRoundTrip(t *testing.T) {
 	created.RPMLimit = 60
 	created.TPMLimit = 0
 	created.MaxConcurrency = 5
-	updated, err := pg.UpdateTenant(ctx, created.ID, created)
+	updated, err := pg.UpdateTenant(ctx, created.ID, created, &created.AllowedModels)
 	if err != nil {
 		t.Fatalf("UpdateTenant: %v", err)
 	}

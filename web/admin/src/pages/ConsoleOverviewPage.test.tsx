@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest'
-import {render, screen, within} from '@testing-library/react'
+import {fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import {ConsoleOverviewPage} from './ConsoleOverviewPage'
 
 function jsonResponse(body: unknown, status = 200) {
@@ -115,12 +115,37 @@ const models = {
   ],
 }
 
+const detail = {
+  ...logs.data[1],
+  attempt_chain: [
+    {
+      attempt_no: 1,
+      provider: 'primary',
+      upstream_model: 'upstream-a',
+      outcome: 'failed',
+      status_code: 500,
+      latency_ms: 60,
+      error_kind: 'upstream_error',
+    },
+    {
+      attempt_no: 2,
+      provider: 'backup',
+      upstream_model: 'upstream-b',
+      outcome: 'served',
+      status_code: 200,
+      latency_ms: 20,
+      error_kind: '',
+    },
+  ],
+}
+
 type Options = {
   me?: Record<string, unknown>
   meStatus?: number
   keys?: unknown[]
   usage?: unknown
   logs?: unknown
+  detail?: unknown
   models?: unknown
 }
 
@@ -146,6 +171,9 @@ function stubConsole(options: Options = {}) {
       }
       if (url === '/api/console/keys') return jsonResponse({data: options.keys ?? keys})
       if (url.startsWith('/api/console/usage')) return jsonResponse(options.usage ?? usage)
+      if (url.startsWith('/api/console/request-logs/')) {
+        return jsonResponse({data: options.detail ?? detail})
+      }
       if (url.startsWith('/api/console/request-logs')) return jsonResponse(options.logs ?? logs)
       if (url === '/api/console/models') return jsonResponse(options.models ?? models)
       return jsonResponse({error: {code: 'not_found', message: `unexpected ${url}`}}, 404)
@@ -241,6 +269,20 @@ describe('personal console overview', () => {
 
     // The recent list asked for a short page, not the whole history.
     expect(calls.some(url => url.startsWith('/api/console/request-logs') && url.includes('limit=5'))).toBe(true)
+  })
+
+  it('opens a recent record in the same detail drawer as the log page', async () => {
+    stubConsole()
+    render(<ConsoleOverviewPage />)
+    await screen.findByText('今日概览')
+
+    fireEvent.click(screen.getByText('campus-embed'))
+
+    const drawer = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(drawer).getByText('primary')).toBeInTheDocument())
+    expect(within(drawer).getByText('backup')).toBeInTheDocument()
+    expect(within(drawer).getByText('成功')).toBeInTheDocument()
+    expect(within(drawer).getByText('失败')).toBeInTheDocument()
   })
 
   it('distinguishes keys that exist from traffic that does not', async () => {

@@ -205,13 +205,6 @@ export function allowedPages(roles: string[]): Page[] {
   return pages
 }
 
-/** Where an account lands after signing in: the dashboard if it may see it, else the first page it may. */
-export function landingPage(roles: string[]): Page {
-  const allowed = allowedPages(roles)
-  if (allowed.includes('dashboard')) return 'dashboard'
-  return allowed[0] || 'profile'
-}
-
 // roleGranted is permissive about an account with no roles at all: the gateway
 // treats it as a member, so the navigation has to agree.
 function roleGranted(allowed: string[], roles: string[]): boolean {

@@ -382,3 +382,90 @@ func TestConsoleKeyLimitHoldsUnderConcurrentCreates(t *testing.T) {
 		t.Fatalf("database holds %d keys, want %d", owned, limit)
 	}
 }
+
+// /api/console/me carries the owner's key count as a hint. It is counted in
+// SQL with the same owner predicate as the list, so another Account's keys and
+// administrator-created (unowned) keys cannot inflate it.
+func TestConsoleMeReportsOnlyTheSessionsKeyCount(t *testing.T) {
+	pg := usagePostgres(t)
+	tenantAssignmentClear(t, pg)
+	s := consoleKeysServer(t, pg, 10)
+
+	tenant := consoleKeysTenant(t, pg, "me-count", []string{model.AllModelsWildcard})
+	alice := tenantAssignmentAccount(t, pg, uniqueAccountName("me-count-alice"), []string{RoleMember})
+	bob := tenantAssignmentAccount(t, pg, uniqueAccountName("me-count-bob"), []string{RoleMember})
+	consoleKeysAssign(t, pg, alice.ID, tenant.ID)
+	consoleKeysAssign(t, pg, bob.ID, tenant.ID)
+	aliceToken := tenantAssignmentToken(t, s, alice.Username)
+
+	for _, name := range []string{"alice-first", "alice-second"} {
+		rec := consoleKeysCall(t, s, aliceToken, http.MethodPost, `{"name":"`+name+`","allowed_models":["*"]}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s = %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	bobToken := tenantAssignmentToken(t, s, bob.Username)
+	if rec := consoleKeysCall(t, s, bobToken, http.MethodPost, `{"name":"bob-key","allowed_models":["*"]}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create bob key = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := pg.CreateAPIKey(context.Background(), model.APIKeyAdmin{
+		TenantID: tenant.ID, Name: "admin-key", KeyPrefix: "sk-admin-count", Status: 1,
+		AllowedModels: []string{model.AllModelsWildcard},
+	}, "digest-admin-count"); err != nil {
+		t.Fatalf("seed unowned key: %v", err)
+	}
+
+	meRec := consoleCall(t, s, aliceToken, "/api/console/me")
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/console/me = %d: %s", meRec.Code, meRec.Body.String())
+	}
+	var me struct {
+		KeyCount int64 `json:"key_count"`
+	}
+	if err := json.Unmarshal(meRec.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode me: %v", err)
+	}
+	if me.KeyCount != 2 {
+		t.Fatalf("key_count = %d, want alice's 2 keys only", me.KeyCount)
+	}
+}
+
+// Every state-changing personal request leaves an admin audit row, with the
+// Account's username as the actor. This is the ticket's audit guarantee at the
+// HTTP seam: the row is written by the console middleware, not by the handler.
+func TestConsoleKeyMutationWritesAnAdminAuditRow(t *testing.T) {
+	pg := usagePostgres(t)
+	tenantAssignmentClear(t, pg)
+	s := consoleKeysServer(t, pg, 10)
+
+	tenant := consoleKeysTenant(t, pg, "keys-audit", []string{model.AllModelsWildcard})
+	alice := tenantAssignmentAccount(t, pg, uniqueAccountName("keys-audit-alice"), []string{RoleMember})
+	consoleKeysAssign(t, pg, alice.ID, tenant.ID)
+	token := tenantAssignmentToken(t, s, alice.Username)
+
+	rec := consoleKeysCall(t, s, token, http.MethodPost, `{"name":"audited-key","allowed_models":["*"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rows, err := pg.ListAdminAudit(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	var found bool
+	for _, row := range rows {
+		if row.Action != http.MethodPost || row.Resource != "/api/console/keys" || row.Actor != alice.Username {
+			continue
+		}
+		found = true
+		if row.StatusCode != http.StatusCreated {
+			t.Fatalf("audit status = %d, want 201", row.StatusCode)
+		}
+		if row.RequestID != "console-keys-test" {
+			t.Fatalf("audit request id = %q", row.RequestID)
+		}
+	}
+	if !found {
+		t.Fatalf("no audit row for the personal key create; rows = %+v", rows)
+	}
+}

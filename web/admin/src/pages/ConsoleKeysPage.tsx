@@ -12,7 +12,6 @@ import {
   Shield,
   Sparkles,
   Trash2,
-  X,
 } from 'lucide-react'
 import {
   ApiError,
@@ -35,6 +34,7 @@ import {Field} from '../components/ui/Field'
 import {useToast} from '../components/ui/Toast'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {SecretModal} from '../components/keys/SecretModal'
+import {ModelScopePicker} from '../components/models/ModelScopePicker'
 import {useResource} from '../lib/useResource'
 import {ago, copyText, fmt, num, when} from '../lib/format'
 
@@ -70,6 +70,11 @@ export function ConsoleKeysPage() {
   const [copiedPrefix, setCopiedPrefix] = useState<string | null>(null)
 
   const tenantWildcard = (me.data?.allowed_models || []).includes('*')
+  // The Tenant's named allowlist, used to expand a stored "*" key when the
+  // Tenant itself is no longer wildcard. The catalog below is the callable
+  // subset offered by the picker; the Tenant list is the scope an edit is
+  // allowed to store, so the edit form needs both.
+  const tenantModels = (me.data?.allowed_models || []).filter(m => m !== '*')
   const availableModels = catalog.data?.models || []
   const modelAliases = availableModels.map(m => m.alias)
   const emptyReason = catalog.data?.empty_reason
@@ -418,6 +423,7 @@ export function ConsoleKeysPage() {
             key={editing.id}
             row={editing}
             models={modelAliases}
+            tenantModels={tenantModels}
             tenantWildcard={tenantWildcard}
             onCancel={() => setEditing(null)}
             onSaved={() => {
@@ -434,10 +440,11 @@ export function ConsoleKeysPage() {
 }
 
 /**
- * The create form. It offers only the Tenant's allowlist: a wildcard Tenant
- * gets the explicit "all models" choice, an explicit Tenant gets its aliases,
- * and an empty Tenant never reaches this component because the page refuses to
- * open the drawer.
+ * The create form. A wildcard Tenant may issue either the wildcard (which
+ * keeps including models added later) or a narrower explicit selection; an
+ * explicit Tenant offers only its aliases. The picker itself never invents a
+ * scope: it starts at the Tenant's most permissive valid choice and the
+ * operator narrows it deliberately.
  */
 function CreateKeyForm({
   models,
@@ -452,19 +459,21 @@ function CreateKeyForm({
 }) {
   const toast = useToast()
   const [name, setName] = useState('')
-  const [selected, setSelected] = useState<string[]>(() => (tenantWildcard ? ['*'] : [...models]))
+  // Under a wildcard Tenant the form starts unrestricted; under an explicit
+  // Tenant it starts with the whole callable set selected, which is the same
+  // reach the old always-send-the-list behaviour had, but now visible.
+  const [allModels, setAllModels] = useState(tenantWildcard)
+  const [selected, setSelected] = useState<string[]>(() => (tenantWildcard ? [] : [...models]))
   const [saving, setSaving] = useState(false)
 
-  const toggleModel = (alias: string, on: boolean) => {
-    setSelected(prev => (on ? [...prev.filter(x => x !== alias), alias] : prev.filter(x => x !== alias)))
-  }
+  const scope = tenantWildcard && allModels ? ['*'] : selected
 
   const submit = async () => {
     setSaving(true)
     try {
       const created = await createConsoleKey({
         name: name.trim(),
-        allowed_models: tenantWildcard ? ['*'] : selected,
+        allowed_models: scope,
       })
       toast.success('API Key 已创建')
       onCreated(created)
@@ -504,63 +513,26 @@ function CreateKeyForm({
           <Layers aria-hidden /> 模型授权
         </legend>
 
-        {tenantWildcard ? (
-          <div className="wildcardActiveNotice">
-            <Sparkles aria-hidden />
-            <div>
-              <b>租户允许全部对外模型</b>
-              <p>该 Key 将获得租户当前允许的全部模型。以后租户新增的模型也会自动对该 Key 生效。</p>
-            </div>
-          </div>
-        ) : (
-          <div className="multiSelectWrapper">
-            <div className="multiSelectHead">
-              <span className="multiSelectTitle">允许调用的模型</span>
-            </div>
-
-            <div className="chipsContainer">
-              {selected.length ? (
-                selected.map(alias => (
-                  <span className="modelSelectChip" key={alias}>
-                    <span className="chipAlias mono">{alias}</span>
-                    <button
-                      type="button"
-                      className="chipRemoveButton"
-                      onClick={() => toggleModel(alias, false)}
-                      title="移除模型"
-                    >
-                      <X aria-hidden />
-                    </button>
-                  </span>
-                ))
-              ) : (
-                <span className="chipsEmptyPlaceholder">未选择任何模型（该 Key 将无法调用任何模型）</span>
-              )}
-            </div>
-
-            <div className="addModelDropdownRow">
-              <select
-                className="addModelSelect"
-                value=""
-                onChange={e => {
-                  const alias = e.target.value
-                  if (alias) toggleModel(alias, true)
-                }}
-              >
-                <option value="">+ 选择要添加的模型…</option>
-                {models
-                  .filter(alias => !selected.includes(alias))
-                  .map(alias => (
-                    <option key={alias} value={alias}>
-                      {alias}
-                    </option>
-                  ))}
-              </select>
-            </div>
-
-            <small className="fieldHint">可选项仅限你的租户允许的模型；网关会在创建时再次校验。</small>
-          </div>
-        )}
+        <ModelScopePicker
+          value={scope}
+          onChange={next => {
+            if (next.includes('*')) {
+              setAllModels(true)
+              return
+            }
+            setAllModels(false)
+            setSelected(next)
+          }}
+          options={models.map(alias => ({alias}))}
+          allowWildcard={tenantWildcard}
+          title="允许调用的模型"
+          wildcardLabel="全部对外模型（含以后新增）"
+          wildcardNoticeTitle="租户允许全部对外模型"
+          wildcardNoticeText="该 Key 将获得租户当前允许的全部模型。以后租户新增的模型也会自动对该 Key 生效。"
+          emptyPlaceholder="未选择任何模型（该 Key 将无法调用任何模型）"
+          addPlaceholder="+ 选择要添加的模型…"
+          hint="可选项仅限你的租户允许的模型；网关会在创建时再次校验。"
+        />
       </fieldset>
 
       <div className="formActions">
@@ -587,29 +559,43 @@ function CreateKeyForm({
 function EditKeyForm({
   row,
   models,
+  tenantModels,
   tenantWildcard,
   onCancel,
   onSaved,
 }: {
   row: ConsoleKey
   models: string[]
+  /** The Tenant's named allowlist, used to expand a stored "*" key. */
+  tenantModels: string[]
   tenantWildcard: boolean
   onCancel: () => void
   onSaved: () => void
 }) {
   const toast = useToast()
+  const stored = row.allowed_models || []
+  const storedWildcard = stored.includes('*')
+  const storedExplicit = stored.filter(m => m !== '*')
+  // A "*" key under an explicit Tenant is the dangerous case: the stored value
+  // includes models the Tenant no longer grants, and the server expands a
+  // submitted "*" against the current Tenant list. Show that resolved list
+  // rather than an empty selection, so saving a rename cannot silently decode
+  // to deny-all. The operator can remove chips if they really mean to narrow.
+  const resolvedFromWildcard = storedWildcard && !tenantWildcard
   const [name, setName] = useState(row.name)
-  const [allModels, setAllModels] = useState(() => (row.allowed_models || []).includes('*'))
-  const [selected, setSelected] = useState<string[]>(() =>
-    (row.allowed_models || []).filter(m => m !== '*'),
-  )
+  const [allModels, setAllModels] = useState(storedWildcard && tenantWildcard)
+  const [selected, setSelected] = useState<string[]>(() => {
+    if (!storedWildcard) return storedExplicit
+    return tenantWildcard ? [] : [...tenantModels]
+  })
   const [ips, setIps] = useState((row.allowed_ips || []).join('\n'))
   const [expireAt, setExpireAt] = useState(row.expire_at || '')
   const [saving, setSaving] = useState(false)
 
-  const toggleModel = (alias: string, on: boolean) => {
-    setSelected(prev => (on ? [...prev.filter(x => x !== alias), alias] : prev.filter(x => x !== alias)))
-  }
+  // The dropdown offers the callable catalog plus any alias already stored or
+  // granted by the Tenant, so a resolved or stale scope stays visible and can
+  // be removed deliberately instead of disappearing from the form.
+  const optionAliases = Array.from(new Set([...models, ...tenantModels, ...storedExplicit]))
 
   const submit = async () => {
     const trimmed = name.trim()
@@ -682,76 +668,33 @@ function EditKeyForm({
           <Layers aria-hidden /> 模型授权
         </legend>
 
-        {tenantWildcard && (
-          <label className="wildcardToggleLabel">
-            <input
-              type="checkbox"
-              checked={allModels}
-              onChange={e => setAllModels(e.target.checked)}
-            />
-            <span>全部对外模型（含以后新增）</span>
-          </label>
+        {resolvedFromWildcard && (
+          <p className="hint">
+            该 Key 原先允许全部模型，但租户的模型授权已经收窄。这里展示的是租户当前允许的模型，
+            保存后会按这份清单记录；如需进一步缩小范围，请移除对应模型。
+          </p>
         )}
 
-        {tenantWildcard && allModels ? (
-          <div className="wildcardActiveNotice">
-            <Sparkles aria-hidden />
-            <div>
-              <b>租户允许全部对外模型</b>
-              <p>该 Key 将继续获得租户允许的全部模型，包括以后新增的模型。</p>
-            </div>
-          </div>
-        ) : (
-          <div className="multiSelectWrapper">
-            <div className="multiSelectHead">
-              <span className="multiSelectTitle">允许调用的模型</span>
-            </div>
-
-            <div className="chipsContainer">
-              {selected.length ? (
-                selected.map(alias => (
-                  <span className="modelSelectChip" key={alias}>
-                    <span className="chipAlias mono">{alias}</span>
-                    <button
-                      type="button"
-                      className="chipRemoveButton"
-                      onClick={() => toggleModel(alias, false)}
-                      title="移除模型"
-                    >
-                      <X aria-hidden />
-                    </button>
-                  </span>
-                ))
-              ) : (
-                <span className="chipsEmptyPlaceholder">
-                  未选择任何模型（该 Key 将无法调用任何模型）
-                </span>
-              )}
-            </div>
-
-            <div className="addModelDropdownRow">
-              <select
-                className="addModelSelect"
-                value=""
-                onChange={e => {
-                  const alias = e.target.value
-                  if (alias) toggleModel(alias, true)
-                }}
-              >
-                <option value="">+ 选择要添加的模型…</option>
-                {models
-                  .filter(alias => !selected.includes(alias))
-                  .map(alias => (
-                    <option key={alias} value={alias}>
-                      {alias}
-                    </option>
-                  ))}
-              </select>
-            </div>
-
-            <small className="fieldHint">可选项仅限你的租户允许的模型；网关会在保存时再次校验。</small>
-          </div>
-        )}
+        <ModelScopePicker
+          value={tenantWildcard && allModels ? ['*'] : selected}
+          onChange={next => {
+            if (next.includes('*')) {
+              setAllModels(true)
+              return
+            }
+            setAllModels(false)
+            setSelected(next)
+          }}
+          options={optionAliases.map(alias => ({alias}))}
+          allowWildcard={tenantWildcard}
+          title="允许调用的模型"
+          wildcardLabel="全部对外模型（含以后新增）"
+          wildcardNoticeTitle="租户允许全部对外模型"
+          wildcardNoticeText="该 Key 将继续获得租户允许的全部模型，包括以后新增的模型。"
+          emptyPlaceholder="未选择任何模型（该 Key 将无法调用任何模型）"
+          addPlaceholder="+ 选择要添加的模型…"
+          hint="可选项仅限你的租户允许的模型；网关会在保存时再次校验。"
+        />
       </fieldset>
 
       <fieldset className="formSectionFieldset">

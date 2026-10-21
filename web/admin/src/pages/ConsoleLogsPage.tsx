@@ -1,20 +1,14 @@
-import {useCallback, useEffect, useMemo, useState} from 'react'
+import {useCallback, useMemo, useState} from 'react'
 import {FileClock, Search, X} from 'lucide-react'
-import {
-  getConsoleRequestLog,
-  listConsoleKeys,
-  listConsoleRequestLogs,
-  type ConsoleRequestLogDetail,
-  type ConsoleRequestLogPage,
-} from '../api'
+import {listConsoleKeys, listConsoleRequestLogs, type ConsoleRequestLogPage} from '../api'
 import {PageBanner} from '../components/ui/PageBanner'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
-import {Drawer} from '../components/ui/Drawer'
 import {Table} from '../components/ui/Table'
-import {Detail} from '../components/ui/Detail'
+import {ConsoleLogDrawer} from '../components/logs/ConsoleLogDetail'
+import {LogFilterField} from '../components/logs/LogFilterField'
 import {HttpStatusBadge} from '../components/ui/Badge'
 import {useResource} from '../lib/useResource'
 import {ms, num, shortId, when} from '../lib/format'
@@ -62,15 +56,6 @@ function activeCount(f: Filters): number {
   return Object.values(f).filter(v => v.trim() !== '').length
 }
 
-function Filter({label, children}: {label: string; children: React.ReactNode}) {
-  return (
-    <label className="filterField">
-      <span>{label}</span>
-      {children}
-    </label>
-  )
-}
-
 /**
  * The member's own Request Records.
  *
@@ -86,11 +71,9 @@ export function ConsoleLogsPage() {
   // refetch on every keystroke.
   const [applied, setApplied] = useState<Filters>(emptyFilters)
   const [offset, setOffset] = useState(0)
+  // The drawer owns its own fetch and loading/error state; this page only
+  // remembers which record is open.
   const [detailID, setDetailID] = useState<string | null>(null)
-  const [detail, setDetail] = useState<ConsoleRequestLogDetail | null>(null)
-  const [detailError, setDetailError] = useState('')
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailNonce, setDetailNonce] = useState(0)
 
   // The key picker is a convenience, not an authority: a key that has been
   // deleted no longer appears here, but its records remain in the list through
@@ -109,34 +92,6 @@ export function ConsoleLogsPage() {
   const {data, loading, error, errorStatus, reload} = useResource(loader, [query, offset])
   const rows = data?.data || []
   const narrowed = activeCount(applied)
-
-  useEffect(() => {
-    if (!detailID) return
-    let live = true
-    setDetail(null)
-    setDetailError('')
-    setDetailLoading(true)
-    getConsoleRequestLog(detailID)
-      .then(d => {
-        if (live) setDetail(d)
-      })
-      .catch(e => {
-        if (live) setDetailError(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        if (live) setDetailLoading(false)
-      })
-    return () => {
-      live = false
-    }
-  }, [detailID, detailNonce])
-
-  const closeDetail = () => {
-    setDetailID(null)
-    setDetail(null)
-    setDetailError('')
-    setDetailLoading(false)
-  }
 
   const search = () => {
     setOffset(0)
@@ -164,19 +119,19 @@ export function ConsoleLogsPage() {
 
       <Panel title="我的请求记录" sub="按时间、模型、状态或 Key 筛选；这些条件都只能缩小你自己的记录范围。">
         <div className="filters">
-          <Filter label="起始时间">
+          <LogFilterField label="起始时间">
             <input type="datetime-local" value={filters.from} onChange={f('from')} />
-          </Filter>
-          <Filter label="结束时间">
+          </LogFilterField>
+          <LogFilterField label="结束时间">
             <input type="datetime-local" value={filters.to} onChange={f('to')} />
-          </Filter>
-          <Filter label="模型（请求或实际）">
+          </LogFilterField>
+          <LogFilterField label="模型（请求或实际）">
             <input placeholder="全部模型" value={filters.model} onChange={f('model')} />
-          </Filter>
-          <Filter label="HTTP 状态">
+          </LogFilterField>
+          <LogFilterField label="HTTP 状态">
             <input type="number" min={0} placeholder="任意状态" value={filters.status} onChange={f('status')} />
-          </Filter>
-          <Filter label="API Key">
+          </LogFilterField>
+          <LogFilterField label="API Key">
             <select value={filters.api_key_id} onChange={f('api_key_id')}>
               <option value="">全部 API Key</option>
               {/* A key chosen before it was deleted would otherwise render as a
@@ -190,7 +145,7 @@ export function ConsoleLogsPage() {
                 </option>
               ))}
             </select>
-          </Filter>
+          </LogFilterField>
 
           <div className="filterActions">
             <Button variant="primary" icon={<Search />} onClick={search}>
@@ -260,99 +215,8 @@ export function ConsoleLogsPage() {
       </Panel>
 
       {detailID && (
-        <Drawer title="请求详情" subtitle={detailID} onClose={closeDetail}>
-          {detailLoading ? (
-            <p className="muted">加载中…</p>
-          ) : detailError ? (
-            <ErrorState message={detailError} onRetry={() => setDetailNonce(n => n + 1)} />
-          ) : detail ? (
-            <ConsoleLogDetail v={detail} keyName={keyName(keyOptions, detail.api_key_id)} />
-          ) : null}
-        </Drawer>
+        <ConsoleLogDrawer requestID={detailID} keys={keyOptions} onClose={() => setDetailID(null)} />
       )}
     </div>
   )
-}
-
-function keyName(keys: {id: string; name: string; key_prefix: string}[], id: string): string {
-  const key = keys.find(k => k.id === id)
-  return key ? `${key.name}（${key.key_prefix}）` : id ? `已删除的 Key（${shortId(id)}）` : '—'
-}
-
-/**
- * The detail body. Telemetry that the record does not carry reads 未知 rather
- * than zero: a request that never returned a usage block did not use zero
- * tokens, nothing was counted. The attempt chain is the one part that can say
- * which channel was tried and why the gateway moved on.
- */
-function ConsoleLogDetail({v, keyName}: {v: ConsoleRequestLogDetail; keyName: string}) {
-  const input = v.input_tokens > 0
-  const output = v.output_tokens > 0
-  const total = v.total_tokens > 0
-  const attempts = v.attempt_chain || []
-
-  return (
-    <div className="detailStack">
-      <Detail
-        title="请求"
-        rows={[
-          ['Request ID', <span key="rid" className="mono wrap">{v.request_id}</span>],
-          ['时间', when(v.created_at)],
-          ['请求模型', <span key="requested" className="mono">{v.requested_model || '未知'}</span>],
-          ['响应模型', <span key="actual" className="mono">{v.actual_model || '未知'}</span>],
-          ['API Key', keyName],
-        ]}
-      />
-
-      <Detail
-        title="用量"
-        rows={[
-          ['Input（Prompt）Tokens', input ? <span key="in" className="mono">{num(v.input_tokens)}</span> : <span key="in" className="unknown">未知</span>],
-          ['Output（Completion）Tokens', output ? <span key="out" className="mono">{num(v.output_tokens)}</span> : <span key="out" className="unknown">未知</span>],
-          ['Total Tokens', total ? <span key="total" className="mono">{num(v.total_tokens)}</span> : <span key="total" className="unknown">未知</span>],
-        ]}
-      />
-
-      <Detail
-        title="结果"
-        rows={[
-          ['HTTP 状态', <HttpStatusBadge key="status" code={v.status_code} />],
-          ['错误码', v.error_code || '—'],
-          ['故障切换', v.failover ? '是' : '否'],
-          ['总延迟', ms(v.latency_ms)],
-        ]}
-      />
-
-      <Panel title="尝试链" sub="本次请求按顺序打过的每一条线路，以及各自的结果。">
-        {attempts.length ? (
-          <Table heads={['#', '渠道', '上游模型', '结果', '状态', '错误分类', '耗时']} minWidth={760}>
-            {attempts.map(a => (
-              <tr key={a.attempt_no}>
-                <td className="numeric">{a.attempt_no}</td>
-                <td>{a.provider || '—'}</td>
-                <td className="mono">{a.upstream_model || '—'}</td>
-                <td>{outcomeLabel(a.outcome)}</td>
-                <td className="numeric">{a.status_code > 0 ? a.status_code : '—'}</td>
-                <td>{a.error_kind || '—'}</td>
-                <td className="numeric">{ms(a.latency_ms)}</td>
-              </tr>
-            ))}
-          </Table>
-        ) : (
-          <EmptyState title="暂无尝试记录" description="这条请求没有留下上游尝试，通常是请求在进入上游前就被拒绝。" />
-        )}
-      </Panel>
-    </div>
-  )
-}
-
-function outcomeLabel(outcome: string): string {
-  switch (outcome) {
-    case 'served':
-      return '成功'
-    case 'skipped':
-      return '跳过（熔断）'
-    default:
-      return '失败'
-  }
 }

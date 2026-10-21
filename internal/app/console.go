@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -28,8 +29,16 @@ import (
 // username, not an account, so they are refused with a distinct code instead of
 // being treated as an empty owner.
 //
-// This ticket authorises by identity only. Per-resource ownership checks belong
-// to the endpoints that read resources, starting with the keys API.
+// This middleware authorises by identity only. Every personal resource read or
+// write additionally binds the session's account id into its SQL predicate, so
+// a resource owned by another Account is a 404 rather than a 403.
+//
+// State-changing personal requests get the same audit row the administrator
+// middleware writes. The actor is the Account's username, not a tenant or a
+// key: the audit answers "which person changed this", and key mutations are
+// exactly the events a member must not be able to make untraceable. Auditing
+// happens here rather than in each handler so a future personal write gets it
+// by registration alone.
 func (s *Server) consoleMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-Id")
@@ -45,8 +54,48 @@ func (s *Server) consoleMiddleware(next http.Handler) http.Handler {
 			writeAdminError(w, reqID, ErrConsoleIdentityUnavailable)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withAdminPrincipal(r.Context(), principal)))
+		ctx := withAdminPrincipal(r.Context(), principal)
+
+		if !consoleAuditedMethod(r.Method) {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		aw := &adminAuditResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(aw, r.WithContext(ctx))
+		status := aw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if s.pg == nil {
+			return
+		}
+		actor := principal.Username
+		if actor == "" {
+			actor = principal.User
+		}
+		auditCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.pg.InsertAdminAudit(auditCtx, model.AdminAuditLog{
+			RequestID:  reqID,
+			Actor:      actor,
+			Action:     r.Method,
+			Resource:   r.URL.Path,
+			StatusCode: status,
+			ClientIP:   s.clientIPFrom(r),
+		})
 	})
+}
+
+// consoleAuditedMethod lists the methods that change state. GET is excluded so
+// reading the member's own keys does not fill the audit trail.
+func consoleAuditedMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 // consoleMeResponse is the safe projection of the signed-in account for the
@@ -72,6 +121,10 @@ type consoleMeResponse struct {
 	// spend against. It is false for an unassigned Account, which is an honest
 	// state rather than an error.
 	WorkspaceUsable bool `json:"workspace_usable"`
+	// KeyCount is how many credentials the Account owns. It is a hint for the
+	// overview and the key-limit copy, computed with an owner-scoped COUNT so
+	// the page does not have to list every key to render one number.
+	KeyCount int64 `json:"key_count"`
 }
 
 func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +223,21 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The count is owner-scoped in SQL and reads the 0018 index, so the overview
+	// can show the hint without listing every key. The HTTP unit harness wires a
+	// fake account store and no pool; there is no key table to count there, and
+	// the integration suite covers the real answer.
+	var keyCount int64
+	if s.pg != nil {
+		count, err := s.pg.CountPersonalAPIKeysByOwner(r.Context(), user.ID)
+		if err != nil {
+			log.Printf("console me: count keys for %s: %v", user.ID, err)
+			writeAdminError(w, reqID, ErrAdminInternal)
+			return
+		}
+		keyCount = count
+	}
+
 	writeJSON(w, http.StatusOK, consoleMeResponse{
 		AccountID:       user.ID,
 		Username:        user.Username,
@@ -180,6 +248,7 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 		TenantName:      user.TenantName,
 		AllowedModels:   allowedModels,
 		WorkspaceUsable: user.TenantID != "",
+		KeyCount:        keyCount,
 	})
 }
 

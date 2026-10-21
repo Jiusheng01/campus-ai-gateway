@@ -91,47 +91,7 @@ ORDER BY 5 DESC, alias
 	return out, rows.Err()
 }
 
-// PersonalUsageSeries is RequestLogSeries with the owner predicate bound in.
-//
-// It duplicates the bucket arithmetic rather than parameterising the
-// administrator query, because that query is shared by the operator's pages
-// whose predicate is deliberately wider. Duplicating one SELECT keeps the
-// personal endpoint from ever being able to read a row it does not own, which
-// is the property this ticket must hold. The label format and UTC-offset
-// handling are the same as RequestLogSeries, so fillTrendBuckets can consume
-// the rows unchanged.
-func (p *Postgres) PersonalUsageSeries(
-	ctx context.Context, ownerID string, from, to time.Time, unit string, offsetMinutes int, labelFormat string,
-) ([]model.RequestLogBucket, error) {
-	rows, err := p.Pool.Query(ctx, `
-SELECT
-	to_char(
-		date_trunc($1::text, (created_at + make_interval(mins => $2::int)) AT TIME ZONE 'UTC'),
-		$3::text
-	) AS bucket,
-	COUNT(*)::bigint,
-	COALESCE(SUM(COALESCE(total_tokens,0)),0)::bigint,
-	COUNT(*) FILTER (WHERE COALESCE(status_code,0) >= 400)::bigint,
-	COALESCE(AVG(latency_ms),0)::float8,
-	COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::float8
-FROM gateway_request_log
-WHERE owner_user_id = $4::uuid
-  AND created_at >= $5::timestamptz
-  AND created_at < $6::timestamptz
-GROUP BY bucket
-ORDER BY bucket
-`, unit, offsetMinutes, labelFormat, ownerID, from, to)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]model.RequestLogBucket, 0, 32)
-	for rows.Next() {
-		var v model.RequestLogBucket
-		if err := rows.Scan(&v.Bucket, &v.Requests, &v.Tokens, &v.Errors, &v.AvgLatencyMS, &v.P95LatencyMS); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
-}
+// The trend series is shared with the administrator path as
+// RequestLogSeries(ownerID, ...). The personal endpoint passes the session's
+// account id, so the same bucket arithmetic owns both charts and a member can
+// never read a row outside the snapshot that query binds.

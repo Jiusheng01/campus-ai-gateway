@@ -104,20 +104,7 @@ type PersonalKeyUpdate struct {
 // selected at all, so the list cannot return a full key even if a template
 // later tried to.
 func (p *Postgres) ListAPIKeysByOwner(ctx context.Context, ownerID string) ([]model.APIKeyAdmin, error) {
-	rows, err := p.Pool.Query(ctx, `
-SELECT
-	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
-	k.expire_at, k.last_used_at, k.allowed_models, k.allowed_ips,
-	COALESCE(k.route_group,''),
-	k.created_at,
-	COALESCE(u.requests,0)::bigint, COALESCE(u.tokens,0)::bigint
-FROM gateway_api_key k
-JOIN gateway_tenant t ON t.id=k.tenant_id
-LEFT JOIN LATERAL (
-	SELECT COUNT(*) AS requests, COALESCE(SUM(COALESCE(l.total_tokens,0)),0) AS tokens
-	FROM gateway_request_log l
-	WHERE l.api_key_id = k.id
-) u ON true
+	rows, err := p.Pool.Query(ctx, `SELECT `+apiKeyAdminProjection+`
 WHERE k.owner_user_id = $1::uuid
 ORDER BY k.created_at DESC
 `, ownerID)
@@ -128,21 +115,23 @@ ORDER BY k.created_at DESC
 
 	out := make([]model.APIKeyAdmin, 0, 8)
 	for rows.Next() {
-		var v model.APIKeyAdmin
-		var modelsJSON, ipsJSON []byte
-		if err := rows.Scan(
-			&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
-			&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
-			&v.RouteGroup, &v.CreatedAt,
-			&v.UsageRequests, &v.UsageTokens,
-		); err != nil {
+		v, err := scanAPIKeyAdmin(rows)
+		if err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal(modelsJSON, &v.AllowedModels)
-		_ = json.Unmarshal(ipsJSON, &v.AllowedIPs)
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// CountPersonalAPIKeysByOwner is the cheap count /api/console/me carries as a
+// hint. It is owner-scoped in SQL like every personal read and rides the
+// owner_user_id index added by migration 0018; no key row is projected.
+func (p *Postgres) CountPersonalAPIKeysByOwner(ctx context.Context, ownerID string) (int64, error) {
+	var n int64
+	err := p.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM gateway_api_key WHERE owner_user_id=$1::uuid`, ownerID).Scan(&n)
+	return n, err
 }
 
 // CreatePersonalAPIKey writes one key owned by the Account and scoped to its
@@ -156,10 +145,15 @@ ORDER BY k.created_at DESC
 // per-Account limit a hard ceiling — concurrent creates queue on the row and
 // each sees the count left by the one before it.
 func (p *Postgres) CreatePersonalAPIKey(ctx context.Context, in PersonalKeyCreate) (model.APIKeyAdmin, error) {
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 10
+	// The ceiling is configuration, not a storage constant. The handler passes
+	// cfg.PersonalKeyLimit (already defaulted and validated at startup); a
+	// non-positive value here means a caller bypassed that path, and silently
+	// substituting a number would make the limit disagree with the config the
+	// operator set.
+	if in.Limit <= 0 {
+		return model.APIKeyAdmin{}, fmt.Errorf("personal key limit must be positive, got %d", in.Limit)
 	}
+	limit := in.Limit
 
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
@@ -269,37 +263,15 @@ RETURNING id::text, created_at
 // another Account's id is indistinguishable from an id that does not exist. The
 // projection is the list's: no digest, and no full credential is selectable.
 func (p *Postgres) GetPersonalAPIKey(ctx context.Context, id, ownerID string) (model.APIKeyAdmin, error) {
-	var v model.APIKeyAdmin
-	var modelsJSON, ipsJSON []byte
-	err := p.Pool.QueryRow(ctx, `
-SELECT
-	k.id::text, k.tenant_id::text, t.code, t.name, k.name, k.key_prefix, k.status,
-	k.expire_at, k.last_used_at, k.allowed_models, k.allowed_ips,
-	COALESCE(k.route_group,''),
-	k.created_at,
-	COALESCE(u.requests,0)::bigint, COALESCE(u.tokens,0)::bigint
-FROM gateway_api_key k
-JOIN gateway_tenant t ON t.id=k.tenant_id
-LEFT JOIN LATERAL (
-	SELECT COUNT(*) AS requests, COALESCE(SUM(COALESCE(l.total_tokens,0)),0) AS tokens
-	FROM gateway_request_log l
-	WHERE l.api_key_id = k.id
-) u ON true
+	v, err := scanAPIKeyAdmin(p.Pool.QueryRow(ctx, `SELECT `+apiKeyAdminProjection+`
 WHERE k.id=$1::uuid AND k.owner_user_id=$2::uuid
-`, id, ownerID).Scan(
-		&v.ID, &v.TenantID, &v.TenantCode, &v.TenantName, &v.Name, &v.KeyPrefix, &v.Status,
-		&v.ExpireAt, &v.LastUsedAt, &modelsJSON, &ipsJSON,
-		&v.RouteGroup, &v.CreatedAt,
-		&v.UsageRequests, &v.UsageTokens,
-	)
+`, id, ownerID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.APIKeyAdmin{}, ErrPersonalKeyNotFound
 	}
 	if err != nil {
 		return model.APIKeyAdmin{}, err
 	}
-	_ = json.Unmarshal(modelsJSON, &v.AllowedModels)
-	_ = json.Unmarshal(ipsJSON, &v.AllowedIPs)
 	return v, nil
 }
 

@@ -394,6 +394,8 @@ export type ConsoleMe={
    */
   allowed_models:string[]
   workspace_usable:boolean
+  /** Owner-scoped count, so the overview can hint without listing every key. */
+  key_count:number
 }
 
 export async function getConsoleMe(){

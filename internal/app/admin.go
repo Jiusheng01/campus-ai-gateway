@@ -609,16 +609,19 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": items})
 	case http.MethodPost:
-		var in model.Tenant
+		var in tenantWriteRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateTenant(&in); err != "" {
+		v := in.tenant()
+		// A create that omits the field gets the column default through
+		// validateTenant; an explicit [] survives as "no models".
+		if err := validateTenant(&v); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
-		out, err := s.pg.CreateTenant(r.Context(), in)
+		out, err := s.pg.CreateTenant(r.Context(), v)
 		if err != nil {
 			httpx.Error(w, http.StatusConflict, "tenant_create_failed", "Tenant could not be created", reqID)
 			return
@@ -658,16 +661,28 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
-		var in model.Tenant
+		var in tenantWriteRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
 			return
 		}
-		if err := validateTenant(&in); err != "" {
+		v := in.tenant()
+		// An omitted field on an edit means "leave the stored allowlist alone".
+		// It must not fall through to the create default: that would turn a
+		// rename into a silent widening back to the wildcard. An explicit []
+		// still reaches the validator as the deny-all decision.
+		if in.AllowedModels != nil {
+			if reason := normalizeTenantAllowedModels(in.AllowedModels); reason != "" {
+				httpx.Error(w, http.StatusBadRequest, "invalid_tenant", reason, reqID)
+				return
+			}
+			v.AllowedModels = *in.AllowedModels
+		}
+		if err := validateTenantFields(&v); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
-		out, err := s.pg.UpdateTenant(r.Context(), id, in)
+		out, err := s.pg.UpdateTenant(r.Context(), id, v, in.AllowedModels)
 		if err != nil {
 			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
 			return
@@ -1230,7 +1245,7 @@ func (s *Server) handleAdminTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := parseTrendOffset(q.Get("tz_offset"))
-	rows, err := s.pg.RequestLogSeries(r.Context(), from, to, unit, offset, trendLabelFormat(unit))
+	rows, err := s.pg.RequestLogSeries(r.Context(), "", from, to, unit, offset, trendLabelFormat(unit))
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the traffic trend", reqID)
 		return
@@ -1537,14 +1552,44 @@ func validateModel(v *model.ModelConfig, requireBinding bool) string {
 	return ""
 }
 
+// tenantWriteRequest is the decode boundary for the two Tenant writes.
+//
+// It exists to tell an omitted allowed_models from an explicit []. The Tenant
+// struct cannot: both decode to a nil slice, but on an edit they mean opposite
+// things — "keep the stored allowlist" versus "deny every model". The outer
+// pointer field is shallower than the embedded Tenant's same-named field, so
+// encoding/json selects it and a present key always leaves a non-nil pointer
+// (even for []); an absent or null key leaves it nil.
+type tenantWriteRequest struct {
+	model.Tenant
+	AllowedModels *[]string `json:"allowed_models"`
+}
+
+// tenant projects the request onto the storage type. An omitted allowlist
+// stays nil here; each endpoint decides what nil means for its operation.
+func (in tenantWriteRequest) tenant() model.Tenant {
+	v := in.Tenant
+	if in.AllowedModels != nil {
+		v.AllowedModels = *in.AllowedModels
+	}
+	return v
+}
+
 func validateTenant(v *model.Tenant) string {
+	if reason := normalizeTenantAllowedModels(&v.AllowedModels); reason != "" {
+		return reason
+	}
+	return validateTenantFields(v)
+}
+
+// validateTenantFields checks everything except the model allowlist. Update
+// calls this directly when the field was omitted, so validation cannot smuggle
+// the create-time wildcard default back into an edit.
+func validateTenantFields(v *model.Tenant) string {
 	v.Code = strings.TrimSpace(v.Code)
 	v.Name = strings.TrimSpace(v.Name)
 	if v.Code == "" || v.Name == "" {
 		return "code and name are required"
-	}
-	if reason := normalizeTenantAllowedModels(&v.AllowedModels); reason != "" {
-		return reason
 	}
 	if v.Status == 0 {
 		v.Status = 1

@@ -223,3 +223,95 @@ func TestTenantAllowedModelsRoundTripThroughTheAdminAPI(t *testing.T) {
 		}
 	})
 }
+
+// An edit that omits allowed_models must leave the stored allowlist exactly as
+// it was. Treating absence as the create-time wildcard default would turn a
+// rename into a silent widening, and treating it as [] would turn the same
+// rename into a silent deny-all; both are the bug this test pins down.
+func TestTenantUpdateDistinguishesOmittedAllowedModelsFromEmptyAndWildcard(t *testing.T) {
+	pg := usagePostgres(t)
+	s := &Server{pg: pg}
+
+	create := func(t *testing.T, code string, allowed []string) model.Tenant {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		body := map[string]any{"code": code, "name": code, "allowed_models": allowed}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s.handleTenants(rec, httptest.NewRequest(http.MethodPost, "/admin/tenants", bytes.NewReader(raw)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
+		}
+		var out model.Tenant
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode create: %v", err)
+		}
+		return out
+	}
+
+	put := func(t *testing.T, id string, body map[string]any) model.Tenant {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		s.handleTenantByID(rec, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+id, bytes.NewReader(raw)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update = %d %s", rec.Code, rec.Body.String())
+		}
+		var out model.Tenant
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode update: %v", err)
+		}
+		return out
+	}
+
+	t.Run("omitted keeps an explicit list", func(t *testing.T) {
+		created := create(t, "put-keep-explicit", []string{"campus-gpt", "campus-code"})
+		updated := put(t, created.ID, map[string]any{
+			"code": created.Code, "name": "Renamed", "status": created.Status,
+			// allowed_models deliberately absent.
+		})
+		if !reflect.DeepEqual(updated.AllowedModels, []string{"campus-code", "campus-gpt"}) {
+			t.Fatalf("omitted allowed_models = %#v, want the stored explicit list", updated.AllowedModels)
+		}
+		if updated.Name != "Renamed" {
+			t.Fatalf("the other fields must still be written, name = %q", updated.Name)
+		}
+	})
+
+	t.Run("explicit empty list clears the scope", func(t *testing.T) {
+		created := create(t, "put-clear", []string{"campus-gpt"})
+		updated := put(t, created.ID, map[string]any{
+			"code": created.Code, "name": created.Name, "status": created.Status,
+			"allowed_models": []string{},
+		})
+		if updated.AllowedModels == nil || len(updated.AllowedModels) != 0 {
+			t.Fatalf("allowed_models = %#v, want an explicit empty list", updated.AllowedModels)
+		}
+	})
+
+	t.Run("explicit wildcard widens", func(t *testing.T) {
+		created := create(t, "put-widen", []string{"campus-gpt"})
+		updated := put(t, created.ID, map[string]any{
+			"code": created.Code, "name": created.Name, "status": created.Status,
+			"allowed_models": []string{model.AllModelsWildcard},
+		})
+		if !reflect.DeepEqual(updated.AllowedModels, []string{model.AllModelsWildcard}) {
+			t.Fatalf("allowed_models = %#v, want the wildcard", updated.AllowedModels)
+		}
+	})
+
+	t.Run("omitted on a deny-all tenant keeps the empty list", func(t *testing.T) {
+		created := create(t, "put-keep-empty", []string{})
+		updated := put(t, created.ID, map[string]any{
+			"code": created.Code, "name": "Still Empty", "status": created.Status,
+		})
+		if updated.AllowedModels == nil || len(updated.AllowedModels) != 0 {
+			t.Fatalf("allowed_models = %#v, want the stored empty list", updated.AllowedModels)
+		}
+	})
+}

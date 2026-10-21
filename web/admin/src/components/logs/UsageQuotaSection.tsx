@@ -1,18 +1,9 @@
 import type {QuotaDimension, RequestLogUsage} from '../../api'
 import {fmt, num} from '../../lib/format'
+import {formatPercent, quotaTone} from '../../lib/quota'
 import {Badge} from '../ui/Badge'
 import {Table} from '../ui/Table'
 import {LogSummaryStrip} from './LogSummaryStrip'
-
-/** Percent with a fixed shape, so two bands can be compared at a glance. */
-function pct(v: number): string {
-  return `${v.toFixed(2)}%`
-}
-
-/** Traffic-light tone for a share that is on its way to the limit. */
-function tone(v: number): string {
-  return v >= 90 ? 'danger' : v >= 70 ? 'warning' : ''
-}
 
 /**
  * One quota band.
@@ -32,11 +23,11 @@ function QuotaCell({label, q}: {label: string; q: QuotaDimension | null}) {
     )
   }
   return (
-    <div className={`quotaCell ${tone(q.pct)}`.trim()}>
+    <div className={`quotaCell ${quotaTone(q.pct)}`.trim()}>
       <small>{label}</small>
-      <b className="quotaValue">{pct(q.pct)}</b>
+      <b className="quotaValue">{formatPercent(q.pct)}</b>
       <i className="progressTrack">
-        <em className={`progressFill ${tone(q.pct)}`.trim()} style={{width: `${Math.min(100, q.pct)}%`}} />
+        <em className={`progressFill ${quotaTone(q.pct)}`.trim()} style={{width: `${Math.min(100, q.pct)}%`}} />
       </i>
       <span className="quotaMeta">
         {fmt(q.used)} / {fmt(q.limit)}
@@ -144,7 +135,7 @@ export function UsageQuotaSection({
                 <td className="numeric">{num(k.requests)}</td>
                 <td className="numeric">{fmt(k.tokens)}</td>
                 <td className="numeric">
-                  {k.quota_share == null ? <span className="muted">未设</span> : pct(k.quota_share)}
+                  {k.quota_share == null ? <span className="muted">未设</span> : formatPercent(k.quota_share)}
                 </td>
               </tr>
             )

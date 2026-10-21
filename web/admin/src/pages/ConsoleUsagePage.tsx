@@ -9,6 +9,7 @@ import {SkeletonRows} from '../components/ui/Skeleton'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {TrendChart} from '../components/charts/TrendChart'
 import {num} from '../lib/format'
+import {formatPercent, quotaTone} from '../lib/quota'
 import {useResource} from '../lib/useResource'
 
 /**
@@ -25,14 +26,6 @@ const RANGES = [
 
 type RangeId = (typeof RANGES)[number]['id']
 
-function pct(v: number): string {
-  return `${v.toFixed(2)}%`
-}
-
-/** Same traffic-light reading as the administrator quota strip. */
-function quotaTone(v: number): string {
-  return v >= 90 ? 'danger' : v >= 70 ? 'warning' : ''
-}
 
 /**
  * The personal usage page.
@@ -117,7 +110,7 @@ export function ConsoleUsagePage() {
                   value={num(totals.failures)}
                   tone={totals.failures > 0 ? 'danger' : 'default'}
                 />
-                <StatCard label="错误率" value={pct(totals.error_rate)} />
+                <StatCard label="错误率" value={formatPercent(totals.error_rate)} />
                 <StatCard label="输入 Token" value={num(totals.input_tokens)} />
                 <StatCard label="输出 Token" value={num(totals.output_tokens)} />
                 <StatCard label="总 Token" value={num(totals.total_tokens)} tone="purple" />
@@ -245,7 +238,7 @@ function QuotaBand({label, q}: {label: string; q: QuotaDimension | null}) {
   return (
     <div className={`quotaCell ${tone}`.trim()}>
       <small>{label}</small>
-      <b className="quotaValue">{pct(q.pct)}</b>
+      <b className="quotaValue">{formatPercent(q.pct)}</b>
       <i className="progressTrack">
         <em className={`progressFill ${tone}`.trim()} style={{width: `${Math.min(100, q.pct)}%`}} />
       </i>

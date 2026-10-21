@@ -370,6 +370,62 @@ describe('personal console API keys', () => {
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
   })
 
+  it('offers a narrower explicit scope under a wildcard Tenant and sends it', async () => {
+    const calls = stubConsole({me: {allowed_models: ['*']}})
+    renderPage()
+    await screen.findByText('教学系统')
+
+    fireEvent.click(screen.getByRole('button', {name: /创建 API Key/}))
+    const drawer = await screen.findByRole('dialog')
+    fireEvent.change(within(drawer).getByPlaceholderText('请输入 API Key 名称'), {
+      target: {value: '窄范围 Key'},
+    })
+
+    // The wildcard starts selected, but it is a choice rather than the only
+    // path: clearing it exposes the Tenant's aliases.
+    const wildcard = within(drawer).getByRole('checkbox', {name: /全部对外模型/})
+    expect(wildcard).toBeChecked()
+    fireEvent.click(wildcard)
+    expect(wildcard).not.toBeChecked()
+
+    fireEvent.change(within(drawer).getByRole('combobox'), {target: {value: 'campus-chat'}})
+    fireEvent.click(within(drawer).getByRole('button', {name: '创建 API Key'}))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.method === 'POST' && c.url === '/api/console/keys')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(post!.body || '{}')).toEqual({
+        name: '窄范围 Key',
+        allowed_models: ['campus-chat'],
+      })
+    })
+  })
+
+  it('resolves a stored wildcard key against the narrowed Tenant instead of saving deny-all', async () => {
+    const calls = stubConsole()
+    renderPage()
+    await screen.findByText('实验平台')
+
+    const row = screen.getByText('实验平台').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', {name: /编辑/}))
+
+    const drawer = await screen.findByRole('dialog')
+    // The key stores ["*"], the Tenant is explicit. The form shows the
+    // expanded Tenant list (not an empty selection) and explains the change.
+    expect(within(drawer).queryByRole('checkbox', {name: /全部对外模型/})).not.toBeInTheDocument()
+    expect(within(drawer).getByText('campus-chat')).toBeInTheDocument()
+    expect(within(drawer).getByText('campus-embed')).toBeInTheDocument()
+    expect(within(drawer).getByText(/租户的模型授权已经收窄/)).toBeInTheDocument()
+
+    fireEvent.click(within(drawer).getByRole('button', {name: '保存修改'}))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.method === 'PUT' && c.url === '/api/console/keys/k-2')
+      expect(put).toBeTruthy()
+      expect(JSON.parse(put!.body || '{}').allowed_models).toEqual(['campus-chat', 'campus-embed'])
+    })
+  })
+
   it('renders a loading skeleton before the first response arrives', async () => {
     let release = () => {}
     const gate = new Promise<void>(resolve => {

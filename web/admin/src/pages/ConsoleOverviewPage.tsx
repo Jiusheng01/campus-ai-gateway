@@ -19,6 +19,7 @@ import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {Table} from '../components/ui/Table'
 import {HttpStatusBadge} from '../components/ui/Badge'
 import {TrendChart} from '../components/charts/TrendChart'
+import {ConsoleLogDrawer} from '../components/logs/ConsoleLogDetail'
 import {useResource, type Resource} from '../lib/useResource'
 import {ms, num, when} from '../lib/format'
 import {roleLabel} from '../lib/roles'
@@ -197,6 +198,9 @@ function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
   const models = useResource(getConsoleModels)
 
   const [hover, setHover] = useState<number | null>(null)
+  // The recent-records table opens the same detail drawer as the log page, so
+  // a failure on the overview is one click from its attempt chain.
+  const [detailID, setDetailID] = useState<string | null>(null)
 
   const modelEntry = (
     <ModelsEntry
@@ -356,10 +360,14 @@ function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
           </ConsoleLink>
         }
       >
-        <RecentRecords logs={logs} records={records} />
+        <RecentRecords logs={logs} records={records} onOpen={setDetailID} />
       </Panel>
 
       {modelEntry}
+
+      {detailID && (
+        <ConsoleLogDrawer requestID={detailID} keys={keyRows} onClose={() => setDetailID(null)} />
+      )}
     </>
   )
 }
@@ -367,9 +375,11 @@ function WorkspaceSummary({onNavigate}: {onNavigate?: Navigate}) {
 function RecentRecords({
   logs,
   records,
+  onOpen,
 }: {
   logs: Resource<ConsoleRequestLogPage>
   records: ConsoleRequestLog[]
+  onOpen: (requestID: string) => void
 }) {
   if (logs.error && !logs.data) {
     return <ErrorState message={logs.error} status={logs.errorStatus} onRetry={logs.reload} />
@@ -388,7 +398,12 @@ function RecentRecords({
   return (
     <Table heads={['时间', '模型', 'Tokens', '延迟', '状态']} minWidth={620}>
       {records.map(r => (
-        <tr key={r.request_id}>
+        <tr
+          key={r.request_id}
+          className="clickRow"
+          onClick={() => onOpen(r.request_id)}
+          title="打开请求详情"
+        >
           <td>{when(r.created_at)}</td>
           <td>
             <b>{r.requested_model || '未知'}</b>

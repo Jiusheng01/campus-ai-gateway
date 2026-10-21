@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -69,7 +70,7 @@ func (s *Server) handleConsoleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if to.Sub(from) > time.Duration(maxTrendBuckets)*trendStep(unit) {
 		httpx.Error(w, http.StatusBadRequest, "range_too_wide",
-			"the range would need more than 720 "+unit+" buckets", reqID)
+			fmt.Sprintf("the range would need more than %d %s buckets", maxTrendBuckets, unit), reqID)
 		return
 	}
 
@@ -87,7 +88,9 @@ func (s *Server) handleConsoleUsage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to group usage by model", reqID)
 		return
 	}
-	rows, err := s.pg.PersonalUsageSeries(r.Context(), user.ID, from, to, unit, offset, trendLabelFormat(unit))
+	// The owner id is the series' predicate: RequestLogSeries is the same
+	// helper the administrator trend uses, with the snapshot bound.
+	rows, err := s.pg.RequestLogSeries(r.Context(), user.ID, from, to, unit, offset, trendLabelFormat(unit))
 	if err != nil {
 		log.Printf("console usage: series for %s: %v", user.ID, err)
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load the usage trend", reqID)
