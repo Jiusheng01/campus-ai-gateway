@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState, type ReactNode} from 'react'
+import {useCallback, useEffect, useRef, useState, type ReactNode} from 'react'
 import {
   Bell,
   CheckCircle2,
@@ -35,7 +35,6 @@ type Props = {
   sessionMode: boolean
   refreshing: boolean
   onSignOut: () => void
-  onOpenModelTest?: () => void
   children: ReactNode
 }
 
@@ -56,7 +55,6 @@ export function Shell({
   sessionMode,
   refreshing,
   onSignOut,
-  onOpenModelTest,
   children,
 }: Props) {
   const meta = pageMeta[page]
@@ -67,6 +65,10 @@ export function Shell({
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
+  // Stable identity: Modal re-runs its focus/restore effect when onClose
+  // changes, and a new callback on every shell render would pull focus out of
+  // the search input.
+  const closeSearch = useCallback(() => setSearchOpen(false), [])
 
   // Listen for Ctrl+K or Cmd+K
   useEffect(() => {
@@ -255,9 +257,10 @@ export function Shell({
               className="topbarSearchBar"
               onClick={() => setSearchOpen(true)}
               aria-label="全局搜索"
+              aria-haspopup="dialog"
             >
               <Search className="searchBarIcon" aria-hidden />
-              <span className="searchBarPlaceholder">搜索渠道、模型、路由或 API Key...</span>
+              <span className="searchBarPlaceholder">搜索页面、渠道或模型...</span>
               <kbd className="searchBarKbd">Ctrl K</kbd>
             </button>
 
@@ -387,14 +390,15 @@ export function Shell({
         <main className="page">{children}</main>
       </section>
 
-      {/* Global Quick Search Modal */}
-      <QuickSearchModal
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        onNavigate={onNavigate}
-        onOpenModelTest={onOpenModelTest}
-        roles={roles}
-      />
+      {/* Global Quick Search Modal. Mounted only while open so its state and
+          the dialog's captured focus start fresh on every invocation. */}
+      {searchOpen && (
+        <QuickSearchModal
+          onClose={closeSearch}
+          onNavigate={onNavigate}
+          roles={roles}
+        />
+      )}
 
       {/* System Notifications Modal */}
       {notificationsOpen && (
