@@ -71,6 +71,10 @@ type adminStore interface {
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.
 	UpdateAdminUserAccount(ctx context.Context, id string, mutation storage.AdminUserMutation) (model.AdminUser, storage.AdminUserChangeSet, error)
+	// AssignAdminUserTenant is a separate mutation from the account patch: it
+	// carries its own refusal (the account still owns keys) and must not share
+	// the role/status transaction.
+	AssignAdminUserTenant(ctx context.Context, id, tenantID string) (model.AdminUser, error)
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)

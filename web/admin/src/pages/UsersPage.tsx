@@ -1,6 +1,16 @@
 import {useState} from 'react'
 import {Pencil, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
-import {listUsers, updateUser, type AccountChangeSet, type AccountUser, type UserPatch} from '../api'
+import {
+  ApiError,
+  api,
+  assignUserTenant,
+  listUsers,
+  updateUser,
+  type AccountChangeSet,
+  type AccountUser,
+  type Tenant,
+  type UserPatch,
+} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Badge } from '../components/ui/Badge'
@@ -26,13 +36,19 @@ import {ago, num, when} from '../lib/format'
 export function UsersPage() {
   const toast = useToast()
   const {data, loading, error, reload} = useResource(async () => {
-    const out = await listUsers()
-    return out
+    // The Tenant picker needs the full list, and both endpoints are gated on
+    // the same super_admin role, so one visit reads them together.
+    const [users, tenants] = await Promise.all([
+      listUsers(),
+      api<{data: Tenant[]}>('/admin/tenants').then(d => d.data || []),
+    ])
+    return {users: users.data, stats: users.stats, tenants}
   })
   const [editing, setEditing] = useState<AccountUser | null>(null)
 
-  const users = data?.data || []
+  const users = data?.users || []
   const stats = data?.stats
+  const tenants = data?.tenants || []
 
   return (
     <>
@@ -50,17 +66,18 @@ export function UsersPage() {
 
       <Panel title="账号列表" sub="点击「管理」可调整角色或停用账号。">
         {loading && !data ? (
-          <SkeletonRows rows={6} columns={7} />
+          <SkeletonRows rows={6} columns={8} />
         ) : error ? (
           <ErrorState message={error} onRetry={reload} />
         ) : users.length ? (
-          <Table heads={['用户', '显示名称', '角色', '状态', '最后登录', '注册时间', '操作']} minWidth={1080}>
+          <Table heads={['用户', '显示名称', '租户', '角色', '状态', '最后登录', '注册时间', '操作']} minWidth={1240}>
             {users.map(u => (
               <tr key={u.id}>
                 <td>
                   <b className="mono">{u.username}</b>
                 </td>
                 <td>{u.display_name || <span className="muted">—</span>}</td>
+                <td>{u.tenant_name || <span className="muted">未分配</span>}</td>
                 <td>
                   {(u.roles || []).length ? (
                     u.roles.map(r => (
@@ -97,6 +114,7 @@ export function UsersPage() {
       {editing && (
         <UserDrawer
           user={editing}
+          tenants={tenants}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
@@ -152,11 +170,13 @@ function Stat({label, value, icon, tone}: {label: string; value: number; icon: R
  */
 function UserDrawer({
   user,
+  tenants,
   onClose,
   onSaved,
   onDenied,
 }: {
   user: AccountUser
+  tenants: Tenant[]
   onClose: () => void
   onSaved: () => void
   onDenied: (message: string) => void
@@ -168,6 +188,7 @@ function UserDrawer({
   )
   const [status, setStatus] = useState(user.status)
   const [displayName, setDisplayName] = useState(user.display_name || '')
+  const [tenantId, setTenantId] = useState(user.tenant_id || '')
   const [busy, setBusy] = useState(false)
 
   // Comparisons are over the canonical form, so reordering the same roles is
@@ -177,7 +198,8 @@ function UserDrawer({
   const rolesChanged = canonicalRoles(selected) !== initialRoles
   const statusChanged = status !== user.status
   const displayNameChanged = displayName.trim() !== (user.display_name || '')
-  const dirty = rolesChanged || statusChanged || displayNameChanged
+  const tenantChanged = tenantId !== (user.tenant_id || '')
+  const dirty = rolesChanged || statusChanged || displayNameChanged || tenantChanged
 
   const grantsSuperAdmin = selected.includes('super_admin')
   const disabling = status !== 1
@@ -227,14 +249,44 @@ function UserDrawer({
     if (displayNameChanged) patch.display_name = displayName.trim()
 
     setBusy(true)
+    let tenantSaved = false
     try {
-      const {changes} = await updateUser(user.id, patch)
-      toast.success(changeSummary(changes, status))
+      // Membership goes first. Its refusal is the one that depends on existing
+      // state (owned keys), so failing before the other edits keeps a rejected
+      // save from half-applying.
+      if (tenantChanged) {
+        await assignUserTenant(user.id, tenantId)
+        tenantSaved = true
+      }
+
+      if (Object.keys(patch).length > 0) {
+        const {changes} = await updateUser(user.id, patch)
+        // The account summary still has to be shown when a Tenant change rode
+        // along: a role edit signs the account out, and that must not be lost
+        // behind a generic "saved" message.
+        const summary = changeSummary(changes, status)
+        toast.success(tenantChanged ? `租户归属已更新。${summary}` : summary)
+      } else if (tenantChanged) {
+        toast.success('租户归属已更新。')
+      }
       onSaved()
     } catch (err) {
-      const code = (err as {code?: string})?.code
-      if (code === 'last_super_admin') {
+      // A committed Tenant change must still appear in the list when a later
+      // edit fails; otherwise the drawer hides something that happened.
+      if (tenantSaved) onSaved()
+
+      const code = err instanceof ApiError ? err.code : ''
+      if (code === 'user_owns_keys') {
+        const count = Number(err instanceof ApiError ? err.details?.owned_key_count : 0)
+        onDenied(
+          count > 0
+            ? `该账号仍拥有 ${count} 个 API Key，必须全部删除后才能更改租户。`
+            : '该账号仍拥有 API Key，必须全部删除后才能更改租户。',
+        )
+      } else if (code === 'last_super_admin') {
         onDenied('系统至少需要保留一个启用的超级管理员，变更未应用。')
+      } else if (code === 'tenant_not_found') {
+        onDenied('所选租户不存在，请刷新后重试。')
       } else {
         onDenied(err instanceof Error ? err.message : '保存失败')
       }
@@ -252,7 +304,7 @@ function UserDrawer({
         <>
           <Button onClick={onClose}>取消</Button>
           <Button variant="primary" loading={busy} disabled={!dirty} onClick={() => void save()}>
-            保存权限
+            保存更改
           </Button>
         </>
       }
@@ -273,6 +325,27 @@ function UserDrawer({
             <input value={displayName} placeholder="例如 张三" onChange={e => setDisplayName(e.target.value)} />
           </label>
         </div>
+
+        <section className="detailBox">
+          <h3>租户</h3>
+          <div className="detailRow">
+            <span className="detailKey">所属租户</span>
+            <b className="detailValue">
+              <select value={tenantId} onChange={e => setTenantId(e.target.value)}>
+                <option value="">未分配</option>
+                {tenants.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}（{t.code}）
+                  </option>
+                ))}
+              </select>
+            </b>
+          </div>
+          <div className="detailRow">
+            <span className="detailKey">说明</span>
+            <b className="detailValue muted">账号拥有 API Key 时不能更改租户，需先删除其全部 Key。</b>
+          </div>
+        </section>
 
         <section className="detailBox">
           <h3>状态</h3>

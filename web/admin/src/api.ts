@@ -149,6 +149,9 @@ export type AccountUser={
   display_name:string
   roles:string[]
   status:number
+  /** The Account's Tenant Membership. Empty means unassigned, not a Tenant named "". */
+  tenant_id:string
+  tenant_name:string
   last_login_at:string|null
   created_at:string
 }
@@ -178,8 +181,16 @@ export type AdminSessionView={
 export class ApiError extends Error{
   status:number
   code:string
-  constructor(message:string,status:number,code=''){
-    super(message);this.name='ApiError';this.status=status;this.code=code
+  /**
+   * The server's error object beyond code and message, when it sent one.
+   *
+   * A refusal such as "this account still owns 3 keys" carries the number as a
+   * field. The console renders that instead of parsing prose, so a wording
+   * change on the server cannot silently break the message.
+   */
+  details:Record<string,unknown>
+  constructor(message:string,status:number,code='',details:Record<string,unknown>={}){
+    super(message);this.name='ApiError';this.status=status;this.code=code;this.details=details
   }
 }
 
@@ -254,9 +265,9 @@ export async function api<T>(path:string,opt:RequestInit={},retry=true):Promise<
     if(isSessionMode()&&await refreshSession())return api<T>(path,opt,false)
     clearSession()
     onUnauthenticated(code==='session_revoked'?'revoked':'expired')
-    throw new ApiError(message,401,code)
+    throw new ApiError(message,401,code,data?.error||{})
   }
-  if(!r.ok)throw new ApiError(message,r.status,code)
+  if(!r.ok)throw new ApiError(message,r.status,code,data?.error||{})
   return data as T
 }
 
@@ -409,6 +420,22 @@ export async function updateUser(id:string,patch:UserPatch){
     body:JSON.stringify(patch),
   })
   return {user:d.data,changes:d.changes}
+}
+
+/**
+ * assignUserTenant sets an Account's Tenant Membership, or clears it when the
+ * id is empty.
+ *
+ * The gateway refuses with 409 while the Account owns any API Key, because a
+ * key must not point at a Tenant its owner has left. The count is on the
+ * error's `owned_key_count` field so the caller can say how many.
+ */
+export async function assignUserTenant(id:string,tenantId:string){
+  const d=await api<{data:AccountUser}>(`/admin/users/${encodeURIComponent(id)}/tenant`,{
+    method:'PUT',
+    body:JSON.stringify({tenant_id:tenantId}),
+  })
+  return d.data
 }
 
 /**

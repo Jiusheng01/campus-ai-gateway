@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -27,8 +28,13 @@ type adminUserView struct {
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
 	Status      int      `json:"status"`
-	LastLoginAt *string  `json:"last_login_at"`
-	CreatedAt   string   `json:"created_at"`
+	// TenantID and TenantName are the Account's Tenant Membership. Empty
+	// strings mean "unassigned", not a Tenant named "". The name is projected
+	// for display; the id is the identifier.
+	TenantID    string  `json:"tenant_id"`
+	TenantName  string  `json:"tenant_name"`
+	LastLoginAt *string `json:"last_login_at"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 func adminUserViewFrom(u model.AdminUser) adminUserView {
@@ -43,6 +49,8 @@ func adminUserViewFrom(u model.AdminUser) adminUserView {
 		DisplayName: u.DisplayName,
 		Roles:       NormalizeAccountRoles(u.Roles),
 		Status:      u.Status,
+		TenantID:    u.TenantID,
+		TenantName:  u.TenantName,
 		LastLoginAt: lastLogin,
 		CreatedAt:   u.CreatedAt.UTC().Format(time.RFC3339),
 	}
@@ -152,6 +160,43 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 	return updated, changes, nil
 }
 
+// adminUserOwnsKeysError is the service-level form of the storage refusal, kept
+// so the HTTP layer never has to know which layer decided the count.
+type adminUserOwnsKeysError struct{ Count int64 }
+
+func (e *adminUserOwnsKeysError) Error() string {
+	return fmt.Sprintf("the account still owns %d API key(s)", e.Count)
+}
+
+// assignUserTenant sets or clears an account's Tenant Membership.
+//
+// Unlike a role or status change this does not revoke sessions: membership is
+// not part of the access token's authority, and every personal endpoint reads
+// it from the account row. Signing the account out would be a punishment with
+// no security value.
+//
+// The "still owns keys" refusal is passed through unchanged because it carries
+// the count the console reports. Everything the storage layer can answer is
+// translated to a sentinel here, so the handler's mapping stays exhaustive.
+func (a *adminAuthService) assignUserTenant(ctx context.Context, targetID, tenantID string) (model.AdminUser, error) {
+	updated, err := a.store.AssignAdminUserTenant(ctx, targetID, tenantID)
+	if err == nil {
+		return updated, nil
+	}
+
+	var ownsKeys *storage.AdminUserOwnsKeysError
+	switch {
+	case errors.As(err, &ownsKeys):
+		return model.AdminUser{}, &adminUserOwnsKeysError{Count: ownsKeys.Count}
+	case errors.Is(err, storage.ErrAdminUserNotFound):
+		return model.AdminUser{}, ErrAdminUserNotFound
+	case errors.Is(err, storage.ErrAdminTenantNotFound):
+		return model.AdminUser{}, ErrAdminTenantNotFound
+	default:
+		return model.AdminUser{}, ErrAdminInternal
+	}
+}
+
 // revokeReasonForChange names the reason recorded on the revoked sessions, so
 // the device list and the audit trail say what actually happened rather than
 // lumping every kind of change under one label.
@@ -218,7 +263,8 @@ type adminUserUpdateRequest struct {
 	Status      *int      `json:"status"`
 }
 
-// handleAdminUserByID serves PATCH /admin/users/{id}.
+// handleAdminUserByID serves PATCH /admin/users/{id} and routes
+// PUT /admin/users/{id}/tenant to its own handler.
 func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
 	// Same guard as the list handler: without an account service there is
@@ -235,6 +281,18 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetID := strings.TrimPrefix(r.URL.Path, "/admin/users/")
+	// Membership is a separate mutation with its own refusal, so it lives on
+	// its own path rather than inside the account patch. Keep the suffix check
+	// before the id check below, which would otherwise read "tenant" as part of
+	// the id.
+	if tenantID, ok := strings.CutSuffix(targetID, "/tenant"); ok {
+		if tenantID == "" || strings.Contains(tenantID, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleAdminUserTenant(w, r, tenantID, reqID, principal)
+		return
+	}
 	if targetID == "" || strings.Contains(targetID, "/") {
 		http.NotFound(w, r)
 		return
@@ -281,6 +339,63 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 			"authentication": changes.AuthenticationChanged(),
 		},
 	})
+}
+
+type adminUserTenantUpdateRequest struct {
+	// TenantID is a pointer so an explicit null and an omitted field both mean
+	// "unassign": the endpoint is a complete statement about membership, not a
+	// partial patch.
+	TenantID *string `json:"tenant_id"`
+}
+
+// handleAdminUserTenant serves PUT /admin/users/{id}/tenant.
+//
+// The 409 is written by hand rather than through writeAdminError because the
+// refusal has to carry the key count as a field. Embedding the number in the
+// message alone would make the console parse prose to render it.
+func (s *Server) handleAdminUserTenant(w http.ResponseWriter, r *http.Request, targetID, reqID string, principal adminPrincipal) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", "PUT")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+
+	var in adminUserTenantUpdateRequest
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+	tenantID := ""
+	if in.TenantID != nil {
+		tenantID = strings.TrimSpace(*in.TenantID)
+	}
+
+	updated, err := s.adminAuth.assignUserTenant(r.Context(), targetID, tenantID)
+	if err != nil {
+		var ownsKeys *adminUserOwnsKeysError
+		if errors.As(err, &ownsKeys) {
+			// The typed refusal is not in the sentinel table, so its audit
+			// status is stated here rather than defaulting to 500.
+			s.auditAdminAuth(r, "user.tenant.update_failed", http.StatusConflict, principal.Username)
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"code":    "user_owns_keys",
+					"message": ownsKeys.Error(),
+					// The count is what makes the refusal actionable: an
+					// operator learns how many credentials must go first.
+					"request_id":      reqID,
+					"owned_key_count": ownsKeys.Count,
+				},
+			})
+			return
+		}
+		s.auditAdminAuth(r, "user.tenant.update_failed", statusForAdminError(err), principal.Username)
+		writeAdminError(w, reqID, err)
+		return
+	}
+
+	s.auditAdminAuth(r, "user.tenant.update", http.StatusOK, principal.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"data": adminUserViewFrom(updated)})
 }
 
 // accountAuditActions lists the semantic events a change set produced, in a

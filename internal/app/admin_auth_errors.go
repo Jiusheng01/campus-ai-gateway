@@ -119,6 +119,11 @@ var (
 	// enabled super administrator.
 	ErrAdminLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
 
+	// ErrAdminTenantNotFound means an account update named a Tenant that does
+	// not exist. It maps to 400 rather than 404: the resource being changed is
+	// the account, and the unknown id is a field of the request.
+	ErrAdminTenantNotFound = errors.New("tenant was not found")
+
 	// ErrAdminInternal is the catch-all for unexpected storage failures. The
 	// underlying error is logged, never returned to the client.
 	ErrAdminInternal = errors.New("administrator authentication failed")
@@ -178,6 +183,8 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "account_created_login_failed"
 	case errors.Is(err, ErrAdminLastSuperAdmin):
 		return http.StatusConflict, "last_super_admin"
+	case errors.Is(err, ErrAdminTenantNotFound):
+		return http.StatusBadRequest, "tenant_not_found"
 	case errors.Is(err, ErrAdminPasswordWeak):
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):

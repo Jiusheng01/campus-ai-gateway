@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -25,7 +26,33 @@ var ErrAdminUsernameTaken = errors.New("username is already taken")
 // by two concurrent demotions.
 var ErrLastSuperAdmin = errors.New("the last enabled super administrator cannot be removed")
 
+// ErrAdminTenantNotFound means the Tenant an assignment named does not exist.
+// It is reported separately from a foreign-key violation so the HTTP layer can
+// answer "unknown tenant" without leaking a constraint name.
+var ErrAdminTenantNotFound = errors.New("tenant not found")
+
+// AdminUserOwnsKeysError refuses a Tenant change while the Account still owns
+// API Keys.
+//
+// The count is part of the error because it is part of the answer: the operator
+// needs to know how many credentials stand between the account and the new
+// membership, and the console renders that number. A bare sentinel would force
+// the client to guess or to parse prose.
+type AdminUserOwnsKeysError struct{ Count int64 }
+
+func (e *AdminUserOwnsKeysError) Error() string {
+	return "the account still owns API keys"
+}
+
 const adminUserColumns = `id::text, username, password_hash, display_name, roles, status, auth_version, last_login_at, created_at, updated_at`
+
+// adminUserTenantColumns is adminUserColumns plus the Tenant Membership the
+// user management page renders. It needs a join, so it lives beside the plain
+// list instead of replacing it: INSERT ... RETURNING cannot join the tenant
+// table, and a newly created account never has a Tenant anyway.
+const adminUserTenantColumns = `u.id::text, u.username, u.password_hash, u.display_name, u.roles, u.status, u.auth_version, u.last_login_at, u.created_at, u.updated_at, COALESCE(u.tenant_id::text,''), COALESCE(t.name,'')`
+
+const adminUserTenantFrom = ` FROM gateway_admin_user u LEFT JOIN gateway_tenant t ON t.id = u.tenant_id`
 
 func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 	var u model.AdminUser
@@ -33,6 +60,23 @@ func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
 		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, err
+	}
+	_ = json.Unmarshal(roles, &u.Roles)
+	return u, nil
+}
+
+func scanAdminUserWithTenant(row pgx.Row) (model.AdminUser, error) {
+	var u model.AdminUser
+	var roles []byte
+	if err := row.Scan(
+		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
+		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.TenantID, &u.TenantName,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AdminUser{}, ErrAdminUserNotFound
@@ -93,13 +137,13 @@ FROM gateway_admin_user
 // FindAdminUserByUsername matches case-insensitively, mirroring the unique
 // index on lower(username).
 func (p *Postgres) FindAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error) {
-	q := `SELECT ` + adminUserColumns + ` FROM gateway_admin_user WHERE lower(username)=lower($1) LIMIT 1`
-	return scanAdminUser(p.Pool.QueryRow(ctx, q, username))
+	q := `SELECT ` + adminUserTenantColumns + adminUserTenantFrom + ` WHERE lower(u.username)=lower($1) LIMIT 1`
+	return scanAdminUserWithTenant(p.Pool.QueryRow(ctx, q, username))
 }
 
 func (p *Postgres) FindAdminUserByID(ctx context.Context, id string) (model.AdminUser, error) {
-	q := `SELECT ` + adminUserColumns + ` FROM gateway_admin_user WHERE id=$1 LIMIT 1`
-	return scanAdminUser(p.Pool.QueryRow(ctx, q, id))
+	q := `SELECT ` + adminUserTenantColumns + adminUserTenantFrom + ` WHERE u.id=$1 LIMIT 1`
+	return scanAdminUserWithTenant(p.Pool.QueryRow(ctx, q, id))
 }
 
 // ListAdminUsers returns accounts newest first. The limit is applied by the
@@ -108,7 +152,7 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, limit int) ([]model.Admin
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
-	q := `SELECT ` + adminUserColumns + ` FROM gateway_admin_user ORDER BY created_at DESC, id DESC LIMIT $1`
+	q := `SELECT ` + adminUserTenantColumns + adminUserTenantFrom + ` ORDER BY u.created_at DESC, u.id DESC LIMIT $1`
 	rows, err := p.Pool.Query(ctx, q, limit)
 	if err != nil {
 		return nil, err
@@ -117,7 +161,7 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, limit int) ([]model.Admin
 
 	out := make([]model.AdminUser, 0, 32)
 	for rows.Next() {
-		u, err := scanAdminUser(rows)
+		u, err := scanAdminUserWithTenant(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -300,8 +344,11 @@ func (p *Postgres) UpdateAdminUserAccount(ctx context.Context, id string, mutati
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 
-	current, err := scanAdminUser(tx.QueryRow(ctx,
-		`SELECT `+adminUserColumns+` FROM gateway_admin_user WHERE id=$1 FOR UPDATE`, id))
+	// FOR UPDATE OF the account only: the LEFT JOIN reads the Tenant for its
+	// name, and locking that row too would serialise unrelated edits in the
+	// same Tenant.
+	current, err := scanAdminUserWithTenant(tx.QueryRow(ctx,
+		`SELECT `+adminUserTenantColumns+adminUserTenantFrom+` WHERE u.id=$1 FOR UPDATE OF u`, id))
 	if err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
@@ -372,11 +419,93 @@ RETURNING `+adminUserColumns,
 	if err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
+	// This mutation never touches tenant_id, so RETURNING cannot produce the
+	// joined name; carry the before-state across rather than reporting the
+	// account as unassigned.
+	updated.TenantID = current.TenantID
+	updated.TenantName = current.TenantName
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 	return updated, changes, nil
+}
+
+// AssignAdminUserTenant sets or clears an account's Tenant Membership.
+//
+// The key count and the write run in one transaction, with the account row
+// locked. Separating them would let a key be created between "does this account
+// own any keys" and the UPDATE, producing exactly the state the rule exists to
+// prevent: a credential pointing at a Tenant its owner has left. The row lock
+// is the rendezvous: a key-creation path that reads the owner's membership must
+// take the same lock for the count to be a hard guarantee rather than a
+// best-effort one.
+//
+// Assigning a Tenant does not bump auth_version and does not revoke sessions.
+// Membership is not part of the access token's authority; the personal
+// endpoints read it from this row on every request, so the change takes effect
+// without signing the account out.
+//
+// An empty tenantID clears the membership. The foreign key already does that
+// when a Tenant is deleted; this makes the same transition available from user
+// management.
+func (p *Postgres) AssignAdminUserTenant(ctx context.Context, id, tenantID string) (model.AdminUser, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The lock is taken before the key count so the row cannot be deleted or
+	// concurrently mutated underneath the decision. FOR UPDATE OF u leaves the
+	// joined Tenant row alone.
+	if _, err := scanAdminUserWithTenant(tx.QueryRow(ctx,
+		`SELECT `+adminUserTenantColumns+adminUserTenantFrom+` WHERE u.id=$1 FOR UPDATE OF u`, id)); err != nil {
+		return model.AdminUser{}, err
+	}
+
+	tenantID = strings.TrimSpace(tenantID)
+	tenantName := ""
+	if tenantID != "" {
+		err := tx.QueryRow(ctx, `SELECT name FROM gateway_tenant WHERE id=$1::uuid`, tenantID).Scan(&tenantName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.AdminUser{}, ErrAdminTenantNotFound
+		}
+		if err != nil {
+			return model.AdminUser{}, err
+		}
+	}
+
+	var owned int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM gateway_api_key WHERE owner_user_id=$1::uuid`, id).Scan(&owned); err != nil {
+		return model.AdminUser{}, err
+	}
+	if owned > 0 {
+		return model.AdminUser{}, &AdminUserOwnsKeysError{Count: owned}
+	}
+
+	var tenantArg any
+	if tenantID != "" {
+		tenantArg = tenantID
+	}
+	updated, err := scanAdminUser(tx.QueryRow(ctx, `
+UPDATE gateway_admin_user
+SET tenant_id=$2::uuid, updated_at=NOW()
+WHERE id=$1
+RETURNING `+adminUserColumns, id, tenantArg))
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	// The UPDATE's RETURNING cannot join the tenant table, so the name read
+	// above is projected onto the returned account.
+	updated.TenantID = tenantID
+	updated.TenantName = tenantName
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.AdminUser{}, err
+	}
+	return updated, nil
 }
 
 // keepsEnabledSuperAdmin reports whether an account is currently a usable super

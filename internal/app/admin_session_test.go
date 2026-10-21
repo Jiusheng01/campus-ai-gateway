@@ -62,6 +62,14 @@ type fakeAdminStore struct {
 	// revokes records every RevokeSessionsForUser call, so a test can assert
 	// that one logical mutation revoked once and not once per field.
 	revokes []revokeCall
+
+	// tenants maps a Tenant id to its display name. The fake only needs the
+	// name because it is not asked to enforce quota or key membership.
+	tenants map[string]string
+	// ownedKeys is the number of API Keys each account owns. It stands in for a
+	// real gateway_api_key count so the refusal can be exercised without a
+	// database.
+	ownedKeys map[string]int64
 }
 
 // revokeCall is one recorded family revocation.
@@ -72,9 +80,11 @@ type revokeCall struct {
 
 func newFakeAdminStore() *fakeAdminStore {
 	return &fakeAdminStore{
-		users:    map[string]model.AdminUser{},
-		names:    map[string]string{},
-		sessions: map[string]model.AdminSession{},
+		users:     map[string]model.AdminUser{},
+		names:     map[string]string{},
+		sessions:  map[string]model.AdminSession{},
+		tenants:   map[string]string{},
+		ownedKeys: map[string]int64{},
 	}
 }
 
@@ -246,6 +256,29 @@ func canonicalRoles(roles []string) string {
 
 func isEnabledSuperAdmin(u model.AdminUser) bool {
 	return u.Status == model.AdminStatusEnabled && hasSuperAdmin(u.Roles)
+}
+
+// AssignAdminUserTenant mirrors the real transaction's decisions: the Tenant
+// must exist, an account that owns keys is refused with the count, and the
+// membership write leaves auth_version alone.
+func (f *fakeAdminStore) AssignAdminUserTenant(_ context.Context, id, tenantID string) (model.AdminUser, error) {
+	u, ok := f.users[id]
+	if !ok {
+		return model.AdminUser{}, storage.ErrAdminUserNotFound
+	}
+	if tenantID != "" {
+		if _, exists := f.tenants[tenantID]; !exists {
+			return model.AdminUser{}, storage.ErrAdminTenantNotFound
+		}
+	}
+	if owned := f.ownedKeys[id]; owned > 0 {
+		return model.AdminUser{}, &storage.AdminUserOwnsKeysError{Count: owned}
+	}
+	u.TenantID = tenantID
+	u.TenantName = f.tenants[tenantID]
+	u.UpdatedAt = time.Now().UTC()
+	f.users[id] = u
+	return u, nil
 }
 
 func (f *fakeAdminStore) UpdateAdminUserPassword(_ context.Context, id, hash string) error {
