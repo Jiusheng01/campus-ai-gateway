@@ -3184,3 +3184,50 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
+
+/* --- Ticket 05: Call management summary and data flow --------------------- */
+/* The key and tenant tables render these wrappers and cells, but the sheet had
+   no rules for them, so the tables sat flush against the card edge and their
+   names fell back to default typography. Named here rather than reusing an
+   existing selector: this block must not change pages it was not written for. */
+.keysTableWrap,
+.tenantsTableWrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  background: var(--surface);
+}
+.tableRecordCount {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.tenantCode {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.tenantNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tenantNameTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Shown in place of the today figure when /admin/status fails. It has to read
+   as an absence, not as a low value: a muted red distinguishes "we could not
+   measure today" from "today was quiet". */
+.callsStatUnavailable {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+.callsStatUnavailable:hover {
+  text-decoration: underline;
+}

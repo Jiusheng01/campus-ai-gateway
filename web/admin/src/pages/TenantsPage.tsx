@@ -16,20 +16,32 @@ import {Table} from '../components/ui/Table'
 import {useToast} from '../components/ui/Toast'
 import {TenantForm, type TenantDraft} from '../components/tenants/TenantForm'
 import {TenantUsageDetail} from '../components/tenants/TenantUsageDetail'
-import {useResource} from '../lib/useResource'
 import {fmt} from '../lib/format'
 
-export function TenantsPage({onReload}: {onReload?: () => void}) {
+/**
+ * The tenant table for one tenant list.
+ *
+ * The list is a prop rather than a local fetch: the tenant tab lives beside the
+ * key table inside CallsPage, which already reads `/admin/tenants` for its
+ * counters. A second loader here asked the gateway for the same list twice per
+ * visit. `onReload` still reaches the page's loader, so a save or a retry
+ * refreshes both views from the one request.
+ */
+export function TenantsPage({
+  tenants,
+  loading = false,
+  error = '',
+  errorStatus = 0,
+  onReload,
+}: {
+  tenants: Tenant[] | null
+  loading?: boolean
+  error?: string
+  errorStatus?: number
+  onReload: () => void
+}) {
   const toast = useToast()
-  const {data, loading, error, errorStatus, reload: localReload} = useResource(async () => {
-    const d = await api<{data: Tenant[]}>('/admin/tenants')
-    return d.data || []
-  })
-
-  const reload = () => {
-    localReload()
-    onReload?.()
-  }
+  const reload = onReload
 
   const [draft, setDraft] = useState<TenantDraft | null>(null)
   const [usage, setUsage] = useState<{tenant: Tenant; usage: TenantUsage} | null>(null)
@@ -76,7 +88,7 @@ export function TenantsPage({onReload}: {onReload?: () => void}) {
     )
   }
 
-  const items = data || []
+  const items = tenants || []
 
   const filteredTenants = useMemo(() => {
     return items.filter(t => {
@@ -152,7 +164,7 @@ export function TenantsPage({onReload}: {onReload?: () => void}) {
           </div>
         </div>
 
-        {loading && !data ? (
+        {loading && !tenants ? (
           <SkeletonRows rows={5} columns={9} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
