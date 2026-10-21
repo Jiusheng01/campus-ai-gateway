@@ -778,3 +778,56 @@ export type RequestLogFacets={tenants:TenantFacet[];keys:APIKeyFacet[]}
 export async function listRequestLogFacets(){
   return api<RequestLogFacets>('/admin/request-logs/facets')
 }
+
+// --- personal request records ---------------------------------------------
+
+/**
+ * ConsoleRequestLog is one Request Record owned by the signed-in Account.
+ *
+ * It is deliberately narrower than the administrator's RequestLog: there is no
+ * client_ip, tenant_id, provider, upstream_model or route_priority field,
+ * because the member endpoint does not send them. `api_key_id` is the
+ * identifier the key filter uses and remains valid after the key is deleted.
+ */
+export type ConsoleRequestLog={
+  request_id:string
+  api_key_id:string
+  requested_model:string
+  actual_model:string
+  input_tokens:number
+  output_tokens:number
+  total_tokens:number
+  latency_ms:number
+  status_code:number
+  error_code:string
+  failover:boolean
+  attempt_count:number
+  created_at:string
+}
+
+/** One record plus the Routing Attempt chain, fetched only when the drawer opens. */
+export type ConsoleRequestLogDetail=ConsoleRequestLog&{attempt_chain:RequestAttempt[]}
+
+export type ConsoleRequestLogPage={
+  data:ConsoleRequestLog[]
+  limit:number
+  offset:number
+}
+
+/**
+ * listConsoleRequestLogs reads the caller's own records.
+ *
+ * The query may carry model, status, api_key_id, from, to, limit and offset. It
+ * cannot name an owner or a tenant: the gateway binds the session's account id
+ * into the query and has no field for a client-supplied one.
+ */
+export async function listConsoleRequestLogs(query:string){
+  const suffix=query?'?'+query:''
+  return api<ConsoleRequestLogPage>(`/api/console/request-logs${suffix}`)
+}
+
+/** getConsoleRequestLog reads one record and its attempt chain; not-owned is a 404. */
+export async function getConsoleRequestLog(id:string){
+  const d=await api<{data:ConsoleRequestLogDetail}>(`/api/console/request-logs/${encodeURIComponent(id)}`)
+  return d.data
+}
