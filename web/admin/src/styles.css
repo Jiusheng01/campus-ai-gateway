@@ -1,5 +1,4 @@
-/* ==========================================================================
-   Campus AI Gateway · Admin console design system
+/* ===================================================================   Campus AI Gateway · Admin console design system
    --------------------------------------------------------------------------
    One palette, one radius scale, one control height. Pages compose these
    primitives instead of inventing their own spacing and colour, which is what
@@ -1025,6 +1024,10 @@ input:focus, select:focus, textarea:focus {
 
 .form { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+/* A label paired with a live length counter: the caption stays left and the
+   counter is pinned right, so it does not shift while the operator types. */
+.fieldLabelWithCount { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.charCountHint { font-size: 11px; font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1186,6 +1189,9 @@ input:focus, select:focus, textarea:focus {
   justify-content: space-between;
   gap: 12px;
 }
+/* Without this the title column refuses to shrink below its text width and
+   pushes the close button past the header's right edge. */
+.modalHeadText { min-width: 0; }
 .modalTitle { margin: 0; font-size: 16px; font-weight: 700; }
 .modalSub { margin: 4px 0 0; font-size: 12.5px; color: var(--text-muted); }
 .modalBody { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
@@ -1590,3 +1596,2506 @@ input:focus, select:focus, textarea:focus {
    than a single value. */
 .detailRow.column{display:flex;flex-direction:column;align-items:flex-start;gap:9px}
 .detailRow.column .detailKey{margin:0}
+
+/* ========================================================================== */
+/* Campus AI Gateway - Modern SaaS Console Redesign                          */
+/* ========================================================================== */
+
+/* --- 1. Top Page Banner & Illustrations ----------------------------------- */
+.pageBanner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 20px;
+}
+/* The banner's text column carries the title, subtitle and actions, so it is a
+   column with one rhythm rather than a plain max-width box. The illustration
+   sits beside it in its own absolutely positioned wrapper, which keeps the
+   artwork out of the flex flow and lets the text keep the full width on narrow
+   windows where the illustration is hidden by the media query below. */
+.pageBannerContent {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 680px;
+}
+.pageBannerHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.pageBannerTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.pageBannerBadge {
+  display: inline-flex;
+  align-items: center;
+}
+.pageBannerSub {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.pageBannerActions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pageBannerIllustrationWrap {
+  position: absolute;
+  right: 16px;
+  bottom: 0;
+  top: 0;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.9;
+}
+.pageBannerIllustration {
+  display: block;
+  height: 100%;
+  max-height: 110px;
+  width: auto;
+}
+/* Below this width the artwork would sit under the subtitle rather than
+   beside it, so the banner keeps the text and loses the decoration. */
+@media (max-width: 760px) {
+  .pageBanner { padding: 18px 20px; }
+  .pageBannerIllustrationWrap { display: none; }
+  .pageBannerContent { max-width: none; }
+}
+/* --- 2. Stat Grid & Standardized Stat Cards ------------------------------- */
+.statGrid {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.statGrid.cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.statGrid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.statGrid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/* The card row is the page's first content block; four 26px values across a
+   laptop width would each wrap. Two columns keep the number and its label on
+   one line until the phone breakpoint, where they stack. */
+@media (max-width: 1100px) {
+  .statGrid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .statGrid.cols-4,
+  .statGrid.cols-3,
+  .statGrid.cols-2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+.statCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.statCard:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+/* A card that opens a detail view must read as clickable before hover, so the
+   cursor and focus ring carry the affordance the border alone does not. */
+.statCard.interactive {
+  cursor: pointer;
+}
+.statCard.interactive:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.statCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.statCardLabelGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.statCardLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.statCardIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.statCard.default .statCardIcon {
+  background: #f1f5f9;
+  color: #475569;
+}
+.statCard.success .statCardIcon {
+  background: #ecfdf5;
+  color: #059669;
+}
+.statCard.purple .statCardIcon {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+.statCard.info .statCardIcon {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.statCard.warning .statCardIcon {
+  background: #fffbeb;
+  color: #d97706;
+}
+/* The tone union includes danger, so a caller marking an error count must not
+   fall back to the default grey icon. */
+.statCard.danger .statCardIcon {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.statCardMain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.statCardValueRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.statCardValue {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.statCardSparkline {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.statCardFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 8px;
+}
+.statCardSub {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+.statCardTrend {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The arrow and the colour both come from the same `isPositive`/`neutral`
+   flags, so a caption never says "up" in red. `neutral` exists because a
+   flat period is neither. */
+.statCardTrend.up { color: var(--success); }
+.statCardTrend.down { color: var(--danger); }
+.statCardTrend.neutral { color: var(--text-muted); }
+/* The badge is a caller-supplied node (a status pill, a count). It gets chip
+   spacing only; colour belongs to that node, so there are no tone variants
+   here for a consumer to guess at. */
+.statCardBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex: none;
+}
+
+/* --- 3. Unified Filter Cards ---------------------------------------------- */
+.filterCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 16px;
+}
+.filtersBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.searchFieldGroup {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.searchFieldIcon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.filterSearchInput {
+  width: 100%;
+  padding-left: 32px;
+  height: 36px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.filterSearchInput:focus {
+  border-color: var(--primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+/* The redesigned filter bar puts the caption beside its control, whereas the
+   `.filterField` primitive that predates it stacks the caption above the
+   control. They are different layouts, not two spellings of one: redefining
+   `.filterField` here silently turned the request-log page's stacked fields
+   into a row. The redesigned bar therefore uses its own name. */
+.filterFieldInline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filterLabel {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.filterInput, .filterSelect {
+  height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.filterActionButtons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Status chips. The `.statusPill` primitive (top of the sheet) sets colour on
+   text; the redesign wants a filled pill. That is a second presentation of the
+   same fact, so it gets a second name. An override of `.statusPill` would have
+   restyled every existing status row that never asked for a pill. */
+.statusChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  line-height: 1;
+}
+.statusChip.ok {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 32%, var(--border));
+}
+.statusChip.down {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+/* `warn`, not `warning`: the pill's tone names are short across the console
+   (`ok`, `down`), and ticket 06 renders the provider credential tag from this
+   same variant. */
+.statusChip.warn {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+}
+.statusChip.unknown {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.statusChip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+.statusChip .dot.on { background: var(--success); }
+.statusChip .dot.down { background: var(--danger); }
+
+/* Table Action Links */
+.tableActionLink {
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tableActionLink:hover {
+  background: var(--primary-soft);
+  text-decoration: underline;
+}
+.tableActionLink.dangerText {
+  color: var(--danger);
+}
+.tableActionLink.dangerText:hover {
+  background: #fee2e2;
+}
+
+/* Section Header With Count */
+.sectionHeaderWithCount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.sectionTitle {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.sectionCount {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+/* --- 6. Upstream channels (Providers) ------------------------------------- */
+.channelNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* --- 7. Published models grid cards --------------------------------------- */
+.modelsCardGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.modelCardNew {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.modelCardNew:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.modelCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.modelCardTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.modelCardAlias {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.modelCardDisplayName {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.modelCardDesc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  min-height: 36px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.modelCardTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.modelCardActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+/* --- 8. Routing policy and route editor ----------------------------------- */
+.routeStrategyPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.routeStrategyPill.primary {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.routeStrategyPill.weighted {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.routeStrategyPill.advanced {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.routeModelCardsStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.routeModelGroupCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.routeModelGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: linear-gradient(to right, #fafbfc, #f1f5f9);
+  border-bottom: 1px solid var(--border);
+  gap: 14px;
+}
+.routeModelHeadLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.routeModelIconMark {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #2563eb;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.routeModelTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.routeModelNameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.routeModelAlias {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.routeModelDisplayName {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.routeModelSubInfo {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.routeModelDot { color: var(--text-faint); }
+/* The route count is the actionable part of the sub-line, so it keeps the
+   normal text colour while the version stays muted. */
+.routeModelLinesCount { color: var(--text); font-weight: 600; }
+/* The nested table must be allowed to shrink below its min-content width so
+   the Table primitive's own scroller, not the card, owns the overflow. */
+.routeModelTableWrap { min-width: 0; }
+.routeModelHeadRight {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.routeModeBadgeBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.routeStrategyDesc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.priorityTag {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+}
+.weightTag {
+  font-size: 12px;
+  font-weight: 700;
+  color: #047857;
+}
+/* A configured credential is the positive state; it must not read like the
+   warning badge it replaces when the credential is missing. */
+.textSuccess { color: var(--success); font-weight: 600; }
+
+/* Route Editor Rules */
+.routeEditorCards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0;
+}
+.routeRuleCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.routeRuleCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.routeRuleCardTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.routeRuleIndex {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.routeRuleChannelName {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.routeRuleModelTag {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.routeRuleCardActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.routeOrderControls {
+  display: flex;
+  gap: 4px;
+}
+.routeRuleCardFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+/* Grid items default to min-width:auto, so an alias or URL wider than its
+   track would widen the whole card instead of wrapping inside the field. */
+.routeField { min-width: 0; }
+
+/* A note about the card's own rules, not a page-level alert, so it uses the
+   quiet surface instead of the accent tint of .notice. */
+.cardNotice {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Weighted mode previews each priority layer's target share. These are targets
+   for the router, not observed success rates, so the presentation is static:
+   no trend colours and no live state. */
+.sharesList { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.sharePriorityGroup { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.shareGroupTitle { font-size: 12px; font-weight: 600; }
+.shareBadges { display: flex; flex-wrap: wrap; gap: 6px; }
+.shareBadge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 2px 9px;
+  font-size: 12px;
+}
+.sharePct { color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* --- 9. Call management (calls, keys, tenants) ---------------------------- */
+.callsPageTabs {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+}
+.keysSectionCard, .tenantsSectionCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px 22px;
+  box-shadow: var(--shadow-sm);
+}
+.keysSectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.keysSectionTitleBlock {
+  max-width: 680px;
+}
+.keysSectionTitle {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 4px 0;
+}
+.keysSectionSub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Key Name Cell & Prefix Copy */
+.keyNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.keyNameTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.keyPrefixRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.keyPrefixCode {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.keyCopyPrefixBtn {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+}
+.keyCopyPrefixBtn:hover {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.keyCopyPrefixBtn svg {
+  width: 12px;
+  height: 12px;
+}
+.copySuccessIcon {
+  color: #059669;
+}
+
+/* Tenant Cell */
+.tenantCell {
+  display: flex;
+  flex-direction: column;
+}
+.tenantName {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Model Chips */
+.allowedModelsChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.modelTag {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+}
+.modelTag.wildcard {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+  font-family: inherit;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.modelTag.wildcard svg {
+  width: 12px;
+  height: 12px;
+}
+.modelTag.extraBadge {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+  font-weight: 600;
+}
+
+/* Expiration Tags */
+.expireCell {
+  font-size: 12px;
+}
+.permanentTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #a7f3d0;
+}
+.expireDate {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.usageRecentCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lastUsedTime {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.usageSummary {
+  font-size: 11px;
+}
+
+.tableFooterBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 4px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* --- 10. KeyForm & Drawer Form Styles ------------------------------------- */
+.keyFormStack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.formStepsBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 4px;
+}
+.stepNumber {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+.stepLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.stepDivider {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.formSectionFieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+.formSectionLegend {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.formSectionLegend svg {
+  width: 14px;
+  height: 14px;
+  color: var(--primary);
+}
+
+/* Multi-select Component */
+.multiSelectWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.multiSelectHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.multiSelectTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wildcardToggleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6d28d9;
+  cursor: pointer;
+}
+.wildcardActiveNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius-sm);
+  color: #5b21b6;
+}
+.wildcardActiveNotice svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 2px;
+}
+.wildcardActiveNotice b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.wildcardActiveNotice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chipsContainer {
+  min-height: 48px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.modelSelectChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1e40af;
+}
+.chipRemoveButton {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  color: #3b82f6;
+  display: inline-flex;
+  align-items: center;
+}
+.chipRemoveButton:hover {
+  color: #dc2626;
+}
+.chipRemoveButton svg {
+  width: 12px;
+  height: 12px;
+}
+.chipsEmptyPlaceholder {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.addModelDropdownRow {
+  margin-top: 2px;
+}
+.addModelSelect {
+  width: 100%;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+/* Expiration Presets */
+.expireInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.expireInput {
+  flex: 1 1 200px;
+}
+.expirePresetButtons {
+  display: flex;
+  gap: 4px;
+}
+.presetBtn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.presetBtn:hover {
+  background: var(--surface-hover);
+  border-color: var(--primary);
+}
+.presetBtn.textBtn {
+  color: #059669;
+  font-weight: 600;
+}
+
+/* The API Key inherits its tenant's limits instead of carrying its own, so the
+   preview sits beside the tenant selector and shows the limits of the tenant
+   that is currently selected. */
+.tenantQuotaPreviewCard {
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quotaPreviewHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.quotaPreviewTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1e40af;
+  font-size: 13.5px;
+}
+.quotaPreviewTitle svg {
+  width: 16px;
+  height: 16px;
+}
+.quotaPreviewSub {
+  font-size: 12px;
+  color: #3b82f6;
+}
+.quotaPreviewGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.quotaPreviewMetric {
+  background: var(--surface);
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.quotaMetricLabel {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.quotaMetricValue {
+  font-size: 15px;
+  color: var(--text);
+}
+.quotaPreviewFooter {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px dashed #bfdbfe;
+  padding-top: 6px;
+}
+
+/* --- 11. Secret Modal One-Time Display ------------------------------------ */
+.secretModalContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.secretSuccessBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-md);
+  color: #065f46;
+}
+.secretSuccessIcon {
+  width: 20px;
+  height: 20px;
+  color: #10b981;
+  flex: none;
+  margin-top: 1px;
+}
+.secretSuccessText b {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.secretSuccessText p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.secretCodeBox {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.secretBoxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+.secretKeyLabel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #38bdf8;
+  font-weight: 600;
+}
+.secretKeyLabel svg {
+  width: 14px;
+  height: 14px;
+}
+.secretValueRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.secretValueText {
+  color: #f8fafc;
+  font-size: 14px;
+  word-break: break-all;
+  user-select: all;
+}
+
+.secretSecurityNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-md);
+  color: #92400e;
+}
+.secretAlertIcon {
+  width: 18px;
+  height: 18px;
+  color: #f59e0b;
+  flex: none;
+  margin-top: 2px;
+}
+.secretSecurityNotice b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.secretSecurityNotice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.secretAckLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.secretAckLabel input {
+  width: 16px;
+  height: 16px;
+}
+.ackCheckText {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* --- 12. Tenant Table Limit Tags ------------------------------------------ */
+.quotaUnlimitedTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #a7f3d0;
+}
+.quotaUnsetTag {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.quotaNumericValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.quotaUnit {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+/* --- tenants (ticket 09) --- */
+
+/* The tenant page renders the table and the card list together and lets the
+   `.desktopOnly` / `.mobileOnly` pair in the responsive block pick one. That
+   pair switches at 900px; the shell's own chrome breakpoints are reconciled in
+   the shell, so the page follows the sheet rather than inventing a second one.
+
+   `.cardsList` asks for `display: flex` to keep its column gap, but
+   `.mobileOnly` sets `display` too and wins on source order at equal
+   specificity, stacking the cards flush. Restate the display inside the same
+   breakpoint and only for the pair, so neither name changes meaning on its
+   own. */
+@media (max-width: 900px) {
+  .cardsList.mobileOnly { display: flex; }
+}
+
+/* `.miniCardRows span` is the label rule and also matches the three-state
+   quota tags nested in the value cell: left alone it turns the number muted
+   and drops 无限制's colour. The card has to read the same three states as the
+   table, so the nested tags keep their own presentation. */
+.miniCardRows .tenantQuotaValue span { display: inline-block; font-size: 11.5px; }
+.miniCardRows .tenantQuotaValue .quotaNumericValue { font-size: 13px; color: var(--text); }
+.miniCardRows .tenantQuotaValue .quotaUnlimitedTag { color: #059669; }
+
+/* --- shell chrome (ticket 02) --------------------------------------------- */
+
+/* The topbar is the one row every page shares, so its controls use the same
+   control height and radius as the buttons below them. Before this block none
+   of these names had a rule and the whole right-hand cluster fell back to
+   unstyled buttons: full-width, default font, no separation from the title. */
+.topbarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: none;
+}
+.topbarActionItem {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The search entry is a button that opens the palette, not an input: clicking
+   it must not focus a field that cannot be typed into. It is sized like a
+   field so it reads as the search affordance it stands for. */
+.topbarSearchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  min-width: 0;
+  width: 300px;
+  max-width: 34vw;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-faint);
+  text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.topbarSearchBar:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.topbarSearchBar:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.searchBarIcon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-muted);
+}
+.searchBarPlaceholder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+/* The shortcut hint is a key cap, so it is monospaced and never wraps away
+   from the label it belongs to. */
+.searchBarKbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+
+/* Square icon controls in the topbar. Transparent border keeps the four of
+   them on one baseline with the bordered search entry beside them. */
+.topbarIconBtn {
+  position: relative;
+  width: var(--control-h);
+  height: var(--control-h);
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+}
+.topbarIconBtn:hover { background: var(--surface-hover); color: var(--text); }
+.topbarIconBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.topbarIconBtn svg { width: 17px; height: 17px; }
+
+/* The dot sits on the bell's shoulder. The ring is painted in the surface
+   colour rather than a fixed white, so it still separates from the button on
+   the dark theme. */
+.badgeDot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.topbarIconBtn.hasBadge { color: var(--text); }
+
+/* User menu. The trigger carries the identity; the dropdown repeats it because
+   the trigger collapses to an avatar on narrow screens. */
+.userMenuWrapper { position: relative; }
+.userMenuTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+.userMenuTrigger:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.userMenuTrigger.open { border-color: var(--primary); background: var(--surface-subtle); }
+.userMenuTrigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.userAvatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.userMeta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.userName {
+  font-size: 12.5px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userRole {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userChevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.userMenuTrigger.open .userChevron { transform: rotate(180deg); }
+
+/* The dropdown is positioned against the trigger's wrapper, not the viewport,
+   so it stays attached while the topbar scrolls. */
+.userDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 244px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: pop 0.12s ease-out;
+}
+.userDropdownHead {
+  padding: 8px 10px 9px;
+  min-width: 0;
+}
+.dropdownUsername {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdownRoles {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userDropdownDivider {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--border);
+}
+.userDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+.userDropdownItem svg { width: 15px; height: 15px; color: var(--text-muted); flex: none; }
+.userDropdownItem:hover { background: var(--surface-subtle); }
+.userDropdownItem:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.userDropdownItem.danger { color: var(--danger); }
+.userDropdownItem.danger svg { color: var(--danger); }
+.userDropdownItem.danger:hover { background: var(--danger-soft); }
+
+/* Brand row: the left cluster takes the free width so the collapse control
+   stays at the right edge instead of drifting with the title's length. */
+.brandLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.brandCollapseBtn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+}
+.brandCollapseBtn:hover { background: var(--surface-subtle); color: var(--text); }
+.brandCollapseBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.brandCollapseBtn svg { width: 16px; height: 16px; }
+
+.navItemIcon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.navItemLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Help dialog. The code sample scrolls sideways rather than widening the
+   dialog: a request example is one long line per header. */
+.helpContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.helpSection h3 {
+  margin: 0 0 6px;
+}
+
+/* --- Ticket 05: Call management summary and data flow --------------------- */
+/* The key and tenant tables render these wrappers and cells, but the sheet had
+   no rules for them, so the tables sat flush against the card edge and their
+   names fell back to default typography. Named here rather than reusing an
+   existing selector: this block must not change pages it was not written for. */
+.keysTableWrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  background: var(--surface);
+}
+.tableRecordCount {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.tenantCode {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.helpSection p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+.helpCodeBlock {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+.helpList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.9;
+}
+.helpList kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The notification panel shows /admin/security-events rows. Rows read as one
+   list: the icon column is fixed so the event text lines up across rows of
+   different lengths. */
+.notificationList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notificationItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+}
+.notificationItem + .notificationItem { border-top: 1px solid var(--border); border-radius: 0; }
+.notificationIcon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+.notificationIcon svg { width: 16px; height: 16px; }
+.notificationIcon.danger { background: var(--danger-soft); color: var(--danger); }
+.notificationIcon.warning { background: var(--warning-soft); color: var(--warning); }
+.notificationIcon.info { background: var(--info-soft); color: var(--info); }
+.notificationIcon.neutral { background: var(--surface-subtle); color: var(--text-muted); }
+.notificationContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.notificationContent b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.notificationContent p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.notificationTime {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.notificationMore {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+/* Sidebar promo card. It is a block inside a 240px column, so every child has
+   to shrink with it; the artwork is inline SVG with a viewBox and no fixed
+   width, which is what lets it fill the card instead of overflowing it. */
+.campusPromoCard {
+  margin: 12px 10px 4px;
+  padding: 12px 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--primary-soft) 0%, var(--surface) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* The card is not rendered at the collapsed width; this keeps it out of the
+   layout if a caller ever renders it there. */
+.sidebar.collapsed .campusPromoCard { display: none; }
+.campusPromoVisual {
+  width: 100%;
+  min-width: 0;
+  line-height: 0;
+}
+.campusPromoIllustration {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 68px;
+}
+.campusPromoText {
+  min-width: 0;
+  text-align: center;
+}
+.campusPromoTitle {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campusPromoSub {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The sparkline is inline SVG sized by attributes; this keeps it from
+   stretching inside the flex card row and from overflowing on a phone. */
+.miniSparkline {
+  display: block;
+  flex: none;
+  max-width: 100%;
+}
+
+/* The shell's drawer class. The body scroll lock is set from the component;
+   this stops the workspace itself from rubber-banding behind the backdrop on
+   touch devices, where `overflow: hidden` on the body is not always honoured. */
+.shell.isMobileOpen { overflow: hidden; }
+.shell.isMobileOpen .workspace { touch-action: none; }
+
+/* The sidebar drawer breakpoint is 780px everywhere in this sheet. The shell
+   used to close the drawer at 960px, which left a 180px band where the drawer
+   could be opened but the layout never showed its trigger. */
+@media (max-width: 780px) {
+  .topbarSearchBar {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+    padding: 0;
+    justify-content: center;
+  }
+  .topbarSearchBar .searchBarPlaceholder,
+  .topbarSearchBar .searchBarKbd { display: none; }
+  .userMeta { display: none; }
+  .userMenuTrigger { padding: 0 4px; }
+  .userChevron { display: none; }
+  .campusPromoCard { margin: 10px 8px 4px; }
+}
+
+@media (max-width: 480px) {
+  .topbarIconBtn { width: 32px; height: 32px; }
+  .topbarRight { gap: 4px; }
+}
+
+
+/* --- key drawer (ticket 08) ----------------------------------------------- */
+/* Only the section holding focus is lit. Inactive steps keep their number and
+   label readable but drop the filled disc, so the bar reads as "you are here"
+   rather than "three things are done". */
+.formStep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.formStep .stepNumber {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.formStep .stepLabel {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.formStep.active .stepNumber {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.formStep.active .stepLabel {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* The three-state limit labels. Colour carries the distinction as well as the
+   words: an unlimited cap is a green permission, an unset one is neutral
+   information, and a number is plain text. */
+.quotaMetricValue.quotaUnlimitedTag,
+.quotaMetricValue.quotaUnsetTag {
+  font-size: 15px;
+}
+.quotaMetricValue.quotaUnsetTag {
+  font-weight: 500;
+}
+
+/* Model chips in the key form: the alias is the value the operator recognises,
+   the display name is supporting context. */
+.chipAlias {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+.chipName {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+/* Length hint beside the one-time secret; secondary to the value itself. */
+.secretLengthNotice {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Shown in place of the today figure when /admin/status fails. It has to read
+   as an absence, not as a low value: a muted red distinguishes "we could not
+   measure today" from "today was quiet". */
+.callsStatUnavailable {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+.callsStatUnavailable:hover {
+  text-decoration: underline;
+}
+
+/* --- quick search (ticket 03) --- */
+/* The dialog frame, scrim and Escape handling belong to .modal/.overlay; these
+   rules cover only the search surface rendered inside the modal body. */
+.quickSearch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quickSearchField {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+/* The field is a single composite control: the ring belongs to the bar, not to
+   the raw input, so the icon and clear button look focused with it. */
+.quickSearchField:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.quickSearchFieldIcon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+.quickSearchInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+.quickSearchInput::placeholder {
+  color: var(--text-muted);
+}
+.quickSearchClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.quickSearchClear:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.quickSearchClear svg {
+  width: 14px;
+  height: 14px;
+}
+.quickSearchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.quickSearchItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+/* aria-selected is the source of truth for the highlight; the class only
+   mirrors it because the stylesheet cannot select on ARIA alone in old
+   browsers. */
+.quickSearchItem:hover,
+.quickSearchItem.selected {
+  background: var(--primary-soft);
+}
+.quickSearchItemIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--primary);
+}
+.quickSearchItemIcon svg {
+  width: 15px;
+  height: 15px;
+}
+.quickSearchItemText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.quickSearchItemHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.quickSearchItemTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quickSearchItemCategory {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.quickSearchItemSub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quickSearchEmpty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.quickSearchFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.quickSearchFoot kbd {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+
+/* --- channels (ticket 06) --- */
+/* The three summary cards describe the whole channel configuration. They sit
+   above the table and keep their own row so a filter that narrows the table
+   cannot narrow them. */
+.providersSummarySection { width: 100%; }
+.providersSummaryHeader {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.providersSummaryStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  flex: 1 1 520px;
+}
+.providersSummaryAction { display: flex; align-items: flex-end; }
+.compactStat { padding: 14px 16px; gap: 8px; }
+@media (max-width: 900px) {
+  .providersSummaryStats { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Channel identity and dependency cells. */
+.channelMainName { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+.channelFriendlyName { font-size: 11.5px; color: var(--text-muted); }
+.channelDescText {
+  margin: 0;
+  max-width: 260px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.providerTypeBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.protocolBadge {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.baseUrlText { max-width: 200px; color: var(--text-faint); font-size: 11.5px; }
+
+/* Status and this instance's Provider Circuit. The circuit chip is deliberately
+   not a green "healthy" badge: closed just means this process has not tripped
+   the breaker, and the local state resets when the process does. */
+.channelStatusStack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.circuitChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.circuitScope { font-weight: 600; }
+.circuitValue { font-family: var(--font-mono); font-weight: 700; }
+.circuitRetry { font-weight: 600; }
+.circuitChip.open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.circuitChip.half-open {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.circuitChip.closed { color: var(--text-muted); }
+.circuitChip.none,
+.circuitChip.unknown { color: var(--text-faint); }
+.channelFactCircuit { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+.channelRefs { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.candidateCountBadge {
+  display: inline-flex;
+  min-width: 24px;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.channelRefCounts { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+
+/* Diagnostic column. */
+.lastTestCell { display: flex; flex-direction: column; gap: 2px; }
+.lastTestTime { font-size: 12px; color: var(--text); }
+.lastTestLatency { font-size: 11.5px; font-weight: 600; }
+.lastTestLatency.success { color: var(--success); }
+.lastTestLatency.danger { color: var(--danger); }
+
+/* Table selection and batch actions. */
+.selectionCell { width: 36px; }
+.selectedRow { background: var(--primary-soft); }
+.batchActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+}
+.batchSelectionCount { font-size: 12.5px; color: var(--text-muted); }
+.batchSelectionCount b { color: var(--text); }
+.batchButtons { display: flex; gap: 8px; }
+
+.tablePaginationFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.paginationInfo { font-size: 12px; color: var(--text-muted); }
+.paginationControls { display: flex; align-items: center; gap: 8px; }
+.paginationCurrentPage { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 700; }
+
+
+/* --- overview (ticket 04) -------------------------------------------------- */
+/* These names were rendered by the dashboard with no rule at all, so the
+   tiles, the banner greeting and the snapshot actions fell back to browser
+   defaults. They are scoped to this page's own names instead of restyling a
+   primitive another page relies on. */
+.bannerGreetingRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.bannerGreeting {
+  font-size: var(--fs-lead);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.bannerTitleMain {
+  font-size: var(--fs-title);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.configTilesGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.configTile {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+.configTileHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.configTileIcon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.configTileIcon svg {
+  width: 17px;
+  height: 17px;
+}
+.configTileIcon.blue {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.configTileIcon.green {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.configTileIcon.purple {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+.configTileIcon.amber {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.configTileName {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.configTileValue {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--text);
+}
+.configTileValue b {
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.configTileValue small {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+.configTileSub {
+  margin-top: 4px;
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+}
+
+.sideBySidePanels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.halfPanel {
+  min-width: 0;
+}
+.panelActionGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.linkActionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
+}
+.linkActionBtn:hover {
+  color: var(--primary-hover);
+}
+.linkActionBtn svg {
+  width: 14px;
+  height: 14px;
+}
+.routeModeTag {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+}
+/* The response says the cache is stale; the notice must sit above the table
+   rather than inside the empty state, because a stale cache still serves rows. */
+.overviewCacheWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.overviewCacheWarning svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+}
+
+@media (max-width: 860px) {
+  .sideBySidePanels {
+    grid-template-columns: 1fr;
+  }
+}
+/* --- models (ticket 07) --- */
+
+/* The summary row holds the statistic cards and the publish action. The
+   action keeps its width when the tenant card is absent, so the cards do not
+   stretch across the space the action will need at a wider role. */
+.modelsSummarySection {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.modelsSummaryGrid {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+.modelsSummaryAction {
+  flex: none;
+}
+
+/* Card header. The identity group keeps the icon beside the alias, and the
+   title block owns the alias row and the display name. */
+.modelCardIdentity {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.modelCardIconBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.modelCardIconBadge svg {
+  width: 18px;
+  height: 18px;
+}
+.modelCardAliasRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.modelCardMetaRight {
+  flex: none;
+}
+.configVersionBadge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+/* A disabled card stays readable; dimming the whole card would also dim the
+   status chip that explains why. */
+.modelCardNew.disabled {
+  opacity: 0.82;
+}
+.modelCardMetaDivider {
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+/* Two facts per row: route counts and routing mode. The capability flags live
+   in the tag row above because each tag is a field the gateway maintains. */
+.modelCardInfoGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.modelCardInfoItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.infoItemLabel {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.infoItemValue {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.modelTagBadge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+}
+.modelTagBadge.warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
+}
+
+.modelCardActionsLeft {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.modelCardActionsRight {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* Route list in the model detail drawer: one compact row per configured
+   Route, in the priority order the route editor maintains. */
+.compactRouteList {
+  display: flex;
+  flex-direction: column;
+}
+.compactRouteRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 12.5px;
+  border-top: 1px solid var(--border-subtle);
+}
+.compactRouteRow:first-child {
+  border-top: 0;
+}
+.compactRouteIndex {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.compactRouteProvider {
+  color: var(--text);
+}
+.compactRouteModel {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.compactRoutePriority,
+.compactRouteWeight {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.compactRouteRow > .badge {
+  margin-left: auto;
+}
+

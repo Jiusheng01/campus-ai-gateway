@@ -65,8 +65,8 @@ export function auditTone(action: string): Tone {
 
 /** Chinese labels and severity for data-plane security events. */
 const SECURITY_LABELS: Record<string, {label: string; tone: Tone}> = {
-  invalid_api_key: {label: '无效 API 密钥', tone: 'danger'},
-  api_key_expired: {label: 'API 密钥已过期', tone: 'danger'},
+  invalid_api_key: {label: '无效 API Key', tone: 'danger'},
+  api_key_expired: {label: 'API Key 已过期', tone: 'danger'},
   ip_forbidden: {label: '来源 IP 被拒绝', tone: 'danger'},
   model_forbidden: {label: '模型未授权', tone: 'danger'},
   rpm_exceeded: {label: 'RPM 超限', tone: 'warning'},

@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {AlertTriangle, Check, Copy, KeyRound} from 'lucide-react'
+import {Check, CheckCircle2, Copy, KeyRound, ShieldAlert} from 'lucide-react'
 import {Modal} from '../ui/Modal'
 import {Button} from '../ui/Button'
 import {useConfirm} from '../ui/ConfirmDialog'
@@ -23,7 +23,7 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
   const copy = async () => {
     if (await copyText(value)) {
       setCopied(true)
-      toast.success('API 密钥已复制到剪贴板')
+      toast.success('API Key 已复制到剪贴板')
     } else {
       toast.error('复制失败，请手动选择并复制')
     }
@@ -35,8 +35,8 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
       return
     }
     const ok = await confirm({
-      title: '尚未确认已保存 API 密钥',
-      description: '完整 Key 只显示一次，关闭后无法再次查看。确定要关闭吗？',
+      title: '尚未确认已保存 API Key',
+      description: '完整 API Key 只在创建完成时显示一次，关闭后将永远无法再次查看。确定要关闭吗？',
       confirmText: '仍然关闭',
       cancelText: '返回保存',
       danger: true,
@@ -46,36 +46,80 @@ export function SecretModal({value, onClose}: {value: string; onClose: () => voi
 
   return (
     <Modal
-      title="API 密钥创建成功"
-      subtitle="完整 Key 只显示一次，关闭后无法再次查看。"
+      title="API Key 创建成功"
+      subtitle="完整 API Key 仅显示一次，离开页面后将无法再次查看。"
       dismissable={false}
       onClose={() => void guardedClose()}
       footer={
         <>
           <Button onClick={() => void guardedClose()}>关闭</Button>
-          <Button variant="primary" disabled={!acknowledged} icon={<Check />} onClick={onClose}>
-            完成
+          <Button
+            variant="primary"
+            disabled={!acknowledged}
+            icon={<Check />}
+            onClick={onClose}
+          >
+            完成并关闭
           </Button>
         </>
       }
     >
-      <div className="secretBox">
-        <KeyRound aria-hidden />
-        <p>请立即复制并妥善保存到业务系统的密钥管理位置。</p>
-        <code className="secretValue">{value}</code>
-        <Button icon={<Copy />} onClick={() => void copy()}>
-          {copied ? '已复制' : '复制 API 密钥'}
-        </Button>
-      </div>
+      <div className="secretModalContent">
+        {/* Success Banner */}
+        <div className="secretSuccessBanner">
+          <CheckCircle2 className="secretSuccessIcon" aria-hidden />
+          <div className="secretSuccessText">
+            <b>API Key 已成功生成</b>
+            <p>请立即复制并妥善配置到业务系统的环境变量中。</p>
+          </div>
+        </div>
 
-      <label className="ackRow">
-        <input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />
-        <span>我已经安全保存此 Key</span>
-      </label>
+        {/* Secret Key Display Box */}
+        <div className="secretCodeBox">
+          <div className="secretBoxHeader">
+            <span className="secretKeyLabel">
+              <KeyRound aria-hidden /> 完整 API Key
+            </span>
+            <span className="secretLengthNotice">共 {value.length} 位字符</span>
+          </div>
+          <div className="secretValueRow">
+            <code className="secretValueText mono" title="完整 API Key">
+              {value}
+            </code>
+            <Button
+              variant={copied ? 'secondary' : 'primary'}
+              size="sm"
+              icon={copied ? <Check /> : <Copy />}
+              onClick={() => void copy()}
+            >
+              {copied ? '已复制' : '复制 API Key'}
+            </Button>
+          </div>
+        </div>
 
-      <div className="notice warning">
-        <AlertTriangle aria-hidden />
-        该 Key 不会写入浏览器本地存储，刷新或关闭后无法再次查看。
+        {/* Security Alert Notice */}
+        <div className="secretSecurityNotice" role="alert">
+          <ShieldAlert className="secretAlertIcon" aria-hidden />
+          <div>
+            <b>安全防护提示：</b>
+            <p>
+              出于安全规范，校园网关系统数据库仅持久化保存该 API Key 的前缀及不可逆的 HMAC 摘要。
+              关闭本对话框后，任何管理员都无法再次找回完整 API Key。若遗失，只能吊销并重新创建。
+            </p>
+          </div>
+        </div>
+
+        {/* Compulsory Acknowledgement Checkbox */}
+        <label className="secretAckLabel">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={e => setAcknowledged(e.target.checked)}
+          />
+          <span className="ackCheckText">
+            <b>我已确认复制并安全妥善保存了此 API Key</b>
+          </span>
+        </label>
       </div>
     </Modal>
   )

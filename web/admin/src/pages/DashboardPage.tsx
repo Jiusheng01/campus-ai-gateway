@@ -2,16 +2,31 @@ import {useState} from 'react'
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   Boxes,
   CircleGauge,
   Database,
   FlaskConical,
+  Network,
   RefreshCw,
   Route,
   ServerCog,
+  Users,
   Zap,
 } from 'lucide-react'
-import {api, listModelTestOptions, type DashboardStatus, type ModelTestOption, type RequestLog} from '../api'
+import {
+  api,
+  fetchTrend,
+  listModelTestOptions,
+  type DashboardStatus,
+  type ModelConfig,
+  type ModelTestOption,
+  type RequestLog,
+  type RouteView,
+  type Tenant,
+  type TrendBucket,
+  type WhoAmI,
+} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
 import {Table} from '../components/ui/Table'
@@ -19,46 +34,188 @@ import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
+import {MiniSparkline} from '../components/ui/CampusIllustrations'
+import {PageBanner} from '../components/ui/PageBanner'
+import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {useResource} from '../lib/useResource'
 import {ago, fmt, ms, num, ratio, when} from '../lib/format'
+import {type Page} from '../app/navigation'
+
+function getTimeGreeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 6) return '夜深了'
+  if (hour < 12) return '早上好'
+  if (hour < 14) return '中午好'
+  if (hour < 18) return '下午好'
+  return '晚上好'
+}
+
+/** The wall-clock day a trend bucket label belongs to ("YYYY-MM-DD HH:00"). */
+function localDayKey(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+}
+
+type TrendDelta = {value: string; isPositive: boolean; neutral: boolean}
 
 /**
- * The overview answers "is it working right now", and nothing else.
+ * A signed percentage change against the prior window.
  *
- * It used to also carry the trend charts and the per-channel telemetry table.
- * Those belong to the data board: they answer a question with a time axis, and
- * putting them here pushed the two things an operator checks first — the
- * numbers and the four status lights — off the first screen.
+ * A prior value of zero means there is no comparison period to report — the
+ * caption is omitted rather than rendered as +∞, 0%, or an invented number.
  */
-export function DashboardPage({roles}: {roles: string[]}) {
+function percentDelta(prefix: string, current: number, prior: number): TrendDelta | null {
+  if (prior <= 0) return null
+  const change = ((current - prior) / prior) * 100
+  return {
+    value: `${prefix} ${change > 0 ? '+' : ''}${change.toFixed(1)}%`,
+    isPositive: change > 0,
+    neutral: change === 0,
+  }
+}
+
+function sumOf(buckets: TrendBucket[], key: 'requests' | 'tokens' | 'errors'): number {
+  return buckets.reduce((total, bucket) => total + bucket[key], 0)
+}
+
+/**
+ * Today's error rate against the prior window's, in percentage points.
+ *
+ * A rate is already a percentage; reporting the relative change of one would
+ * read as a percent of a percent. Both windows need requests for a rate to
+ * exist, so a prior period without traffic omits the caption.
+ */
+function errorRateDelta(current: TrendBucket[], prior: TrendBucket[]): TrendDelta | null {
+  const currentRequests = sumOf(current, 'requests')
+  const priorRequests = sumOf(prior, 'requests')
+  if (priorRequests <= 0) return null
+  const currentRate = currentRequests > 0 ? (sumOf(current, 'errors') / currentRequests) * 100 : 0
+  const priorRate = (sumOf(prior, 'errors') / priorRequests) * 100
+  const change = currentRate - priorRate
+  return {
+    value: `较昨日同期 ${change > 0 ? '+' : ''}${change.toFixed(2)} 个百分点`,
+    isPositive: change > 0,
+    neutral: change === 0,
+  }
+}
+
+/**
+ * The peak bucket P95 in a window.
+ *
+ * A window P95 cannot be reconstructed from per-bucket P95s, so the worst
+ * complete hour is used and the caption says 峰值 rather than claiming a
+ * percentile the response does not contain.
+ */
+function peakP95(buckets: TrendBucket[]): number {
+  return buckets.reduce((peak, bucket) => Math.max(peak, bucket.p95_latency_ms), 0)
+}
+
+type TrendWindows = {current: TrendBucket[]; prior: TrendBucket[]}
+
+/**
+ * Splits one trend response into today and the matching hours of yesterday.
+ *
+ * The newest bucket is the hour still in progress. Comparing it with a full
+ * hour would make every page load look like a fall, so it is dropped — the
+ * comparison is complete hours only. The prior window takes the same clock
+ * hours at the start of yesterday, and is abandoned entirely when yesterday
+ * does not have that many hours yet.
+ */
+function trendWindows(buckets: TrendBucket[]): TrendWindows | null {
+  const todayKey = localDayKey(new Date())
+  const todays = buckets.filter(bucket => bucket.bucket.startsWith(todayKey))
+  const earlier = buckets.filter(bucket => !bucket.bucket.startsWith(todayKey))
+  const current = todays.slice(0, -1)
+  const prior = earlier.slice(0, current.length)
+  if (current.length === 0 || prior.length !== current.length) return null
+  return {current, prior}
+}
+
+/**
+ * The last 24 hourly points of the same response, on one card's axis.
+ *
+ * A series with no traffic is omitted rather than drawn flat: zero-height bars
+ * are still a shape, and nothing in the data produced one.
+ */
+function sparklineData(
+  buckets: TrendBucket[],
+  axis: 'requests' | 'tokens' | 'errors' | 'p95_latency_ms',
+): number[] | null {
+  const recent = buckets.slice(-24)
+  if (recent.length < 2) return null
+  const values = recent.map(bucket => bucket[axis])
+  return values.some(value => value > 0) ? values : null
+}
+
+export function DashboardPage({
+  roles,
+  who,
+  onNavigate,
+}: {
+  roles: string[]
+  who?: WhoAmI | null
+  onNavigate?: (p: Page) => void
+}) {
   const toast = useToast()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
 
-  // Quick actions are gated by the same allow-list the gateway uses, so the
-  // dashboard never offers a button whose only possible result is a 403.
   const canTestModel = roles.includes('super_admin') || roles.includes('gateway_admin') || roles.includes('operator')
-  // The recent-requests strip reads the log endpoint, which is a narrower
-  // permission than the dashboard itself. A gateway_admin may see this page but
-  // not that endpoint, so the request is skipped rather than allowed to 403 and
-  // paint an error box onto an otherwise healthy overview.
   const canReadLogs = roles.includes('super_admin') || roles.includes('auditor')
-  // The endpoint answers `data: null` when there are no rows yet (a fresh
-  // deployment). Normalising here keeps the empty state from becoming a crash.
+  const canReadRoutes = roles.includes('super_admin') || roles.includes('gateway_admin')
+  const canReadTenants = roles.includes('super_admin')
+
+  // Recent requests query (null normalized to empty array)
   const recent = useResource(() =>
     canReadLogs
-      ? api<{data: RequestLog[] | null}>('/admin/request-logs?limit=6').then(d => ({data: d.data || []}))
+      ? api<{data: RequestLog[] | null}>('/admin/request-logs?limit=5').then(d => ({data: d.data || []}))
       : Promise.resolve({data: [] as RequestLog[]}),
   )
 
-  // The model list is only needed to populate the test drawer, so it is fetched
-  // on demand rather than adding another request to every dashboard load.
-  //
-  // It comes from /admin/model-test-options rather than /admin/models: running a
-  // connectivity test and editing model routes are different capabilities, and
-  // an operator has the first without the second. Reading the full model
-  // configuration here would have made the button 403 for the role the button
-  // exists for.
+  /**
+   * The route list feeding the snapshot table.
+   *
+   * The tile's count does not come from here: `/admin/routes` caps one page at
+   * 200 rows (500 with an explicit limit) in the storage layer, so an
+   * unparameterised read silently truncates a larger deployment. The models
+   * response carries `route_count` per model, and every Route belongs to a
+   * model, so that sum is the whole count without a backend change.
+   */
+  const routes = useResource(() =>
+    canReadRoutes
+      ? api<{data: RouteView[] | null}>('/admin/routes').then(d => d.data || [])
+      : Promise.resolve(null as RouteView[] | null),
+  )
+
+  /** The per-model route counts; same role gate as the route collection. */
+  const models = useResource(() =>
+    canReadRoutes
+      ? api<{data: ModelConfig[] | null}>('/admin/models').then(d => d.data || [])
+      : Promise.resolve(null as ModelConfig[] | null),
+  )
+
+  /** Tenant inventory; only super administrators may read the collection. */
+  const tenants = useResource(() =>
+    canReadTenants
+      ? api<{data: Tenant[] | null}>('/admin/tenants').then(d => d.data || [])
+      : Promise.resolve(null as Tenant[] | null),
+  )
+
+  /**
+   * One trend window feeds all four captions and sparklines.
+   *
+   * It starts at local midnight yesterday so a single response contains both
+   * the comparison period and the last 24 hours. `fetchTrend` applies this
+   * browser's UTC offset, so a bucket means the reader's hour, not UTC's.
+   */
+  const trend = useResource(() => {
+    const to = new Date()
+    const from = new Date(to)
+    from.setHours(0, 0, 0, 0)
+    from.setDate(from.getDate() - 1)
+    return fetchTrend(from, to, 'hour')
+  })
+
   const openTest = async () => {
     try {
       setTesting(await listModelTestOptions())
@@ -69,26 +226,83 @@ export function DashboardPage({roles}: {roles: string[]}) {
 
   const stats = data?.stats
   const errorRate = stats && stats.today_requests > 0 ? ratio(stats.today_errors, stats.today_requests) : '0%'
+  const username = who?.username || who?.user || '管理员'
+  const greeting = `${getTimeGreeting()}，${username}`
+  const isHealthy = data?.gateway && data?.postgres && data?.redis
 
-  // There is one data plane, and the gateway dials the channels itself, so the
-  // fourth status light reports on that rather than on a process the deployment
-  // never started.
-  const health = [
+  // Only facts /admin/status carries: reachability for the three probed
+  // components, and the reported data-plane mode for the fourth. There is no
+  // component-latency field, so these cards assert none.
+  const health: {
+    name: string
+    icon: typeof ServerCog
+    note: string
+    ok?: boolean
+    detail?: string
+  }[] = [
     {name: 'Gateway', ok: data?.gateway, icon: ServerCog, note: '控制面与数据面'},
     {name: 'PostgreSQL', ok: data?.postgres, icon: Database, note: '配置与日志存储'},
     {name: 'Redis', ok: data?.redis, icon: Boxes, note: '限流与配额计数'},
-    {name: '数据面', ok: data?.gateway, icon: Route, note: '直连渠道，无额外进程'},
+    {name: '数据面', icon: Route, note: '由网关进程直连上游渠道', detail: data?.data_plane},
   ]
+
+  // Absent counts are unknown, not zero: `0` would claim an empty inventory.
+  const counts = data?.config_counts
+  // Sum the per-model counts rather than the page returned above. A model with
+  // no `route_count` contributes nothing; if no model reports the field at all
+  // the total is unknown, not zero.
+  const routeCount =
+    models.data === null
+      ? null
+      : models.data.length === 0 || models.data.some(m => typeof m.route_count === 'number')
+        ? models.data.reduce((total, m) => total + (m.route_count ?? 0), 0)
+        : null
+  const routeSample = routes.data ? routes.data.slice(0, 5) : []
+  const tenantCount = tenants.data ? tenants.data.length : null
+
+  const trendPoints = trend.data?.data ?? []
+  const windows = trend.data ? trendWindows(trendPoints) : null
+  const requestsDelta = windows ? percentDelta('较昨日同期', sumOf(windows.current, 'requests'), sumOf(windows.prior, 'requests')) : null
+  const tokensDelta = windows ? percentDelta('较昨日同期', sumOf(windows.current, 'tokens'), sumOf(windows.prior, 'tokens')) : null
+  const errorsDelta = windows ? errorRateDelta(windows.current, windows.prior) : null
+  const latencyDelta = windows ? percentDelta('较昨日同期峰值', peakP95(windows.current), peakP95(windows.prior)) : null
+
+  const requestsSpark = sparklineData(trendPoints, 'requests')
+  const tokensSpark = sparklineData(trendPoints, 'tokens')
+  const errorsSpark = sparklineData(trendPoints, 'errors')
+  const latencySpark = sparklineData(trendPoints, 'p95_latency_ms')
 
   return (
     <div className="stack">
-      {canTestModel && (
-        <div className="quickActions">
-          <Button variant="primary" icon={<FlaskConical />} onClick={() => void openTest()}>
-            模型连通测试
-          </Button>
-        </div>
-      )}
+      {/* P1 Welcome Hero Banner with Campus Illustration */}
+      <PageBanner
+        title={
+          <span className="bannerGreetingRow">
+            <span className="bannerGreeting">{greeting}</span>
+            <span className="bannerTitleMain">
+              {isHealthy ? '校园模型网关运行正常' : '校园模型网关正在运行'}
+            </span>
+          </span>
+        }
+        subtitle="为全校师生提供安全、稳定、高效的大模型统一访问服务"
+        badge={
+          <span className={`statusPill ${isHealthy ? 'ok' : 'unknown'}`}>
+            <i className={`dot ${isHealthy ? 'on' : 'unknown'}`} aria-hidden />
+            {isHealthy ? '系统健康' : '运行中'}
+          </span>
+        }
+        actions={
+          canTestModel && (
+            <Button
+              variant="primary"
+              icon={<FlaskConical />}
+              onClick={() => void openTest()}
+            >
+              模型连通测试 →
+            </Button>
+          )
+        }
+      />
 
       {error ? (
         <Panel title="运行状态">
@@ -96,48 +310,134 @@ export function DashboardPage({roles}: {roles: string[]}) {
         </Panel>
       ) : (
         <>
+          {/* Four Core Metric Cards; values from status, movement from trend */}
           <section aria-label="核心业务指标">
             {loading && !data ? (
               <SkeletonCards count={4} />
             ) : (
-              <div className="kpiGrid">
-                <Kpi label="今日请求" value={fmt(stats?.today_requests)} icon={<Activity />} foot="业务 API 调用次数" />
-                <Kpi label="今日 Tokens" value={fmt(stats?.today_tokens)} icon={<Zap />} foot="输入与输出合计" />
-                <Kpi
+              <StatGrid columns={4}>
+                <StatCard
+                  label="今日请求"
+                  value={fmt(stats?.today_requests ?? 0)}
+                  icon={<Activity />}
+                  subtext="业务 API 调用次数"
+                  trend={requestsDelta ?? undefined}
+                  sparkline={requestsSpark ? <MiniSparkline data={requestsSpark} color="#2563eb" /> : undefined}
+                  tone="default"
+                />
+                <StatCard
+                  label="今日 Tokens"
+                  value={stats?.today_tokens ? fmt(stats.today_tokens) : '0'}
+                  icon={<Zap />}
+                  subtext="输入与输出合计"
+                  trend={tokensDelta ?? undefined}
+                  sparkline={tokensSpark ? <MiniSparkline data={tokensSpark} color="#10b981" /> : undefined}
+                  tone="success"
+                />
+                <StatCard
                   label="错误率"
                   value={errorRate}
                   icon={<AlertTriangle />}
-                  foot={`今日错误 ${num(stats?.today_errors)} 次`}
-                  tone={stats && stats.today_errors > 0 ? 'warning' : undefined}
+                  subtext={`今日错误 ${num(stats?.today_errors ?? 0)} 次`}
+                  trend={errorsDelta ?? undefined}
+                  sparkline={errorsSpark ? <MiniSparkline data={errorsSpark} color="#ef4444" /> : undefined}
+                  tone={stats && stats.today_errors > 0 ? 'warning' : 'default'}
                 />
-                <Kpi label="P95 延迟" value={ms(stats?.p95_latency_ms)} icon={<CircleGauge />} foot={`平均 ${ms(stats?.avg_latency_ms)}`} />
-              </div>
+                <StatCard
+                  label="P95 延迟"
+                  value={ms(stats?.p95_latency_ms ?? 0)}
+                  icon={<CircleGauge />}
+                  subtext={`平均 ${ms(stats?.avg_latency_ms ?? 0)}`}
+                  trend={latencyDelta ?? undefined}
+                  sparkline={latencySpark ? <MiniSparkline data={latencySpark} color="#8b5cf6" /> : undefined}
+                  tone="purple"
+                />
+              </StatGrid>
             )}
           </section>
 
-          <Panel title="配置概况" sub="对外模型与上游渠道的配置数量；与实时健康无关。">
-            <p className="hint">
-              对外模型 {data?.config_counts?.models ?? '未知'} 个（启用 {data?.config_counts?.enabled_models ?? '未知'}）；
-              上游渠道 {data?.config_counts?.providers ?? '未知'} 个（启用 {data?.config_counts?.enabled_providers ?? '未知'}）。
-            </p>
-            <p className="hint">统计窗口：今日（数据库会话时区）· 分母与来源：gateway_request_log。</p>
+          {/* 配置概况 4-Tile Grid Card */}
+          <Panel
+            title="配置概况"
+            sub="对外模型、上游渠道、模型线路与租户的配置数量；与实时健康无关。"
+          >
+            <div className="configTilesGrid">
+              <div className="configTile">
+                <div className="configTileHead">
+                  <span className="configTileIcon blue"><Boxes /></span>
+                  <span className="configTileName">对外模型</span>
+                </div>
+                <div className="configTileValue">
+                  <b>{counts ? counts.models : '—'}</b> <small>个</small>
+                </div>
+                <div className="configTileSub">
+                  {counts ? `（启用 ${counts.enabled_models} / 总数 ${counts.models}）` : '状态未返回配置数量'}
+                </div>
+              </div>
+
+              <div className="configTile">
+                <div className="configTileHead">
+                  <span className="configTileIcon green"><Network /></span>
+                  <span className="configTileName">上游渠道</span>
+                </div>
+                <div className="configTileValue">
+                  <b>{counts ? counts.providers : '—'}</b> <small>个</small>
+                </div>
+                <div className="configTileSub">
+                  {counts ? `（启用 ${counts.enabled_providers} / 总数 ${counts.providers}）` : '状态未返回配置数量'}
+                </div>
+              </div>
+
+              <div className="configTile">
+                <div className="configTileHead">
+                  <span className="configTileIcon purple"><Route /></span>
+                  <span className="configTileName">模型线路</span>
+                </div>
+                <div className="configTileValue">
+                  <b>{routeCount === null ? '—' : routeCount}</b> <small>条</small>
+                </div>
+                <div className="configTileSub">
+                  {canReadRoutes ? (models.error ? '线路总数读取失败' : '（按对外模型的线路计数汇总）') : '当前角色不可读取线路清单'}
+                </div>
+              </div>
+
+              <div className="configTile">
+                <div className="configTileHead">
+                  <span className="configTileIcon amber"><Users /></span>
+                  <span className="configTileName">租户</span>
+                </div>
+                <div className="configTileValue">
+                  <b>{tenantCount === null ? '—' : tenantCount}</b> <small>个</small>
+                </div>
+                <div className="configTileSub">
+                  {canReadTenants
+                    ? tenants.error ? '租户列表读取失败' : '配额与 API Key 的归属单位'
+                    : '当前角色不可读取租户列表'}
+                </div>
+              </div>
+            </div>
           </Panel>
 
+          {/* 基础设施状态 Card */}
           <Panel
             title="基础设施状态"
             sub="Gateway、存储与数据面的实时可达性。"
             actions={
-              <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={reload}>
-                刷新
-              </Button>
+              <div className="panelActionGroup">
+                <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={reload}>
+                  刷新
+                </Button>
+              </div>
             }
           >
             <div className="statusRow">
               {health.map(h => {
                 const Icon = h.icon
-                const state = loading && !data ? 'unknown' : h.ok ? 'ok' : 'down'
+                // A card with no `ok` on the payload (the data plane reports a
+                // mode, not health) is unknown, not failed.
+                const state = loading && !data ? 'unknown' : h.ok === undefined ? 'unknown' : h.ok ? 'ok' : 'down'
                 return (
-                  <div className={`statusCard ${state}`} key={h.name}>
+                  <div className={`statusCard ${h.detail ? 'unknown' : state}`} key={h.name}>
                     <span className="statusIcon" aria-hidden>
                       <Icon />
                     </span>
@@ -145,9 +445,17 @@ export function DashboardPage({roles}: {roles: string[]}) {
                       <b>{h.name}</b>
                       <small>{h.note}</small>
                     </div>
-                    <span className={`statusPill ${state}`}>
-                      <i className={`dot ${state === 'ok' ? 'on' : state === 'down' ? 'down' : 'unknown'}`} aria-hidden />
-                      {state === 'ok' ? '正常' : state === 'down' ? '异常' : '未知'}
+                    {/* The data-plane card reports its mode; it makes no
+                        reachability claim the status response does not carry. */}
+                    <span className={`statusChip ${h.detail ? 'unknown' : state === 'ok' ? 'ok' : state === 'down' ? 'down' : 'unknown'}`}>
+                      {h.detail ? (
+                        `模式：${h.detail}`
+                      ) : (
+                        <>
+                          <i className={`dot ${state === 'ok' ? 'on' : state === 'down' ? 'down' : 'unknown'}`} aria-hidden />
+                          {state === 'ok' ? '正常' : state === 'down' ? '异常' : '未知'}
+                        </>
+                      )}
                     </span>
                   </div>
                 )
@@ -155,86 +463,136 @@ export function DashboardPage({roles}: {roles: string[]}) {
             </div>
           </Panel>
 
-          <Panel title="路由配置快照" sub="当前进程使用的路由表快照。保存后本实例立即失效；其他实例按 5 秒 TTL 收敛。">
-            {data?.route_cache ? (
-              <p className="hint">
-                生成时间：{data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'} · 代次 {data.route_cache.generation}
-                {data.route_cache.stale
-                  ? ` · 最近重建失败（${data.route_cache.last_error_kind || 'unknown'}），当前继续使用旧快照；这不代表配置已全局生效。`
-                  : ' · 未检测到重建失败。'}
-              </p>
-            ) : (
-              <p className="hint">该实例未返回路由快照状态；不要把它读作“已全局生效”。</p>
-            )}
-          </Panel>
-
-          {canReadLogs && (
+          {/* Two Side-by-Side Tables: 路由配置快照 & 最近请求 */}
+          <div className="sideBySidePanels">
+            {/* Left: 路由配置快照 */}
             <Panel
-              title="最近请求"
-              sub="业务侧最新发生的调用，用来确认流量确实在进入网关。"
+              title="路由配置快照"
+              sub="当前进程使用的路由表快照。下表仅为前 5 条样本，完整列表见「路由策略」。"
               actions={
-                <Button size="sm" icon={<RefreshCw />} loading={recent.loading} onClick={recent.reload}>
-                  刷新
-                </Button>
+                onNavigate && (
+                  <button
+                    type="button"
+                    className="linkActionBtn"
+                    onClick={() => onNavigate('routes')}
+                  >
+                    查看全部 <ArrowRight aria-hidden />
+                  </button>
+                )
               }
+              className="halfPanel"
             >
-              {recent.loading && !recent.data ? (
+              {data?.route_cache?.stale && (
+                <p className="overviewCacheWarning" role="status">
+                  <AlertTriangle aria-hidden />
+                  {`最近重建失败${data.route_cache.last_error_kind ? `（${data.route_cache.last_error_kind}）` : ''}，当前继续使用旧快照；这不代表配置已全局生效。`}
+                </p>
+              )}
+              {data?.route_cache && !data.route_cache.stale && (
+                <p className="hint">
+                  快照代次 {data.route_cache.generation} · 生成时间：
+                  {data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'} · 正常生效中
+                </p>
+              )}
+              {routes.error ? (
+                <p className="hint">路由快照读取失败：{routes.error}</p>
+              ) : routes.loading && !routes.data ? (
                 <SkeletonRows rows={4} columns={5} />
-              ) : recent.data?.data?.length ? (
-                <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={620}>
-                  {recent.data.data.map(r => (
-                    <tr key={r.request_id}>
-                      <td className="muted">{ago(r.created_at)}</td>
+              ) : routeSample.length ? (
+                <Table heads={['#', '对外模型', '上游渠道', '路由策略', '状态']} minWidth={460}>
+                  {routeSample.map((r, idx) => (
+                    <tr key={r.id}>
+                      <td className="muted">{idx + 1}</td>
                       <td>
-                        <b>{r.requested_model || '—'}</b>
+                        <b className="mono">{r.model_alias}</b>
                       </td>
-                      <td>{r.provider || '—'}</td>
+                      <td>{r.provider_name}</td>
                       <td>
-                        <span className={`badge ${r.status_code >= 400 ? 'danger' : 'success'}`}>
-                          {r.status_code}
+                        <span className="routeModeTag">
+                          {r.priority === 1 ? '默认策略' : `优先级 ${r.priority}`}
                         </span>
                       </td>
-                      <td className="numeric">{ms(r.latency_ms)}</td>
+                      <td>
+                        <span className={`statusPill ${r.status === 1 ? 'ok' : 'down'}`}>
+                          <i className={`dot ${r.status === 1 ? 'on' : 'down'}`} aria-hidden />
+                          {r.status === 1 ? '启用' : '停用'}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </Table>
               ) : (
-                <EmptyState
-                  title="暂无调用记录"
-                  description="业务请求进入网关后，这里会显示最近几条调用。完整检索请到「使用日志」。"
-                />
+                <div className="cardNotice">
+                  {data?.route_cache ? (
+                    <p className="hint">快照中没有可显示的线路，请在「路由策略」中配置。</p>
+                  ) : (
+                    <p className="hint">暂无活跃路由配置，请在「路由策略」中进行配置。</p>
+                  )}
+                </div>
               )}
             </Panel>
-          )}
+
+            {/* Right: 最近请求 */}
+            {canReadLogs ? (
+              <Panel
+                title="最近请求"
+                sub="业务侧最新发生的调用，用来确认流量确实在进入网关。"
+                actions={
+                  <div className="panelActionGroup">
+                    <Button size="sm" icon={<RefreshCw />} loading={recent.loading} onClick={recent.reload}>
+                      刷新
+                    </Button>
+                    {onNavigate && (
+                      <button
+                        type="button"
+                        className="linkActionBtn"
+                        onClick={() => onNavigate('logs')}
+                      >
+                        查看全部 <ArrowRight aria-hidden />
+                      </button>
+                    )}
+                  </div>
+                }
+                className="halfPanel"
+              >
+                {recent.loading && !recent.data ? (
+                  <SkeletonRows rows={4} columns={5} />
+                ) : recent.data?.data?.length ? (
+                  <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={460}>
+                    {recent.data.data.map(r => (
+                      <tr key={r.request_id}>
+                        <td className="muted">{ago(r.created_at)}</td>
+                        <td>
+                          <b>{r.requested_model || '—'}</b>
+                        </td>
+                        <td>{r.provider || '—'}</td>
+                        <td>
+                          <span className={`badge ${r.status_code >= 400 ? 'danger' : 'success'}`}>
+                            {r.status_code < 400 ? '成功' : `失败 (${r.status_code})`}
+                          </span>
+                        </td>
+                        <td className="numeric">{ms(r.latency_ms)}</td>
+                      </tr>
+                    ))}
+                  </Table>
+                ) : (
+                  <EmptyState
+                    title="暂无调用记录"
+                    description="业务请求进入网关后，这里会显示最近几条调用。完整检索请到「调用日志」。"
+                  />
+                )}
+              </Panel>
+            ) : (
+              <Panel title="最近请求" sub="调用记录已向审计与系统管理员开放。" className="halfPanel">
+                <p className="hint">当前角色权限不可直接查看原始调用明细。</p>
+              </Panel>
+            )}
+          </div>
         </>
       )}
 
+      {/* Model Test Drawer */}
       {testing && <ModelTestDrawer models={testing} onClose={() => setTesting(null)} />}
-    </div>
-  )
-}
-
-function Kpi({
-  label,
-  value,
-  icon,
-  foot,
-  tone,
-}: {
-  label: string
-  value: string
-  icon: React.ReactNode
-  foot: string
-  tone?: 'warning' | 'danger'
-}) {
-  return (
-    <div className={`kpi ${tone || ''}`.trim()}>
-      <span className="kpiLabel">
-        {icon}
-        {label}
-      </span>
-      <strong className="kpiValue">{value}</strong>
-      <span className="kpiFoot">{foot}</span>
     </div>
   )
 }

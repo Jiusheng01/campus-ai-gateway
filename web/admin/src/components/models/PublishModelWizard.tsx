@@ -1,20 +1,11 @@
 import {useCallback, useEffect, useState} from 'react'
-import {Boxes} from 'lucide-react'
+import {Info} from 'lucide-react'
 import {api, type Provider, type ProviderModel, type PublishResult} from '../../api'
-import {Modal} from '../ui/Modal'
+import {Drawer} from '../ui/Drawer'
 import {Button} from '../ui/Button'
 import {Field, Notice} from '../ui/Field'
 import {useToast} from '../ui/Toast'
 
-/**
- * Publish-from-the-model-list wizard.
- *
- * It is the same operation as publishing from a channel's candidate list: choose
- * the channel and candidate, name the external alias, and let the existing
- * POST /admin/models/publish create the model and its first route. The backend
- * keeps its validation, permission check and alias-immutability rule; this
- * component only removes a navigation step.
- */
 export function PublishModelWizard({onClose, onPublished}: {onClose: () => void; onPublished: () => void}) {
   const toast = useToast()
   const [providers, setProviders] = useState<Provider[]>([])
@@ -134,25 +125,32 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
   }
 
   return (
-    <Modal
+    <Drawer
       title="发布模型"
       subtitle="从上游渠道的候选模型创建一个对外模型；发布不会自动授权给任何 API Key。"
+      size="md"
       onClose={onClose}
       footer={
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button variant="primary" loading={busy} disabled={loading || !providerID || !candidateID} onClick={() => void submit()}>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={loading || !providerID || !candidateID}
+            onClick={() => void submit()}
+          >
             {conflict ? '确认发布' : '发布'}
           </Button>
         </>
       }
     >
-      <div className="form">
+      <div className="drawerStack">
         <Notice>
-          <Boxes aria-hidden />
-          首条线路使用所选候选的上游模型；之后可在「路由策略」中追加备用或加权线路。
+          <Info aria-hidden />
+          <span>首先选择上游渠道及其提供的模型，之后可在「路由策略」中追加备用或加权线路。</span>
         </Notice>
-        <Field label="上游渠道" hint="只列出已启用的渠道。">
+
+        <Field label="上游渠道" hint="选择提供模型的上游渠道（仅显示已启用渠道）。">
           <select
             value={providerID}
             disabled={loading}
@@ -170,17 +168,22 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
             ))}
           </select>
         </Field>
+
         <Field
           label="候选模型"
           hint={
             loadingCandidates
               ? '正在加载候选模型…'
               : candidates.length
-                ? '来自该渠道的模型列表。'
+                ? '该渠道下的可用模型列表，请先到上游渠道页面完成配置。'
                 : '该渠道没有可用候选模型；请先到渠道详情 → 模型列表刷新或手动添加。'
           }
         >
-          <select value={candidateID} disabled={loadingCandidates || !candidates.length} onChange={e => selectCandidate(e.target.value)}>
+          <select
+            value={candidateID}
+            disabled={loadingCandidates || !candidates.length}
+            onChange={e => selectCandidate(e.target.value)}
+          >
             {!candidates.length && <option value="">暂无候选模型</option>}
             {candidates.map(c => (
               <option key={c.id} value={c.id}>
@@ -189,25 +192,71 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
             ))}
           </select>
         </Field>
-        <Field label="对外名称（alias）" hint="业务系统调用 /v1/* 时使用的 model 值。发布后在服务端不可改名。">
-          <input className="mono" value={alias} onChange={e => setAlias(e.target.value)} />
+
+        <Field
+          label={
+            <div className="fieldLabelWithCount">
+              <span>对外名称（alias）</span>
+              <small className="charCountHint">{alias.length}/64</small>
+            </div>
+          }
+          hint="业务系统调用 /v1/* 时使用的 model 值，发布后在服务端不可改名。"
+        >
+          <input
+            className="mono"
+            maxLength={64}
+            value={alias}
+            onChange={e => setAlias(e.target.value)}
+            placeholder="例如：campus-gpt"
+          />
         </Field>
-        <Field label="显示名称（可选）" hint="只用于管理台展示，不改变客户端调用名。">
-          <input value={displayName} onChange={e => setDisplayName(e.target.value)} />
+
+        <Field
+          label={
+            <div className="fieldLabelWithCount">
+              <span>显示名称（可选）</span>
+              <small className="charCountHint">{displayName.length}/50</small>
+            </div>
+          }
+          hint="只用于管理台展示，不改变客户端调用名。"
+        >
+          <input
+            maxLength={50}
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+            placeholder="例如：校园通用大语言模型"
+          />
         </Field>
-        <Field label="描述（可选）">
-          <input value={description} onChange={e => setDescription(e.target.value)} />
+
+        <Field
+          label={
+            <div className="fieldLabelWithCount">
+              <span>描述（可选）</span>
+              <small className="charCountHint">{description.length}/200</small>
+            </div>
+          }
+          hint="简要说明适用场景，不影响运行时行为。"
+        >
+          <textarea
+            rows={3}
+            maxLength={200}
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="面向全校的通用大语言模型，适用于问答、写作、分析等多种场景。"
+          />
         </Field>
+
         {conflict && (
           <div className="checks">
             <label>
               <input type="checkbox" checked={append} onChange={e => setAppend(e.target.checked)} />
-              该名称已存在，确认把此候选追加为备用线路
+              确认把此候选追加为备用线路
             </label>
           </div>
         )}
+
         {error && <div className="notice warning" role="alert">{error}</div>}
       </div>
-    </Modal>
+    </Drawer>
   )
 }

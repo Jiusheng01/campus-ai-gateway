@@ -262,7 +262,7 @@ function Console() {
       refreshing={false}
       onSignOut={() => void signOut().catch(e => toast.error(e instanceof Error ? e.message : '退出登录失败'))}
     >
-      {page === 'dashboard' && <DashboardPage roles={roles} />}
+      {page === 'dashboard' && <DashboardPage roles={roles} who={who} onNavigate={setPage} />}
       {page === 'analytics' && <AnalyticsPage />}
       {page === 'providers' && (
         <ProvidersPage

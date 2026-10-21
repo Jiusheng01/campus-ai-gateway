@@ -33,11 +33,6 @@ const modeLabel: Record<RouteMode, string> = {
   advanced: '高级',
 }
 
-/**
- * The one route editor used by the aggregate route page and the model detail.
- * Modes are projections over the same draft; switching views does not write,
- * and a projection that changes a field requires an exact diff confirmation.
- */
 export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () => void}) {
   const toast = useToast()
   const loader = useCallback(async () => {
@@ -152,6 +147,7 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
 
   return (
     <div className="drawerStack">
+      {/* Route mode segmented buttons */}
       <div className="segmented" role="group" aria-label="路由编辑模式">
         {(['primary', 'weighted', 'advanced'] as RouteMode[]).map(m => (
           <button
@@ -170,13 +166,16 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
         优先级数字越小越先尝试；同一优先级内按权重做平滑轮询。超时是上游响应头等待时间，不是完整回答时间。
       </Notice>
 
+      {/* Mode Switch Confirmation Notice with Exact Diff */}
       {pending && (
         <div className="notice warning" role="alert">
           <AlertTriangle aria-hidden />
           <div>
             <b>切换到「{modeLabel[pending.mode]}」会改变以下字段，确认后只修改草稿，尚未保存：</b>
             <ul className="drawerSectionList">
-              {pending.diff.map(line => <li key={line}><code>{line}</code></li>)}
+              {pending.diff.map(line => (
+                <li key={line}><code>{line}</code></li>
+              ))}
             </ul>
             <div className="formActions">
               <Button size="sm" onClick={() => setPending(null)}>取消切换</Button>
@@ -191,83 +190,201 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
           <AlertTriangle aria-hidden />
           <div>
             <p>该模型的线路已被其他管理员修改。你的草稿仍保留；当前版本为 {conflict}。</p>
-            <Button size="sm" onClick={() => { setDraft(null); setConflict(null); reload() }}>加载最新版本</Button>
+            <Button size="sm" onClick={() => { setDraft(null); setConflict(null); reload() }}>
+              加载最新版本
+            </Button>
           </div>
         </div>
       )}
+
       {formError && <div className="notice warning" role="alert">{formError}</div>}
 
+      {/* Routes List */}
       {routes.length ? (
-        <div className="routeEditor">
-          {routes.map((r, i) => (
-            <div className={`routeEditorRow ${mode}`} key={r.id || `new-${i}`}>
-              {mode === 'primary' && (
-                <div className="routeOrder">
-                  <Button size="sm" icon={<ArrowUp />} disabled={i === 0} onClick={() => moveRow(i, -1)}>上移</Button>
-                  <Button size="sm" icon={<ArrowDown />} disabled={i === routes.length - 1} onClick={() => moveRow(i, 1)}>下移</Button>
+        <div className="routeEditorCards">
+          {routes.map((r, i) => {
+            const isFirst = i === 0
+            const isLast = i === routes.length - 1
+            const providerName = providers.find(p => p.id === r.provider_id)?.name || '未选择渠道'
+
+            return (
+              <div className={`routeRuleCard ${mode}`} key={r.id || `new-${i}`}>
+                <div className="routeRuleCardHead">
+                  <div className="routeRuleCardTitleRow">
+                    <span className="routeRuleIndex">#{i + 1}</span>
+                    <b className="routeRuleChannelName">{providerName}</b>
+                    <span className="routeRuleModelTag mono">{r.upstream_model || '（未输入上游模型）'}</span>
+                    <span className={`statusChip ${r.status === 1 ? 'ok' : 'down'}`}>
+                      <i className={`dot ${r.status === 1 ? 'on' : 'down'}`} aria-hidden />
+                      {r.status === 1 ? '启用' : '停用'}
+                    </span>
+                  </div>
+
+                  <div className="routeRuleCardActions">
+                    {mode === 'primary' && (
+                      <div className="routeOrderControls">
+                        <Button
+                          size="sm"
+                          icon={<ArrowUp />}
+                          disabled={isFirst}
+                          onClick={() => moveRow(i, -1)}
+                          title="上移优先级"
+                        >
+                          上移
+                        </Button>
+                        <Button
+                          size="sm"
+                          icon={<ArrowDown />}
+                          disabled={isLast}
+                          onClick={() => moveRow(i, 1)}
+                          title="下移优先级"
+                        >
+                          下移
+                        </Button>
+                      </div>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon={<Trash2 />}
+                      onClick={() => removeRow(i)}
+                      title="删除该线路"
+                    >
+                      删除
+                    </Button>
+                  </div>
                 </div>
-              )}
-              <Field label="渠道">
-                <select value={r.provider_id} onChange={e => setRow(i, {provider_id: e.target.value})}>
-                  {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </Field>
-              <Field label="上游模型">
-                <input className="mono" value={r.upstream_model} onChange={e => setRow(i, {upstream_model: e.target.value})} />
-              </Field>
-              {mode !== 'primary' && (
-                <>
-                  <Field label={mode === 'weighted' ? '层（优先级）' : '优先级'}>
-                    <input type="number" min={1} max={1000} value={r.priority} onChange={e => setRow(i, {priority: +e.target.value})} />
+
+                <div className="routeRuleCardFields">
+                  <Field label="上游渠道" className="routeField">
+                    <select
+                      value={r.provider_id}
+                      onChange={e => setRow(i, {provider_id: e.target.value})}
+                    >
+                      {providers.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} {p.provider_type ? `(${p.provider_type})` : ''}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
-                  <Field label="权重" hint={r.weight === 0 ? '兼容值，按 1 调度' : undefined}>
-                    <input type="number" min={0} max={10000} value={r.weight} onChange={e => setRow(i, {weight: +e.target.value})} />
+
+                  <Field label="上游模型名称" className="routeField">
+                    <input
+                      className="mono"
+                      placeholder="例如：deepseek-chat"
+                      value={r.upstream_model}
+                      onChange={e => setRow(i, {upstream_model: e.target.value})}
+                    />
                   </Field>
-                </>
-              )}
-              <Field label="超时（ms）">
-                <input type="number" min={1} max={600000} value={r.timeout_ms} onChange={e => setRow(i, {timeout_ms: +e.target.value})} />
-              </Field>
-              <Field label="状态">
-                <select value={r.status} onChange={e => setRow(i, {status: +e.target.value})}>
-                  <option value="1">启用</option>
-                  <option value="2">停用</option>
-                </select>
-              </Field>
-              <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => removeRow(i)}>删除</Button>
-            </div>
-          ))}
+
+                  {mode !== 'primary' && (
+                    <>
+                      <Field label={mode === 'weighted' ? '层（优先级）' : '优先级'} className="routeField">
+                        <input
+                          type="number"
+                          min={1}
+                          max={1000}
+                          value={r.priority}
+                          onChange={e => setRow(i, {priority: +e.target.value})}
+                        />
+                      </Field>
+
+                      <Field
+                        label="权重"
+                        hint={r.weight === 0 ? '兼容值，按 1 调度' : undefined}
+                        className="routeField"
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={10000}
+                          value={r.weight}
+                          onChange={e => setRow(i, {weight: +e.target.value})}
+                        />
+                      </Field>
+                    </>
+                  )}
+
+                  <Field label="超时等待（ms）" className="routeField">
+                    <input
+                      type="number"
+                      min={1}
+                      max={600000}
+                      step={1000}
+                      value={r.timeout_ms}
+                      onChange={e => setRow(i, {timeout_ms: +e.target.value})}
+                    />
+                  </Field>
+
+                  <Field label="状态" className="routeField">
+                    <select
+                      value={r.status}
+                      onChange={e => setRow(i, {status: +e.target.value})}
+                    >
+                      <option value="1">启用</option>
+                      <option value="2">停用</option>
+                    </select>
+                  </Field>
+                </div>
+              </div>
+            )
+          })}
         </div>
       ) : (
-        <EmptyState title="没有线路" description="至少保留一条线路，已启用的模型至少保留一条启用线路。" />
+        <EmptyState
+          title="没有线路"
+          description="至少保留一条线路，已启用的模型至少保留一条启用线路。"
+        />
       )}
 
       {mode === 'primary' && (
-        <p className="hint">主备顺序即优先级：第 1 条为 priority 1，失败后进入下一条。拖动顺序会更新草稿，保存前仍会展示整组预览。</p>
+        <div className="cardNotice">
+          <b>主备容灾规则：</b>
+          <span>主备顺序即优先级：第 1 条为 priority 1，失败后进入下一条。可使用上方按钮调整顺序。</span>
+        </div>
       )}
+
       {mode === 'weighted' && (
         <div className="notice info">
           <b>目标流量比例（仅配置目标，不代表实际成功率）：</b>
-          {shares.map(s => (
-            <div key={s.priority}>
-              第 {s.priority} 层：{s.items.map(i => `${i.route.upstream_model || i.route.provider_id.slice(0, 6)} ${i.pct.toFixed(1)}%`).join(' · ')}
-            </div>
-          ))}
+          <div className="sharesList">
+            {shares.map(s => (
+              <div key={s.priority} className="sharePriorityGroup">
+                <span className="shareGroupTitle">第 {s.priority} 优先级层：</span>
+                <div className="shareBadges">
+                  {s.items.map((item, idx) => (
+                    <span key={idx} className="shareBadge">
+                      <b>{item.route.upstream_model || item.route.provider_id.slice(0, 6)}</b>
+                      <span className="sharePct">{item.pct.toFixed(1)}%</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       <details className="formAdvanced">
-        <summary>查看将要保存的线路数组</summary>
+        <summary>查看将要保存的线路数组 (JSON)</summary>
         <pre className="mono responseText">{JSON.stringify(routes, null, 2)}</pre>
       </details>
 
       <div className="formActions">
-        <Button icon={<Plus />} onClick={addRow}>添加线路</Button>
-        <Button variant="primary" loading={busy} disabled={busy || !routes.length || !!pending} onClick={() => void save()}>
+        <Button icon={<Plus />} onClick={addRow}>
+          添加线路
+        </Button>
+        <Button
+          variant="primary"
+          loading={busy}
+          disabled={busy || !routes.length || !!pending}
+          onClick={() => void save()}
+        >
           保存整组线路
         </Button>
       </div>
-      <p className="hint">保存会原子替换整组线路，并保留未修改线路的 route ID。配置版本 {version}。</p>
+      <p className="hint">保存会原子替换整组线路，并保留未修改线路的 route ID。当前配置版本 {version}。</p>
     </div>
   )
 }
