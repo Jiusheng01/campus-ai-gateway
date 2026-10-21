@@ -1,11 +1,7 @@
 import {useCallback, useMemo, useState} from 'react'
 import {
-  AlertCircle,
   Boxes,
-  CheckCircle2,
-  ChevronRight,
   Eye,
-  FlaskConical,
   KeyRound,
   Play,
   Plus,
@@ -22,9 +18,10 @@ import {
   type ModelConfig,
   type ModelDetail,
   type ModelImpact,
-  type ModelRoute,
   type ModelTestOption,
   type Provider,
+  type RouteView,
+  type Tenant,
 } from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
@@ -41,23 +38,45 @@ import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPa
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
-import {MiniSparkline} from '../components/ui/CampusIllustrations'
 import {useToast} from '../components/ui/Toast'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useResource} from '../lib/useResource'
 
-function getModelTags(m: ModelConfig): string[] {
-  const alias = m.alias.toLowerCase()
-  const tags: string[] = []
-  if (alias.includes('embed') || alias.includes('vector')) {
-    tags.push('向量化', '检索增强', '知识库')
-  } else if (alias.includes('vision') || alias.includes('image') || alias.includes('vl')) {
-    tags.push('多模态', '图像理解', '视觉分析')
-  } else if (alias.includes('audio') || alias.includes('asr') || alias.includes('tts') || alias.includes('voice')) {
-    tags.push('语音处理', '音频模型')
-  } else {
-    tags.push('对话生成', '通用能力')
-    if (m.statically_routable) tags.push('推荐')
+/**
+ * The channel filter needs the model → channel association, which the model
+ * list does not carry: a Virtual Model reaches a channel through its Routes.
+ * The route read caps one page at 500 rows, so walk pages until a short one
+ * instead of filtering against a silently truncated list.
+ */
+async function listAllModelRoutes(): Promise<RouteView[]> {
+  const pageSize = 500
+  const all: RouteView[] = []
+  for (let offset = 0; ; offset += pageSize) {
+    const d = await api<{data: RouteView[]}>(`/admin/routes?limit=${pageSize}&offset=${offset}`)
+    const page = d.data || []
+    all.push(...page)
+    if (page.length < pageSize) return all
+  }
+}
+
+type ModelTag = {label: string; warn?: boolean}
+
+/**
+ * Tags come only from fields the gateway maintains. The alias is a client-facing
+ * name, not a capability declaration — `campus-vision` proves nothing about
+ * whether the model accepts images — so it is never inspected here.
+ *
+ * Absent booleans stay absent: an unknown state is not a false one, and the
+ * card shows no tag rather than a claim it cannot support. When neither field
+ * is present there is no tag row at all.
+ */
+function getModelTags(m: ModelConfig): ModelTag[] {
+  const tags: ModelTag[] = []
+  if (typeof m.statically_routable === 'boolean') {
+    tags.push(m.statically_routable ? {label: '静态可路由'} : {label: '暂无可路由线路', warn: true})
+  }
+  if (typeof m.credential_configured === 'boolean') {
+    tags.push(m.credential_configured ? {label: '凭据已配置'} : {label: '凭据未配置', warn: true})
   }
   return tags
 }
@@ -72,17 +91,31 @@ export function PublishedModelsPage({
   onOpenLogs?: (filters: LogSeed) => void
 }) {
   const loader = useCallback(async () => {
-    const [modelsRes, providersRes] = await Promise.all([
+    // /admin/tenants is granted to super_admin only. `canAuthorize` is that
+    // role's signal on this page (App passes roles.includes('super_admin')),
+    // so the read is not attempted for a role the gateway will refuse.
+    const tenantsPromise: Promise<Tenant[] | null> = canAuthorize
+      ? api<{data: Tenant[]}>('/admin/tenants')
+          .then(r => r.data || [])
+          .catch(() => null)
+      : Promise.resolve(null)
+    const [modelsRes, providersRes, tenants, routes] = await Promise.all([
       api<{data: ModelConfig[]}>('/admin/models'),
       api<{data: Provider[]}>('/admin/providers?limit=100').catch(() => ({data: []})),
+      tenantsPromise,
+      // A failed route read leaves the channel filter unavailable rather than
+      // matching every channel to nothing.
+      listAllModelRoutes().catch(() => null),
     ])
     return {
       models: modelsRes.data || [],
       providers: providersRes.data || [],
+      tenants,
+      routes,
     }
-  }, [])
+  }, [canAuthorize])
 
-  const {data, loading, error, errorStatus, reload} = useResource(loader)
+  const {data, loading, error, errorStatus, reload} = useResource(loader, [canAuthorize])
   const [detail, setDetail] = useState<ModelDetail | null>(null)
   const toast = useToast()
   const confirm = useConfirm()
@@ -185,9 +218,25 @@ export function PublishedModelsPage({
 
   const allModels = data?.models || []
   const providers = data?.providers || []
+  const tenants = data?.tenants ?? null
+  const routes = data?.routes ?? null
   const totalModels = allModels.length
   const enabledModels = allModels.filter(m => m.status === 1).length
-  const totalRoutes = allModels.reduce((acc, m) => acc + (m.route_count ?? 0), 0)
+  // Null means the collection was not readable or did not load; no card then.
+  const enabledTenants = tenants ? tenants.filter(t => t.status === 1).length : null
+
+  // model id → channel names the model is routed through. Selecting a channel
+  // must narrow the rendered cards, and the model list carries only counts, so
+  // the association comes from the route projection.
+  const channelsByModel = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const r of routes || []) {
+      const names = map.get(r.model_id) || new Set<string>()
+      names.add(r.provider_name)
+      map.set(r.model_id, names)
+    }
+    return map
+  }, [routes])
 
   // Filtered models
   const filteredModels = useMemo(() => {
@@ -200,9 +249,10 @@ export function PublishedModelsPage({
         if (!matchAlias && !matchName && !matchDesc) return false
       }
       if (statusFilter && String(m.status) !== statusFilter) return false
+      if (channelFilter && !channelsByModel.get(m.id)?.has(channelFilter)) return false
       return true
     })
-  }, [allModels, searchQuery, statusFilter])
+  }, [allModels, searchQuery, statusFilter, channelFilter, channelsByModel])
 
   return (
     <div className="stack">
@@ -212,65 +262,60 @@ export function PublishedModelsPage({
         subtitle="管理业务系统调用的模型名称与线路配置"
       />
 
-      {/* Top Summary Statistics Cards matching image 3 */}
-      <section aria-label="模型概览统计" className="providersSummarySection">
-        <div className="providersSummaryHeader">
-          <div className="providersSummaryStats">
+      {/* Each card counts one collection this page reads. The route tally that
+          stood here answered a question about routes; this page is about the
+          models and the tenants that may call them. */}
+      <section aria-label="模型概览统计" className="modelsSummarySection">
+        <StatGrid columns={enabledTenants === null ? 2 : 3} className="modelsSummaryGrid">
+          <StatCard
+            label="已发布模型"
+            value={totalModels}
+            icon={<Boxes />}
+            subtext="对外模型列表中的条目数"
+            tone="default"
+          />
+          <StatCard
+            label="启用中"
+            value={enabledModels}
+            icon={<Play />}
+            subtext="状态为启用中的对外模型数"
+            tone="success"
+          />
+          {enabledTenants !== null && (
             <StatCard
-              label="已发布模型"
-              value={totalModels}
-              icon={<Boxes />}
-              subtext="为业务系统提供的对外模型总数"
-              tone="default"
-              className="compactStat"
-            />
-            <StatCard
-              label="启用中"
-              value={enabledModels}
-              icon={<Play />}
-              subtext="当前处于启用状态的模型"
-              sparkline={<MiniSparkline data={[4, 6, 8, 10, 9, 11, 10, 12]} color="#10b981" />}
-              tone="success"
-              className="compactStat"
-            />
-            <StatCard
-              label="关联路由线路"
-              value={totalRoutes}
-              icon={<Route />}
-              subtext="所有对外模型配置的路由线路总计"
-              sparkline={<MiniSparkline data={[8, 12, 14, 18, 22, 26, 30, 36]} color="#8b5cf6" />}
+              label="启用租户"
+              value={enabledTenants}
+              icon={<Users />}
+              subtext="状态为启用中的租户数"
               tone="purple"
-              className="compactStat"
             />
-          </div>
+          )}
+        </StatGrid>
 
-          <div className="providersSummaryAction">
-            <Button
-              variant="primary"
-              icon={<Plus />}
-              onClick={() => setPublishing(true)}
-            >
-              发布模型
-            </Button>
-          </div>
+        <div className="modelsSummaryAction">
+          <Button
+            variant="primary"
+            icon={<Plus />}
+            onClick={() => setPublishing(true)}
+          >
+            发布模型
+          </Button>
         </div>
       </section>
 
-      {/* Filter Row matching image 3 */}
+      {/* Filters narrow the rendered cards only; the summary above keeps
+          counting the whole model list. */}
       <div className="filterCard">
         <div className="filtersBar">
-          <label className="filterFieldInline flexGrow">
-            <span className="filterLabel">搜索</span>
-            <div className="searchFieldWrapper">
-              <Search className="fieldSearchIcon" aria-hidden />
-              <input
-                className="filterInput withIcon"
-                placeholder="搜索对外名称、显示名称或描述..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-              />
-            </div>
-          </label>
+          <div className="searchFieldGroup">
+            <Search className="searchFieldIcon" aria-hidden />
+            <input
+              className="filterSearchInput"
+              placeholder="搜索对外名称、显示名称或描述..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
+          </div>
 
           <label className="filterFieldInline">
             <span className="filterLabel">状态</span>
@@ -285,21 +330,25 @@ export function PublishedModelsPage({
             </select>
           </label>
 
-          <label className="filterFieldInline">
-            <span className="filterLabel">上游渠道</span>
-            <select
-              className="filterSelect"
-              value={channelFilter}
-              onChange={e => setChannelFilter(e.target.value)}
-            >
-              <option value="">全部上游渠道</option>
-              {providers.map(p => (
-                <option key={p.id} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* Without the route projection there is no model → channel mapping,
+              so the control is not shown rather than shown doing nothing. */}
+          {routes && (
+            <label className="filterFieldInline">
+              <span className="filterLabel">上游渠道</span>
+              <select
+                className="filterSelect"
+                value={channelFilter}
+                onChange={e => setChannelFilter(e.target.value)}
+              >
+                <option value="">全部上游渠道</option>
+                {providers.map(p => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <div className="filterActionButtons">
             <Button
@@ -316,7 +365,6 @@ export function PublishedModelsPage({
         </div>
       </div>
 
-      {/* Models List / Cards matching image 3 */}
       <Panel
         title="对外模型列表"
         sub="业务系统调用 /v1/* 时使用这里的名称（alias）。渠道与线路在路由策略中维护。"
@@ -326,7 +374,7 @@ export function PublishedModelsPage({
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : filteredModels.length ? (
-          <div className="modelCardsGrid">
+          <div className="modelsCardGrid">
             {filteredModels.map(m => {
               const isOnline = m.status === 1
               const tags = getModelTags(m)
@@ -336,12 +384,12 @@ export function PublishedModelsPage({
                   className={`modelCardNew ${isOnline ? 'active' : 'disabled'}`}
                   key={m.id}
                 >
-                  <header className="modelCardNewHead">
+                  <header className="modelCardHead">
                     <div className="modelCardIdentity">
                       <div className="modelCardIconBadge">
                         <Sparkles aria-hidden />
                       </div>
-                      <div className="modelCardNameBlock">
+                      <div className="modelCardTitleBlock">
                         <div className="modelCardAliasRow">
                           <h3 className="modelCardAlias mono">{m.alias}</h3>
                           <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
@@ -360,17 +408,22 @@ export function PublishedModelsPage({
                     </div>
                   </header>
 
-                  <p className="modelCardDescription">
-                    {m.description || '校园通用大语言模型，适用于问答、写作、分析等多种场景。'}
+                  {/* An absent description is shown as an em-dash. Generating
+                      prose here would attribute a purpose to the model that
+                      the gateway never recorded. */}
+                  <p className="modelCardDesc">
+                    {m.description || '—'}
                   </p>
 
-                  <div className="modelCardTags">
-                    {tags.map(t => (
-                      <span key={t} className="modelTagBadge">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
+                  {tags.length > 0 && (
+                    <div className="modelCardTags">
+                      {tags.map(t => (
+                        <span key={t.label} className={`modelTagBadge ${t.warn ? 'warn' : ''}`}>
+                          {t.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="modelCardMetaDivider" />
 
@@ -384,23 +437,7 @@ export function PublishedModelsPage({
                     <div className="modelCardInfoItem">
                       <span className="infoItemLabel">路由模式</span>
                       <span className="infoItemValue">
-                        {m.routing_mode_summary || '智能路由'}
-                      </span>
-                    </div>
-                    <div className="modelCardInfoItem">
-                      <span className="infoItemLabel">静态可路由性</span>
-                      <span className="infoItemValue">
-                        {m.statically_routable ? (
-                          <span className="textSuccess">✓ 正常可路由</span>
-                        ) : (
-                          <span className="textWarning">⚠ 暂无可路由线路</span>
-                        )}
-                      </span>
-                    </div>
-                    <div className="modelCardInfoItem">
-                      <span className="infoItemLabel">凭据状态</span>
-                      <span className="infoItemValue">
-                        {m.credential_configured ? '来源已配置' : '未检测到可用凭据'}
+                        {m.routing_mode_summary || '未配置'}
                       </span>
                     </div>
                   </div>
@@ -450,6 +487,14 @@ export function PublishedModelsPage({
               )
             })}
           </div>
+        ) : allModels.length ? (
+          // The list is not empty; the filters hid every card. Saying "暂无
+          // 对外模型" here would claim the deployment has none.
+          <EmptyState
+            icon={<Search />}
+            title="没有符合筛选条件的模型"
+            description="调整搜索、状态或上游渠道后重试。"
+          />
         ) : (
           <EmptyState
             icon={<Boxes />}
@@ -508,7 +553,7 @@ export function PublishedModelsPage({
                 ['状态', <StatusBadge key="status" status={detail.model.status} />],
                 ['配置版本', <span key="ver" className="mono">{detail.model.config_version}</span>],
                 ['静态可路由', detail.model.statically_routable ? <Badge key="r1" tone="success">是</Badge> : <Badge key="r2" tone="warning">否</Badge>],
-                ['路由模式总结', detail.model.routing_mode_summary || '智能路由'],
+                ['路由模式总结', detail.model.routing_mode_summary || '未配置'],
               ]}
             />
 
