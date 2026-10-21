@@ -21,6 +21,7 @@ import {
   type ModelImpact,
   type ModelTestOption,
   type Provider,
+  type PublishResult,
   type RouteView,
   type Tenant,
 } from '../api'
@@ -124,6 +125,7 @@ export function PublishedModelsPage({
   const [editingRoutesModel, setEditingRoutesModel] = useState<{id: string; alias: string} | null>(null)
   const [disableBusy, setDisableBusy] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [publication, setPublication] = useState<PublishResult | null>(null)
   // Disabling is irreversible for callers until the model is enabled again, so
   // the card opens the impact preview instead of a bare confirmation.
   const [impact, setImpact] = useState<{model: ModelConfig; preview: ModelImpact} | null>(null)
@@ -259,6 +261,10 @@ export function PublishedModelsPage({
         title="对外模型"
         subtitle="管理业务系统调用的模型名称与线路配置"
       />
+      {publication && <div className="notice success" role="status">
+        <span>{publication.created ? '已发布' : publication.route_created ? '已追加线路' : '已有相同线路'}：{publication.model.alias}。API Key 授权请单独管理。</span>
+        <Button size="sm" onClick={() => void open(publication.model)}>查看发布结果</Button>
+      </div>}
 
       {/* Each card counts one collection this page reads. The route tally that
           stood here answered a question about routes; this page is about the
@@ -511,7 +517,8 @@ export function PublishedModelsPage({
       {publishing && (
         <PublishModelWizard
           onClose={() => setPublishing(false)}
-          onPublished={() => {
+          onPublished={result => {
+            setPublication(result)
             void reload()
           }}
         />
