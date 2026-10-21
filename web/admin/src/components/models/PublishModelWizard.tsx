@@ -1,9 +1,9 @@
 import {useCallback, useEffect, useState} from 'react'
-import {Boxes, Info} from 'lucide-react'
+import {Info} from 'lucide-react'
 import {api, type Provider, type ProviderModel, type PublishResult} from '../../api'
 import {Drawer} from '../ui/Drawer'
 import {Button} from '../ui/Button'
-import {Field, Notice} from '../ui/Field'
+import {Field} from '../ui/Field'
 import {useToast} from '../ui/Toast'
 
 export function PublishModelWizard({onClose, onPublished}: {onClose: () => void; onPublished: () => void}) {
@@ -131,7 +131,7 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
       size="md"
       onClose={onClose}
       footer={
-        <div className="drawerActionFooter">
+        <>
           <Button onClick={onClose}>取消</Button>
           <Button
             variant="primary"
@@ -141,10 +141,10 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
           >
             {conflict ? '确认发布' : '发布'}
           </Button>
-        </div>
+        </>
       }
     >
-      <div className="drawerFormStack">
+      <div className="drawerStack">
         <div className="notice info" role="status">
           <Info aria-hidden />
           <span>首先选择上游渠道及其提供的模型，之后可在「路由策略」中追加备用或加权线路。</span>

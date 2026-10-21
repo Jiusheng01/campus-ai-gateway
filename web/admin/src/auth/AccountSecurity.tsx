@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState, type FormEvent} from 'react'
-import {AlertTriangle, KeyRound, Loader2, LogOut, MonitorSmartphone} from 'lucide-react'
+import {AlertTriangle, KeyRound, LogOut, MonitorSmartphone} from 'lucide-react'
 import {changePassword, clearSession, listSessions, revokeSession, type AdminSessionView, type WhoAmI} from '../api'
 import {Button} from '../components/ui/Button'
 import {Panel} from '../components/ui/Panel'

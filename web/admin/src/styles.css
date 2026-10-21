@@ -1024,6 +1024,10 @@ input:focus, select:focus, textarea:focus {
 
 .form { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+/* A label paired with a live length counter: the caption stays left and the
+   counter is pinned right, so it does not shift while the operator types. */
+.fieldLabelWithCount { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.charCountHint { font-size: 11px; font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1185,6 +1189,9 @@ input:focus, select:focus, textarea:focus {
   justify-content: space-between;
   gap: 12px;
 }
+/* Without this the title column refuses to shrink below its text width and
+   pushes the close button past the header's right edge. */
+.modalHeadText { min-width: 0; }
 .modalTitle { margin: 0; font-size: 16px; font-weight: 700; }
 .modalSub { margin: 4px 0 0; font-size: 12.5px; color: var(--text-muted); }
 .modalBody { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
@@ -1591,7 +1598,7 @@ input:focus, select:focus, textarea:focus {
 .detailRow.column .detailKey{margin:0}
 
 /* ========================================================================== */
-/* Campus AI Gateway - Modern SaaS Console Redesign (Images 1-5)               */
+/* Campus AI Gateway - Modern SaaS Console Redesign                          */
 /* ========================================================================== */
 
 /* --- 1. Top Page Banner & Illustrations ----------------------------------- */
@@ -2051,7 +2058,7 @@ input:focus, select:focus, textarea:focus {
   font-weight: normal;
 }
 
-/* --- 5. Image 1: Dashboard Page Sections ---------------------------------- */
+/* --- 5. Dashboard page sections ------------------------------------------- */
 .dashboardHeroContent {
   display: flex;
   flex-direction: column;
@@ -2174,7 +2181,7 @@ input:focus, select:focus, textarea:focus {
   margin: 0;
 }
 
-/* --- 6. Image 2: Upstream Channels (Providers) ---------------------------- */
+/* --- 6. Upstream channels (Providers) ------------------------------------- */
 .channelNameCell {
   display: flex;
   flex-direction: column;
@@ -2249,7 +2256,7 @@ input:focus, select:focus, textarea:focus {
   border-bottom-color: var(--primary);
 }
 
-/* --- 7. Image 3: Published Models Grid Cards ------------------------------ */
+/* --- 7. Published models grid cards --------------------------------------- */
 .modelsCardGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2322,7 +2329,7 @@ input:focus, select:focus, textarea:focus {
   padding-top: 10px;
 }
 
-/* --- 8. Image 4: Routing Policy & Route Editor ---------------------------- */
+/* --- 8. Routing policy and route editor ----------------------------------- */
 .routeStrategyPill {
   display: inline-flex;
   align-items: center;
@@ -2409,6 +2416,13 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 6px;
 }
+.routeModelDot { color: var(--text-faint); }
+/* The route count is the actionable part of the sub-line, so it keeps the
+   normal text colour while the version stays muted. */
+.routeModelLinesCount { color: var(--text); font-weight: 600; }
+/* The nested table must be allowed to shrink below its min-content width so
+   the Table primitive's own scroller, not the card, owns the overflow. */
+.routeModelTableWrap { min-width: 0; }
 .routeModelHeadRight {
   display: flex;
   align-items: center;
@@ -2438,6 +2452,9 @@ input:focus, select:focus, textarea:focus {
   font-weight: 700;
   color: #047857;
 }
+/* A configured credential is the positive state; it must not read like the
+   warning badge it replaces when the credential is missing. */
+.textSuccess { color: var(--success); font-weight: 600; }
 
 /* Route Editor Rules */
 .routeEditorCards {
@@ -2498,8 +2515,42 @@ input:focus, select:focus, textarea:focus {
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 10px;
 }
+/* Grid items default to min-width:auto, so an alias or URL wider than its
+   track would widen the whole card instead of wrapping inside the field. */
+.routeField { min-width: 0; }
 
-/* --- 9. Image 5: Call Management (Calls, Keys, Tenants) ------------------- */
+/* A note about the card's own rules, not a page-level alert, so it uses the
+   quiet surface instead of the accent tint of .notice. */
+.cardNotice {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Weighted mode previews each priority layer's target share. These are targets
+   for the router, not observed success rates, so the presentation is static:
+   no trend colours and no live state. */
+.sharesList { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.sharePriorityGroup { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.shareGroupTitle { font-size: 12px; font-weight: 600; }
+.shareBadges { display: flex; flex-wrap: wrap; gap: 6px; }
+.shareBadge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 2px 9px;
+  font-size: 12px;
+}
+.sharePct { color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* --- 9. Call management (calls, keys, tenants) ---------------------------- */
 .callsPageTabs {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(8px);
@@ -2876,7 +2927,9 @@ input:focus, select:focus, textarea:focus {
   font-weight: 600;
 }
 
-/* Tenant Quota Preview Card matching Image 5 */
+/* The API Key inherits its tenant's limits instead of carrying its own, so the
+   preview sits beside the tenant selector and shows the limits of the tenant
+   that is currently selected. */
 .tenantQuotaPreviewCard {
   background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
   border: 1px solid #bfdbfe;
@@ -3371,6 +3424,7 @@ input:focus, select:focus, textarea:focus {
 }
 .helpSection h3 {
   margin: 0 0 6px;
+}
 
 /* --- Ticket 05: Call management summary and data flow --------------------- */
 /* The key and tenant tables render these wrappers and cells, but the sheet had
@@ -3639,6 +3693,7 @@ input:focus, select:focus, textarea:focus {
 .secretLengthNotice {
   font-size: 11px;
   color: var(--text-muted);
+}
 
 /* Shown in place of the today figure when /admin/status fails. It has to read
    as an absence, not as a low value: a muted red distinguishes "we could not

@@ -29,13 +29,12 @@ import {securityLabel, securityTone} from '../lib/labels'
 import {ago} from '../lib/format'
 
 /**
- * Width at which the sidebar becomes an overlay drawer. It has to equal the
- * breakpoint of the `.sidebar` / `.mobileNavTrigger` rules in styles.css: the
- * drawer state and the layout that shows it are two halves of one switch, and
- * a mismatch leaves the drawer openable at a width where no drawer exists.
+ * Width at which the sidebar becomes an overlay drawer, read from the desktop
+ * side for the resize-close listener. It has to equal the breakpoint of the
+ * `.sidebar` / `.mobileNavTrigger` rules in styles.css: the drawer state and
+ * the layout that shows it are two halves of one switch, and a mismatch leaves
+ * the drawer openable at a width where no drawer exists.
  */
-const MOBILE_DRAWER_QUERY = '(max-width: 780px)'
-/** The same boundary read from the desktop side, for the resize-close listener. */
 const DESKTOP_QUERY = '(min-width: 781px)'
 
 /** Roles the gateway accepts on GET /admin/security-events (see the RBAC allow-list). */

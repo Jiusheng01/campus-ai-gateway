@@ -1,26 +1,8 @@
 import {useCallback, useMemo, useState} from 'react'
-import {
-  Activity,
-  AlertCircle,
-  Boxes,
-  CheckCircle2,
-  Clock,
-  Layers,
-  Network,
-  Pencil,
-  Power,
-  RefreshCw,
-  Route,
-  Search,
-  Shield,
-  Sliders,
-  Sparkles,
-  Zap,
-} from 'lucide-react'
+import {Layers, Pencil, Route, Shield, Sliders, Sparkles} from 'lucide-react'
 import {api, type RouteView} from '../api'
-import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
-import {Badge, StatusBadge} from '../components/ui/Badge'
+import {Badge} from '../components/ui/Badge'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {Table} from '../components/ui/Table'
@@ -147,7 +129,6 @@ export function RoutesPage() {
         subtitle="查看和编辑所有对外模型的线路。优先级数字越小越先尝试；同层权重只表示配置目标，不代表实际成功率。"
       />
 
-      {/* 4 Strategy Summary Cards matching image 4 */}
       <section aria-label="策略概览统计">
         <StatGrid columns={4}>
           <StatCard
@@ -181,7 +162,6 @@ export function RoutesPage() {
         </StatGrid>
       </section>
 
-      {/* Filter Row matching image 4 */}
       <div className="filterCard">
         <div className="filtersBar">
           <label className="filterFieldInline">
@@ -236,7 +216,6 @@ export function RoutesPage() {
         </div>
       </div>
 
-      {/* Grouped Routing List matching image 4 */}
       <section aria-label="路由配置列表" className="stack">
         <div className="sectionHeaderWithCount">
           <h2 className="sectionTitle">
@@ -252,7 +231,6 @@ export function RoutesPage() {
           <div className="routeModelCardsStack">
             {groupedModels.map(gm => (
               <article className="routeModelGroupCard" key={gm.model_id}>
-                {/* Model Header in the Card matching image 4 */}
                 <header className="routeModelGroupHead">
                   <div className="routeModelHeadLeft">
                     <div className="routeModelIconMark">
@@ -296,7 +274,6 @@ export function RoutesPage() {
                   </div>
                 </header>
 
-                {/* Nested Routes Table matching image 4 */}
                 <div className="routeModelTableWrap">
                   <Table
                     heads={[

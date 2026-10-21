@@ -4,7 +4,7 @@ import type {ApiKey, ModelConfig, Tenant} from '../../api'
 import {Button} from '../ui/Button'
 import {Field} from '../ui/Field'
 import {useConfirm} from '../ui/ConfirmDialog'
-import {fmt} from '../../lib/format'
+import {quotaState, quotaText} from '../../lib/quota'
 
 export type KeyDraft = Partial<ApiKey> & {id?: string}
 
@@ -18,23 +18,10 @@ const SECTIONS: {key: SectionKey; label: string}[] = [
 ]
 
 /**
- * A tenant limit has three distinct states, and operators act differently on
- * each: a number is a cap to work within, zero is a deliberate "no cap", and an
- * absent field means the tenant predates the limit and inherits whatever the
- * gateway does by default. Rendering zero and absent as the same label would
- * hide a real cap or promise one that does not exist.
- */
-type LimitState = {kind: 'value'; value: number} | {kind: 'unlimited'} | {kind: 'unset'}
-
-export function limitState(limit?: number | null): LimitState {
-  if (limit === undefined || limit === null) return {kind: 'unset'}
-  if (limit === 0) return {kind: 'unlimited'}
-  return {kind: 'value', value: limit}
-}
-
-/**
- * One limit, rendered in whichever of the three states it is in. `className`
- * carries the surrounding metric styling so the label reads as one value.
+ * One limit in whichever of the three states it is in. The state and the text
+ * come from lib/quota, which also feeds the tenant table, so the two surfaces
+ * cannot describe the same number differently. `className` carries the
+ * surrounding metric styling so the label reads as one value.
  */
 export function LimitValue({
   limit,
@@ -45,16 +32,16 @@ export function LimitValue({
   unit?: string
   className?: string
 }) {
-  const state = limitState(limit)
-  if (state.kind === 'unlimited') {
-    return <span className={`${className} quotaUnlimitedTag`.trim()}>无限制</span>
+  const state = quotaState(limit)
+  if (state === 'unlimited') {
+    return <span className={`${className} quotaUnlimitedTag`.trim()}>{quotaText(limit)}</span>
   }
-  if (state.kind === 'unset') {
-    return <span className={`${className} quotaUnsetTag`.trim()}>未设置</span>
+  if (state === 'unset') {
+    return <span className={`${className} quotaUnsetTag`.trim()}>{quotaText(limit)}</span>
   }
   return (
     <span className={`${className} quotaNumericValue mono`.trim()}>
-      {fmt(state.value)}
+      {quotaText(limit)}
       {unit ? ` ${unit}` : ''}
     </span>
   )

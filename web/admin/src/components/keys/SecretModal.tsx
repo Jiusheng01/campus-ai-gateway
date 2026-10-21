@@ -1,13 +1,5 @@
 import {useState} from 'react'
-import {
-  AlertTriangle,
-  Check,
-  CheckCircle2,
-  Copy,
-  KeyRound,
-  Lock,
-  ShieldAlert,
-} from 'lucide-react'
+import {Check, CheckCircle2, Copy, KeyRound, ShieldAlert} from 'lucide-react'
 import {Modal} from '../ui/Modal'
 import {Button} from '../ui/Button'
 import {useConfirm} from '../ui/ConfirmDialog'

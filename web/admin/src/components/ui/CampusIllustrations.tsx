@@ -134,14 +134,12 @@ export function CampusSidebarCard() {
 export function MiniSparkline({
   data = [35, 45, 30, 60, 75, 55, 80, 95],
   color = 'var(--primary)',
-  trend = 'up',
   type = 'bar',
   height = 28,
   width = 64,
 }: {
   data?: number[]
   color?: string
-  trend?: 'up' | 'down' | 'neutral'
   type?: 'bar' | 'line'
   height?: number
   width?: number

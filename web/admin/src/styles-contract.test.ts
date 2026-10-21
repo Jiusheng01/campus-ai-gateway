@@ -9,9 +9,8 @@ import {describe, expect, it} from 'vitest'
  * class names resolved to no rule, so whole surfaces fell back to browser
  * defaults while the suite stayed green.
  *
- * Later tickets in this remediation shrink the allowlist below as they align
- * their own surfaces; ticket 10 empties it. A new unmatched name is a failure,
- * not a review note.
+ * There is no allowlist: a name a component can render either has a rule or
+ * the contract fails, so the gap cannot reopen through a tolerated entry.
  */
 
 // Vitest's jsdom environment resolves module URLs to http, so the project root
@@ -71,33 +70,6 @@ const VARIANT_TOKENS = new Set([
   'warning',
   'wildcard',
 ])
-
-/**
- * The names this ticket does not fix. It is deliberately the only place a
- * missing rule is tolerated, and it must stay sorted so two tickets appending
- * to it produce a readable conflict. An entry that is no longer unmatched fails
- * the second test, which is how the list shrinks instead of rotting.
- */
-const UNSTYLED_CLASS_ALLOWLIST: readonly string[] = [
-  'cardNotice',
-  'charCountHint',
-  'drawerActionFooter',
-  'drawerFormStack',
-  'fieldLabelWithCount',
-  'modalHeadText',
-  'noticeTextContent',
-  'routeField',
-  'routeModelDot',
-  'routeModelLinesCount',
-  'routeModelTableWrap',
-  'shareBadge',
-  'shareBadges',
-  'shareGroupTitle',
-  'sharePct',
-  'sharePriorityGroup',
-  'sharesList',
-  'textSuccess',
-]
 
 function filesWithExtension(dir: string, extension: string): string[] {
   const found: string[] = []
@@ -310,25 +282,28 @@ function unmatchedClassNames(): string[] {
 
 describe('style contract', () => {
   it('gives every class name a component can render a rule in styles.css', () => {
-    const allowed = new Set(UNSTYLED_CLASS_ALLOWLIST)
-    const missing = unmatchedClassNames().filter((name) => !allowed.has(name))
+    const missing = unmatchedClassNames()
     expect(
       missing,
-      `Class names rendered by src/**/*.tsx with no rule in styles.css:\n${missing.join('\n')}\n\n` +
-        'Add the rule, or add the name to UNSTYLED_CLASS_ALLOWLIST only if a later ticket owns it.',
+      `Class names rendered by src/**/*.tsx with no rule in styles.css:\n${missing.join('\n')}`,
     ).toEqual([])
   })
 
-  it('keeps UNSTYLED_CLASS_ALLOWLIST sorted and free of stale entries', () => {
-    // Sorted: two tickets appending at the same place produce one conflict.
-    expect(UNSTYLED_CLASS_ALLOWLIST).toEqual([...UNSTYLED_CLASS_ALLOWLIST].sort())
-    // No duplicates.
-    expect(new Set(UNSTYLED_CLASS_ALLOWLIST).size).toBe(UNSTYLED_CLASS_ALLOWLIST.length)
-    // Every entry still names a real, still-unstyled class. A rule added for a
-    // name left in the list would otherwise sit there forever.
-    const unmatched = new Set(unmatchedClassNames())
-    const stale = UNSTYLED_CLASS_ALLOWLIST.filter((name) => !unmatched.has(name))
-    expect(stale, `Allowlisted names that now resolve or are no longer rendered:\n${stale.join('\n')}`).toEqual([])
+  it('keeps the stylesheet syntactically complete: every block is closed', () => {
+    // `vite build` only warns about an unbalanced brace. A missing `}` nests
+    // every rule after it inside the previous selector, so those surfaces keep
+    // browser defaults while the build stays green — the failure mode this
+    // contract exists to catch, one level below class names.
+    const css = readFileSync(stylesheetPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    let depth = 0
+    let lowest = 0
+    for (const char of css) {
+      if (char === '{') depth++
+      if (char === '}') depth--
+      lowest = Math.min(lowest, depth)
+    }
+    expect(lowest, 'styles.css closes a block that was never opened').toBeGreaterThanOrEqual(0)
+    expect(depth, 'styles.css has an unclosed block').toBe(0)
   })
 
   it('styles every tone StatCard accepts', () => {

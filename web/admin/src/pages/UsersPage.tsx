@@ -25,7 +25,6 @@ import {ago, num, when} from '../lib/format'
  */
 export function UsersPage() {
   const toast = useToast()
-  const confirm = useConfirm()
   const {data, loading, error, reload} = useResource(async () => {
     const out = await listUsers()
     return out

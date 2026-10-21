@@ -1,19 +1,5 @@
 import {useCallback, useMemo, useState} from 'react'
-import {
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  Check,
-  ChevronDown,
-  ChevronUp,
-  Clock,
-  Layers,
-  Network,
-  Plus,
-  Route,
-  Trash2,
-  Zap,
-} from 'lucide-react'
+import {AlertTriangle, ArrowDown, ArrowUp, Plus, Trash2} from 'lucide-react'
 import {api, type ModelDetail, type ModelRoute, type Provider} from '../../api'
 import {Button} from '../ui/Button'
 import {Field, Notice} from '../ui/Field'
@@ -184,7 +170,7 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
       {pending && (
         <div className="notice warning" role="alert">
           <AlertTriangle aria-hidden />
-          <div className="noticeTextContent">
+          <div>
             <b>切换到「{modeLabel[pending.mode]}」会改变以下字段，确认后只修改草稿，尚未保存：</b>
             <ul className="drawerSectionList">
               {pending.diff.map(line => (

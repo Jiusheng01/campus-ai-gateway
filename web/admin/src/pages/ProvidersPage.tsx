@@ -1,26 +1,5 @@
 import {useCallback, useMemo, useState} from 'react'
-import {
-  Activity,
-  AlertCircle,
-  AlertTriangle,
-  ArrowUpRight,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  Eye,
-  FlaskConical,
-  Key,
-  Layers,
-  Network,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Search,
-  SlidersHorizontal,
-  Trash2,
-  XCircle,
-} from 'lucide-react'
+import {AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Network, Plus} from 'lucide-react'
 import {
   api,
   type CircuitView,
@@ -31,7 +10,6 @@ import {
 } from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
-import {Badge, StatusBadge} from '../components/ui/Badge'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {Table} from '../components/ui/Table'
@@ -44,7 +22,7 @@ import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
 import {PageBanner} from '../components/ui/PageBanner'
-import {StatCard, StatGrid} from '../components/ui/StatCard'
+import {StatCard} from '../components/ui/StatCard'
 import {Detail} from '../components/ui/Detail'
 import {useResource} from '../lib/useResource'
 import {ago, ms, when} from '../lib/format'
@@ -361,7 +339,6 @@ export function ProvidersPage({
         subtitle="统一管理多种模型供应商的接入配置，支持快速切换与健康监控。"
       />
 
-      {/* Top Summary Statistics Cards matching image 2 */}
       <section aria-label="渠道概览统计" className="providersSummarySection">
         <div className="providersSummaryHeader">
           <div className="providersSummaryStats">
@@ -405,7 +382,6 @@ export function ProvidersPage({
         </div>
       </section>
 
-      {/* Filter Section matching image 2 */}
       <div className="filterCard">
         <div className="filtersBar">
           <label className="filterFieldInline">
@@ -504,7 +480,6 @@ export function ProvidersPage({
         </div>
       )}
 
-      {/* Main Channels Table matching image 2 */}
       <Panel title="渠道列表" sub="管理当前网关接入的模型通道、鉴权信息及测试状态">
         {loading && !data ? (
           <SkeletonRows rows={5} columns={9} />
@@ -710,7 +685,6 @@ export function ProvidersPage({
         )}
       </Panel>
 
-      {/* Add / Edit Channel Drawer matching image 2 */}
       {draft && (
         <Drawer
           title={draft.id ? `编辑渠道：${draft.name}` : '新增渠道'}

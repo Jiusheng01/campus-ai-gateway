@@ -14,11 +14,8 @@ import {
 } from 'lucide-react'
 import {
   api,
-  listModelTestOptions,
   type ModelConfig,
   type ModelDetail,
-  type ModelImpact,
-  type ModelTestOption,
   type Provider,
   type RouteView,
   type Tenant,
@@ -33,7 +30,6 @@ import {Detail} from '../components/ui/Detail'
 import {Modal} from '../components/ui/Modal'
 import {RouteEditor} from '../components/models/RouteEditor'
 import {PublishModelWizard} from '../components/models/PublishModelWizard'
-import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {PageBanner} from '../components/ui/PageBanner'
@@ -120,36 +116,14 @@ export function PublishedModelsPage({
   const toast = useToast()
   const confirm = useConfirm()
   const [detailBusy, setDetailBusy] = useState('')
-  const [detailError, setDetailError] = useState('')
   const [editingRoutesModel, setEditingRoutesModel] = useState<{id: string; alias: string} | null>(null)
-  const [impact, setImpact] = useState<ModelImpact | null>(null)
-  const [impactError, setImpactError] = useState('')
   const [disableBusy, setDisableBusy] = useState(false)
-  const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
   const [publishing, setPublishing] = useState(false)
-  const [focusAuthorization, setFocusAuthorization] = useState(false)
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
-
-  const openTest = async () => {
-    try {
-      setTesting(await listModelTestOptions())
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '无法加载模型测试选项')
-    }
-  }
-
-  const loadImpact = async (m: ModelConfig) => {
-    setImpactError('')
-    try {
-      setImpact(await api<ModelImpact>(`/admin/models/${m.id}/impact`))
-    } catch (e) {
-      setImpactError(e instanceof Error ? e.message : '无法读取停用影响')
-    }
-  }
 
   const setModelStatus = async (model: ModelConfig, status: 1 | 2) => {
     setDisableBusy(true)
@@ -165,7 +139,6 @@ export function PublishedModelsPage({
         }),
       })
       toast.success(status === 2 ? '模型已停用；已发布 alias 不会自动从 Key 白名单移除' : '模型已启用')
-      setImpact(null)
       if (detail && detail.model.id === model.id) {
         await open(model)
       }
@@ -198,9 +171,7 @@ export function PublishedModelsPage({
 
   const open = async (m: ModelConfig, options: {authorize?: boolean} = {}) => {
     setDetailBusy(m.id)
-    setDetailError('')
     setDetail(null)
-    setFocusAuthorization(options.authorize === true)
     try {
       const d = await api<ModelDetail>(`/admin/models/${m.id}`)
       setDetail(d)
@@ -210,7 +181,7 @@ export function PublishedModelsPage({
         }, 100)
       }
     } catch (e) {
-      setDetailError(e instanceof Error ? e.message : '无法加载模型详情')
+      toast.error(e instanceof Error ? e.message : '无法加载模型详情')
     } finally {
       setDetailBusy('')
     }
