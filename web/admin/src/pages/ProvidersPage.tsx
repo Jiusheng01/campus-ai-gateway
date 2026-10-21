@@ -1,5 +1,5 @@
 import {useCallback, useMemo, useState} from 'react'
-import {AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Network, Plus} from 'lucide-react'
+import {AlertCircle, CheckCircle2, Network, Plus} from 'lucide-react'
 import {
   api,
   type CircuitView,
@@ -20,7 +20,8 @@ import {ProviderForm, type ProviderDraft} from '../components/providers/Provider
 import {ProviderTestPanel} from '../components/providers/ProviderTestPanel'
 import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
-import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
+import {providerTemplates, PROTOCOLS, protocolLabel} from '../components/providers/templates'
+import {Pagination} from '../components/ui/Pagination'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard} from '../components/ui/StatCard'
 import {Detail} from '../components/ui/Detail'
@@ -178,6 +179,8 @@ export function ProvidersPage({
   const [deleting, setDeleting] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batching, setBatching] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   const query = useMemo(() => {
     const q = new URLSearchParams()
@@ -207,6 +210,9 @@ export function ProvidersPage({
   const {data, loading, error, errorStatus, reload} = useResource(loader, [query])
 
   const save = async (v: ProviderDraft) => {
+    if (saving) return
+    setSaving(true)
+    setSaveError('')
     try {
       await api(v.id ? `/admin/providers/${v.id}` : '/admin/providers', {
         method: v.id ? 'PUT' : 'POST',
@@ -216,7 +222,9 @@ export function ProvidersPage({
       setDraft(null)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '保存渠道失败')
+      setSaveError(e instanceof Error ? e.message : '保存渠道失败，请重试。')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -318,6 +326,7 @@ export function ProvidersPage({
   const [activeProvider, setActiveProvider] = useState<Provider | null>(null)
 
   const openDrawer = (p: Provider, defaultTab: Tab = 'basic') => {
+    setSaveError('')
     setTab(defaultTab)
     setActiveProvider(p)
     setDraft({
@@ -335,10 +344,9 @@ export function ProvidersPage({
 
   return (
     <div className="stack">
-      {/* Top Banner with Campus Illustration */}
       <PageBanner
-        title="连接全球优质模型服务"
-        subtitle="统一管理多种模型渠道的接入配置，支持快速切换与健康监控。"
+        title="渠道管理"
+        subtitle="维护模型服务的连接配置、凭据与候选模型。启用状态与最近诊断分别展示。"
       />
 
       <section aria-label="渠道概览统计" className="providersSummarySection">
@@ -352,7 +360,7 @@ export function ProvidersPage({
               className="compactStat"
             />
             <StatCard
-              label="在线"
+              label="已启用"
               value={onlineCount ?? '—'}
               subtext={onlinePct === null ? undefined : `(${onlinePct})`}
               icon={<CheckCircle2 />}
@@ -360,7 +368,7 @@ export function ProvidersPage({
               className="compactStat"
             />
             <StatCard
-              label="异常 / 停用"
+              label="已停用"
               value={offlineCount ?? '—'}
               subtext={offlinePct === null ? undefined : `(${offlinePct})`}
               icon={<AlertCircle />}
@@ -374,6 +382,7 @@ export function ProvidersPage({
               variant="primary"
               icon={<Plus />}
               onClick={() => {
+                setSaveError('')
                 setTab('basic')
                 setDraft({status: 1, protocol: 'openai-chat'})
               }}
@@ -393,22 +402,25 @@ export function ProvidersPage({
               placeholder="请输入渠道名称"
               value={draftFilters.name}
               onChange={e => setDraftFilters({...draftFilters, name: e.target.value})}
-              onKeyDown={e => e.key === 'Enter' && setFilters(draftFilters)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  setFilters(draftFilters)
+                  setOffset(0)
+                  setSelected(new Set())
+                }
+              }}
             />
           </label>
 
           <label className="filterFieldInline">
-            <span className="filterLabel">渠道类型</span>
+            <span className="filterLabel">供应商</span>
             <select
               className="filterSelect"
               value={draftFilters.provider_type}
               onChange={e => setDraftFilters({...draftFilters, provider_type: e.target.value})}
             >
               <option value="">全部</option>
-              <option value="qwen">Qwen / 通义千问</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="doubao">豆包 / 火山引擎</option>
-              <option value="openai">OpenAI</option>
+              {providerTemplates.filter(t => t.id !== 'custom').map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
               <option value="custom">自定义 / 实验室</option>
             </select>
           </label>
@@ -437,7 +449,7 @@ export function ProvidersPage({
               onChange={e => setDraftFilters({...draftFilters, status: e.target.value})}
             >
               <option value="">全部</option>
-              <option value="1">启用 / 在线</option>
+              <option value="1">已启用</option>
               <option value="2">停用</option>
             </select>
           </label>
@@ -448,6 +460,7 @@ export function ProvidersPage({
                 setFilters(emptyFilters)
                 setDraftFilters(emptyFilters)
                 setOffset(0)
+                setSelected(new Set())
               }}
             >
               重置
@@ -457,6 +470,7 @@ export function ProvidersPage({
               onClick={() => {
                 setFilters(draftFilters)
                 setOffset(0)
+                setSelected(new Set())
               }}
             >
               筛选
@@ -482,7 +496,7 @@ export function ProvidersPage({
         </div>
       )}
 
-      <Panel title="渠道列表" sub="管理当前网关接入的模型通道、鉴权信息及测试状态">
+      <Panel title="渠道列表" sub={`当前筛选共 ${total} 个渠道；上方统计为全部配置，不代表实时健康。`}>
         {loading && !data ? (
           <SkeletonRows rows={5} columns={9} />
         ) : error ? (
@@ -499,19 +513,18 @@ export function ProvidersPage({
                   onChange={toggleAll}
                 />,
                 '渠道名称',
-                '渠道类型',
-                '接口协议',
-                'Base URL',
+                '供应商',
+                '连接',
                 '状态',
                 '凭据状态',
-                '最后测试时间',
-                '候选 / 引用',
+                '最近诊断',
+                '候选模型 / 引用',
                 '操作',
               ]}
-              minWidth={1180}
+              minWidth={1080}
             >
               {items.map(p => {
-                const friendly = friendlyProviderName(p.name)
+                const vendor = providerTemplates.find(t => t.id !== 'custom' && (t.id === p.provider_type || t.aliases?.includes(p.provider_type)))
                 const isSelected = selected.has(p.id)
                 const isOnline = p.status === 1
                 const hasCred = p.credential?.configured
@@ -529,28 +542,25 @@ export function ProvidersPage({
                     <td>
                       <div className="channelNameCell">
                         <b className="channelMainName mono">{p.name}</b>
-                        {friendly && <span className="channelFriendlyName">({friendly})</span>}
                         {p.description && <p className="channelDescText">{p.description}</p>}
                       </div>
                     </td>
                     <td>
                       <span className="providerTypeBadge">
-                        {p.provider_type || '自定义'}
+                        {vendor?.label || p.provider_type || '未分类'}
                       </span>
                     </td>
                     <td>
                       <span className="protocolBadge">{protocolLabel(p.protocol)}</span>
-                    </td>
-                    <td>
-                      <span className="mono cut baseUrlText" title={p.base_url}>
+                      <div className="mono cut baseUrlText" title={p.base_url}>
                         {p.base_url || '—'}
-                      </span>
+                      </div>
                     </td>
                     <td>
                       <div className="channelStatusStack">
                         <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
                           <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
-                          {isOnline ? '在线' : '已停用'}
+                          {isOnline ? '已启用' : '已停用'}
                         </span>
                         <CircuitChip
                           circuit={circuits.get(p.name)}
@@ -579,14 +589,14 @@ export function ProvidersPage({
                     </td>
                     <td>
                       {p.last_test ? (
-                        <div className="lastTestCell">
+                        <div className="lastTestCell" title={when(p.last_test.at)}>
                           <div className="lastTestTime">{ago(p.last_test.at)}</div>
                           <div className={`lastTestLatency ${p.last_test.ok ? 'success' : 'danger'}`}>
-                            {p.last_test.ok ? '✓' : '✗'} {ms(p.last_test.latency_ms)}
+                            {p.last_test.ok ? '成功' : '失败'} · {ms(p.last_test.latency_ms)}
                           </div>
                         </div>
                       ) : (
-                        <span className="muted">—</span>
+                        <span className="muted">尚未诊断</span>
                       )}
                     </td>
                     <td>
@@ -638,33 +648,8 @@ export function ProvidersPage({
               })}
             </Table>
 
-            {/* Table Pagination Footer */}
-            <footer className="tablePaginationFooter">
-              <span className="paginationInfo">
-                第 {offset + 1}-{Math.min(offset + PAGE_SIZE, total)} 条，共 {total} 条
-              </span>
-              <div className="paginationControls">
-                <Button
-                  size="sm"
-                  icon={<ChevronLeft />}
-                  disabled={offset === 0}
-                  onClick={() => setOffset(prev => Math.max(0, prev - PAGE_SIZE))}
-                >
-                  上一页
-                </Button>
-                <span className="paginationCurrentPage">
-                  {Math.floor(offset / PAGE_SIZE) + 1}
-                </span>
-                <Button
-                  size="sm"
-                  icon={<ChevronRight />}
-                  disabled={offset + PAGE_SIZE >= total}
-                  onClick={() => setOffset(prev => prev + PAGE_SIZE)}
-                >
-                  下一页
-                </Button>
-              </div>
-            </footer>
+            <Pagination page={Math.floor(offset / PAGE_SIZE) + 1} pageSize={PAGE_SIZE} total={total} loading={loading}
+              onPageChange={page => {setOffset((page - 1) * PAGE_SIZE); setSelected(new Set())}} />
           </>
         ) : (
           <EmptyState
@@ -676,6 +661,7 @@ export function ProvidersPage({
                 variant="primary"
                 icon={<Plus />}
                 onClick={() => {
+                  setSaveError('')
                   setTab('basic')
                   setDraft({status: 1, protocol: 'openai-chat'})
                 }}
@@ -692,7 +678,7 @@ export function ProvidersPage({
           title={draft.id ? `编辑渠道：${draft.name}` : '新增渠道'}
           subtitle="凭据加密保存，只写不读；也可以改为引用环境变量。"
           size="lg"
-          onClose={() => setDraft(null)}
+          onClose={() => {if (!saving) setDraft(null)}}
         >
           {draft.id ? (
             <div className="drawerStack">
@@ -739,6 +725,8 @@ export function ProvidersPage({
               {tab === 'basic' && (
                 <ProviderForm
                   value={draft}
+                  saving={saving}
+                  error={saveError}
                   onSave={save}
                   onCancel={() => setDraft(null)}
                 />
@@ -774,6 +762,8 @@ export function ProvidersPage({
           ) : (
             <ProviderForm
               value={draft}
+              saving={saving}
+              error={saveError}
               onSave={save}
               onCancel={() => setDraft(null)}
             />

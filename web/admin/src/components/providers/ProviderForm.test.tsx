@@ -4,6 +4,17 @@ import userEvent from '@testing-library/user-event'
 import {ProviderForm} from './ProviderForm'
 
 describe('ProviderForm', () => {
+  it('keeps an existing Credential write-only and disables save while a request is pending', () => {
+    render(<ProviderForm value={{id: 'p1', name: 'alpha', credential: {source_type: 'inline', configured: true, last4: '1234'}}}
+      saving error="渠道名称已存在" onSave={() => {}} onCancel={() => {}} />)
+    expect(screen.getByLabelText(/API Key/)).toHaveValue('')
+    expect(screen.getByRole('button', {name: '保存修改'})).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('渠道名称已存在')
+    expect(screen.getByRole('group', {name: '基础信息'})).toBeInTheDocument()
+    expect(screen.getByRole('group', {name: '连接设置'})).toBeInTheDocument()
+    expect(screen.getByRole('group', {name: '访问凭据'})).toBeInTheDocument()
+  })
+
   it('requires a credential for a new inline channel and sends only the selected source', async () => {
     const user = userEvent.setup()
     const onSave = vi.fn()
