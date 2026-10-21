@@ -1,11 +1,40 @@
 import {useCallback, useMemo, useState} from 'react'
-import {ChevronLeft, ChevronRight, Network, Pencil, Plus, RefreshCw, Trash2} from 'lucide-react'
-import {api, type CircuitView, type DashboardStatus, type Provider, type ProviderDeleteResult, type ProviderImpact} from '../api'
+import {
+  Activity,
+  AlertCircle,
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Eye,
+  FlaskConical,
+  Key,
+  Layers,
+  Network,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  XCircle,
+} from 'lucide-react'
+import {
+  api,
+  type CircuitView,
+  type DashboardStatus,
+  type Provider,
+  type ProviderDeleteResult,
+  type ProviderImpact,
+} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
-import {StatusBadge} from '../components/ui/Badge'
+import {Badge, StatusBadge} from '../components/ui/Badge'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
-import {SkeletonCards} from '../components/ui/Skeleton'
+import {SkeletonRows} from '../components/ui/Skeleton'
+import {Table} from '../components/ui/Table'
 import {Drawer} from '../components/ui/Drawer'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
@@ -14,10 +43,13 @@ import {ProviderTestPanel} from '../components/providers/ProviderTestPanel'
 import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
+import {PageBanner} from '../components/ui/PageBanner'
+import {StatCard, StatGrid} from '../components/ui/StatCard'
+import {MiniSparkline} from '../components/ui/CampusIllustrations'
 import {useResource} from '../lib/useResource'
-import {ms, when} from '../lib/format'
+import {ago, ms, when} from '../lib/format'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 15
 
 type Filters = {name: string; provider_type: string; protocol: string; status: string}
 const emptyFilters: Filters = {name: '', provider_type: '', protocol: '', status: ''}
@@ -31,10 +63,6 @@ type Bundle = {
   sampledAt: Date
 }
 
-/**
- * The impact preview is server-computed. DELETE still rechecks and returns the
- * actual counts; the preview is only the warning.
- */
 async function deleteImpact(providerID: string): Promise<ProviderImpact> {
   return api<ProviderImpact>(`/admin/providers/${providerID}/impact`)
 }
@@ -91,7 +119,7 @@ export function ProvidersPage({
         method: v.id ? 'PUT' : 'POST',
         body: JSON.stringify(v),
       })
-      toast.success('渠道已保存')
+      toast.success(v.id ? '渠道配置已更新' : '渠道已创建')
       setDraft(null)
       reload()
     } catch (e) {
@@ -139,6 +167,15 @@ export function ProvidersPage({
     })
   }
 
+  const toggleAll = () => {
+    const items = data?.providers || []
+    if (selected.size === items.length) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(items.map(p => p.id)))
+    }
+  }
+
   const batchStatus = async (status: 1 | 2) => {
     if (!selected.size) return
     setBatching(true)
@@ -165,205 +202,469 @@ export function ProvidersPage({
 
   const items = data?.providers || []
   const total = data?.total || 0
-  const circuits = new Map((data?.circuits || []).map(c => [c.provider, c]))
-  const circuitLabel = (name: string) => {
-    const c = circuits.get(name)
-    if (!c) return '无近期尝试'
-    const retry = c.retry_in_ms > 0 ? `，${Math.ceil(c.retry_in_ms / 1000)}s 后探测` : ''
-    return `${c.state}${retry}`
+  const onlineCount = items.filter(p => p.status === 1).length
+  const offlineCount = items.filter(p => p.status !== 1).length
+  const onlinePct = total > 0 ? Math.round((onlineCount / total) * 100) : 0
+  const offlinePct = total > 0 ? Math.round((offlineCount / total) * 100) : 0
+
+  const [activeProvider, setActiveProvider] = useState<Provider | null>(null)
+
+  const openDrawer = (p: Provider, defaultTab: Tab = 'basic') => {
+    setTab(defaultTab)
+    setActiveProvider(p)
+    setDraft({
+      id: p.id,
+      name: p.name,
+      base_url: p.base_url,
+      protocol: p.protocol,
+      provider_type: p.provider_type,
+      description: p.description,
+      credential_env: p.credential_env,
+      credential: p.credential,
+      status: p.status,
+    })
   }
 
   return (
-    <>
-      <Panel
-        title="上游渠道"
-        sub="配置模型渠道的接入地址与凭据来源。凭据加密保存、只写不读；候选模型与诊断测试在渠道详情中完成。"
-        actions={
-          <Button variant="primary" icon={<Plus />} onClick={() => { setTab('basic'); setDraft({status: 1, protocol: 'openai-chat'}) }}>
-            新增渠道
-          </Button>
-        }
-      >
-        <div className="filters">
+    <div className="stack">
+      {/* Top Banner with Campus Illustration */}
+      <PageBanner
+        title="连接全球优质模型服务"
+        subtitle="统一管理多种模型供应商的接入配置，支持快速切换与健康监控。"
+      />
+
+      {/* Top Summary Statistics Cards matching image 2 */}
+      <section aria-label="渠道概览统计" className="providersSummarySection">
+        <div className="providersSummaryHeader">
+          <div className="providersSummaryStats">
+            <StatCard
+              label="渠道总数"
+              value={total}
+              icon={<Network />}
+              tone="default"
+              className="compactStat"
+            />
+            <StatCard
+              label="在线"
+              value={
+                <span className="statWithIndicator">
+                  <i className="dot on" aria-hidden />
+                  {onlineCount} <small className="statSubPct">({onlinePct}%)</small>
+                </span>
+              }
+              icon={<CheckCircle2 />}
+              sparkline={<MiniSparkline data={[20, 40, 60, 80, 70, 90]} color="#10b981" />}
+              tone="success"
+              className="compactStat"
+            />
+            <StatCard
+              label="异常 / 停用"
+              value={
+                <span className="statWithIndicator">
+                  <i className={`dot ${offlineCount > 0 ? 'down' : 'unknown'}`} aria-hidden />
+                  {offlineCount} <small className="statSubPct">({offlinePct}%)</small>
+                </span>
+              }
+              icon={<AlertCircle />}
+              sparkline={<MiniSparkline data={[10, 15, 12, 20, 18, 25]} color="#f59e0b" />}
+              tone={offlineCount > 0 ? 'warning' : 'default'}
+              className="compactStat"
+            />
+          </div>
+
+          <div className="providersSummaryAction">
+            <Button
+              variant="primary"
+              icon={<Plus />}
+              onClick={() => {
+                setTab('basic')
+                setDraft({status: 1, protocol: 'openai-chat'})
+              }}
+            >
+              新建渠道
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {/* Filter Section matching image 2 */}
+      <div className="filterCard">
+        <div className="filtersBar">
           <label className="filterField">
-            <span>名称</span>
-            <input value={draftFilters.name} onChange={e => setDraftFilters({...draftFilters, name: e.target.value})} />
+            <span className="filterLabel">名称</span>
+            <input
+              className="filterInput"
+              placeholder="请输入渠道名称"
+              value={draftFilters.name}
+              onChange={e => setDraftFilters({...draftFilters, name: e.target.value})}
+              onKeyDown={e => e.key === 'Enter' && setFilters(draftFilters)}
+            />
           </label>
+
           <label className="filterField">
-            <span>供应商类型</span>
-            <input value={draftFilters.provider_type} onChange={e => setDraftFilters({...draftFilters, provider_type: e.target.value})} placeholder="qwen / deepseek" />
-          </label>
-          <label className="filterField">
-            <span>协议</span>
-            <select value={draftFilters.protocol} onChange={e => setDraftFilters({...draftFilters, protocol: e.target.value})}>
+            <span className="filterLabel">供应商类型</span>
+            <select
+              className="filterSelect"
+              value={draftFilters.provider_type}
+              onChange={e => setDraftFilters({...draftFilters, provider_type: e.target.value})}
+            >
               <option value="">全部</option>
-              {PROTOCOLS.map(p => <option key={p} value={p}>{protocolLabel(p)}</option>)}
+              <option value="qwen">Qwen / 通义千问</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="doubao">豆包 / 火山引擎</option>
+              <option value="openai">OpenAI</option>
+              <option value="custom">自定义 / 实验室</option>
             </select>
           </label>
+
           <label className="filterField">
-            <span>状态</span>
-            <select value={draftFilters.status} onChange={e => setDraftFilters({...draftFilters, status: e.target.value})}>
+            <span className="filterLabel">协议</span>
+            <select
+              className="filterSelect"
+              value={draftFilters.protocol}
+              onChange={e => setDraftFilters({...draftFilters, protocol: e.target.value})}
+            >
               <option value="">全部</option>
-              <option value="1">启用</option>
+              {PROTOCOLS.map(p => (
+                <option key={p} value={p}>
+                  {protocolLabel(p)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="filterField">
+            <span className="filterLabel">状态</span>
+            <select
+              className="filterSelect"
+              value={draftFilters.status}
+              onChange={e => setDraftFilters({...draftFilters, status: e.target.value})}
+            >
+              <option value="">全部</option>
+              <option value="1">启用 / 在线</option>
               <option value="2">停用</option>
             </select>
           </label>
-          <div className="filterActions">
-            <Button onClick={() => { setFilters(emptyFilters); setDraftFilters(emptyFilters); setOffset(0) }}>重置</Button>
-            <Button variant="primary" onClick={() => { setFilters(draftFilters); setOffset(0) }}>筛选</Button>
+
+          <div className="filterActionButtons">
+            <Button
+              onClick={() => {
+                setFilters(emptyFilters)
+                setDraftFilters(emptyFilters)
+                setOffset(0)
+              }}
+            >
+              重置
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setFilters(draftFilters)
+                setOffset(0)
+              }}
+            >
+              筛选
+            </Button>
           </div>
         </div>
+      </div>
 
-        {selected.size > 0 && (
-          <div className="notice info">
-            已选择 {selected.size} 个渠道（最多 50 个）。
-            <Button size="sm" loading={batching} onClick={() => void batchStatus(1)}>批量启用</Button>
-            <Button size="sm" variant="danger" loading={batching} onClick={() => void batchStatus(2)}>批量停用</Button>
+      {/* Batch Selection Bar */}
+      {selected.size > 0 && (
+        <div className="batchActionBar">
+          <span className="batchSelectionCount">
+            已选择 <b>{selected.size}</b> 个渠道（最多 50 个）
+          </span>
+          <div className="batchButtons">
+            <Button size="sm" loading={batching} onClick={() => void batchStatus(1)}>
+              批量启用
+            </Button>
+            <Button size="sm" variant="danger" loading={batching} onClick={() => void batchStatus(2)}>
+              批量停用
+            </Button>
           </div>
-        )}
+        </div>
+      )}
 
+      {/* Main Channels Table matching image 2 */}
+      <Panel title="渠道列表" sub="管理当前网关接入的模型通道、鉴权信息及测试状态">
         {loading && !data ? (
-          <SkeletonCards count={3} />
+          <SkeletonRows rows={5} columns={9} />
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : items.length ? (
-          <div className="providerCards">
-            {items.map(p => {
-              const friendly = friendlyProviderName(p.name)
-              return (
-                <article className={`providerCard ${p.status === 1 ? '' : 'disabled'}`} key={p.id}>
-                  <header className="providerHead">
-                    <div className="providerIdentity">
+          <>
+            <Table
+              heads={[
+                <input
+                  key="check-all"
+                  type="checkbox"
+                  aria-label="全选本页渠道"
+                  checked={items.length > 0 && selected.size === items.length}
+                  onChange={toggleAll}
+                />,
+                '渠道名称',
+                '供应商类型',
+                '接口协议',
+                'Base URL',
+                '状态',
+                '凭据状态',
+                '最后测试时间',
+                '候选模型',
+                '操作',
+              ]}
+              minWidth={1180}
+            >
+              {items.map(p => {
+                const friendly = friendlyProviderName(p.name)
+                const isSelected = selected.has(p.id)
+                const isOnline = p.status === 1
+                const hasCred = p.credential?.configured
+
+                return (
+                  <tr key={p.id} className={isSelected ? 'selectedRow' : ''}>
+                    <td className="selectionCell">
                       <input
                         type="checkbox"
                         aria-label={`选择渠道 ${p.name}`}
-                        checked={selected.has(p.id)}
+                        checked={isSelected}
                         onChange={() => toggleSelected(p.id)}
                       />
-                      {friendly && <span className="providerFriendly">{friendly}</span>}
-                      <h3 className="providerName">{p.name}</h3>
-                    </div>
-                    <StatusBadge status={p.status} />
-                  </header>
+                    </td>
+                    <td>
+                      <div className="channelNameCell">
+                        <b className="channelMainName mono">{p.name}</b>
+                        {friendly && <span className="channelFriendlyName">({friendly})</span>}
+                        {p.description && <p className="channelDescText">{p.description}</p>}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="providerTypeBadge">
+                        {p.provider_type || '自定义'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="protocolBadge">{protocolLabel(p.protocol)}</span>
+                    </td>
+                    <td>
+                      <span className="mono cut baseUrlText" title={p.base_url}>
+                        {p.base_url || '—'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`statusPill ${isOnline ? 'ok' : 'down'}`}>
+                        <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
+                        {isOnline ? '在线' : '已停用'}
+                      </span>
+                    </td>
+                    <td>
+                      {hasCred ? (
+                        <span className="statusPill ok">
+                          <i className="dot on" aria-hidden />
+                          已配置
+                        </span>
+                      ) : p.credential?.source_type === 'env' ? (
+                        <span className="statusPill warning">
+                          <i className="dot unknown" aria-hidden />
+                          环境变量未就绪
+                        </span>
+                      ) : (
+                        <span className="statusPill down">
+                          <i className="dot down" aria-hidden />
+                          未配置
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {p.last_test ? (
+                        <div className="lastTestCell">
+                          <div className="lastTestTime">{ago(p.last_test.at)}</div>
+                          <div className={`lastTestLatency ${p.last_test.ok ? 'success' : 'danger'}`}>
+                            {p.last_test.ok ? '✓' : '✗'} {ms(p.last_test.latency_ms)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className="candidateCountBadge">
+                        {p.candidate_model_count ?? 0}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="rowActions">
+                        <button
+                          type="button"
+                          className="tableActionLink"
+                          onClick={() => openDrawer(p, 'basic')}
+                        >
+                          详情
+                        </button>
+                        <button
+                          type="button"
+                          className="tableActionLink"
+                          onClick={() => openDrawer(p, 'test')}
+                        >
+                          诊断
+                        </button>
+                        <button
+                          type="button"
+                          className="tableActionLink"
+                          onClick={() => openDrawer(p, 'basic')}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          className="tableActionLink danger"
+                          disabled={deleting === p.id}
+                          onClick={() => void remove(p)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </Table>
 
-                  <dl className="providerRows">
-                    <div className="providerRow">
-                      <dt>供应商类型</dt>
-                      <dd>{p.provider_type || '未设置'}</dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>接口协议</dt>
-                      <dd>{protocolLabel(p.protocol)}</dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>Base URL</dt>
-                      <dd className="mono cut" title={p.base_url}>{p.base_url || '—'}</dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>凭据</dt>
-                      <dd className="mono" title={p.credential_env || undefined}>
-                        {p.credential?.source_type === 'env'
-                          ? `${p.credential_env || '—'}${p.credential.configured ? '' : '（未读取到值）'}`
-                          : p.credential?.source_type === 'inline'
-                            ? `内联密钥${p.credential.last4 ? ` · 尾号 ${p.credential.last4}` : ''}`
-                            : '—'}
-                      </dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>候选 / 引用</dt>
-                      <dd>{p.candidate_model_count ?? 0} 个候选 · {p.referenced_route_count ?? 0} 条线路 · {p.referenced_model_count ?? 0} 个模型</dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>最近测试</dt>
-                      <dd>
-                        {p.last_test
-                          ? `${p.last_test.ok ? '成功' : '失败'}（管理诊断） · HTTP ${p.last_test.status_code} · ${ms(p.last_test.latency_ms)} · ${when(p.last_test.at)}`
-                          : '未测试'}
-                      </dd>
-                    </div>
-                    <div className="providerRow">
-                      <dt>当前实例熔断</dt>
-                      <dd>{circuitLabel(p.name)} <span className="muted">（本进程，采样于 {data ? data.sampledAt.toLocaleTimeString() : '—'}）</span></dd>
-                    </div>
-                  </dl>
-
-                  <footer className="providerFoot">
-                    <Button size="sm" icon={<Pencil />} onClick={() => { setTab('basic'); setDraft(p) }}>打开</Button>
-                    <Button size="sm" icon={<RefreshCw />} onClick={() => { setTab('test'); setDraft(p) }}>诊断测试</Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      icon={<Trash2 />}
-                      loading={deleting === p.id}
-                      disabled={deleting !== null}
-                      onClick={() => void remove(p)}
-                    >
-                      删除
-                    </Button>
-                  </footer>
-                </article>
-              )
-            })}
-          </div>
+            {/* Table Pagination Footer */}
+            <footer className="tablePaginationFooter">
+              <span className="paginationInfo">
+                第 {offset + 1}-{Math.min(offset + PAGE_SIZE, total)} 条，共 {total} 条
+              </span>
+              <div className="paginationControls">
+                <Button
+                  size="sm"
+                  icon={<ChevronLeft />}
+                  disabled={offset === 0}
+                  onClick={() => setOffset(prev => Math.max(0, prev - PAGE_SIZE))}
+                >
+                  上一页
+                </Button>
+                <span className="paginationCurrentPage">
+                  {Math.floor(offset / PAGE_SIZE) + 1}
+                </span>
+                <Button
+                  size="sm"
+                  icon={<ChevronRight />}
+                  disabled={offset + PAGE_SIZE >= total}
+                  onClick={() => setOffset(prev => prev + PAGE_SIZE)}
+                >
+                  下一页
+                </Button>
+              </div>
+            </footer>
+          </>
         ) : (
           <EmptyState
             icon={<Network />}
-            title="暂无渠道"
-            description="添加渠道后即可维护候选模型并配置线路。"
-            action={<Button variant="primary" icon={<Plus />} onClick={() => setDraft({status: 1, protocol: 'openai-chat'})}>新增渠道</Button>}
+            title="未找到匹配的渠道"
+            description="尝试调整筛选条件，或者点击上方按钮新增第一个上游渠道。"
+            action={
+              <Button
+                variant="primary"
+                icon={<Plus />}
+                onClick={() => {
+                  setTab('basic')
+                  setDraft({status: 1, protocol: 'openai-chat'})
+                }}
+              >
+                新增渠道
+              </Button>
+            }
           />
         )}
-
-        <div className="pager">
-          <span className="muted">第 {offset + 1}–{offset + items.length} 条，共 {total} 条</span>
-          <div className="pagerActions">
-            <Button size="sm" icon={<ChevronLeft />} disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>上一页</Button>
-            <Button size="sm" disabled={offset + PAGE_SIZE >= total || loading} onClick={() => setOffset(offset + PAGE_SIZE)}>下一页 <ChevronRight aria-hidden /></Button>
-          </div>
-        </div>
       </Panel>
 
+      {/* Add / Edit Channel Drawer matching image 2 */}
       {draft && (
         <Drawer
-          title={draft.id ? `渠道：${draft.name}` : '新增渠道'}
-          subtitle="密钥加密保存、只写不读；也可以改为引用环境变量。"
+          title={draft.id ? `编辑渠道：${draft.name}` : '新增渠道'}
+          subtitle="密钥加密保存，只写不读；也可以改为引用环境变量。"
           size="lg"
           onClose={() => setDraft(null)}
         >
-          <div className="drawerStack">
-            {draft.id && (
-              <div className="segmented" role="group" aria-label="渠道详情">
-                {(['basic', 'models', 'test', 'usage'] as Tab[]).map(t => (
-                  <button
-                    key={t}
-                    type="button"
-                    className={`segmentedItem ${tab === t ? 'on' : ''}`}
-                    aria-pressed={tab === t}
-                    onClick={() => setTab(t)}
-                  >
-                    {t === 'basic' ? '基本配置' : t === 'models' ? '模型列表' : t === 'test' ? '调用测试' : '使用记录'}
-                  </button>
-                ))}
+          {draft.id ? (
+            <div className="drawerStack">
+              {/* Tabs for editing existing channel */}
+              <div className="segmented" role="group" aria-label="渠道配置视图">
+                <button
+                  type="button"
+                  className={`segmentedItem ${tab === 'basic' ? 'on' : ''}`}
+                  onClick={() => setTab('basic')}
+                >
+                  基本配置
+                </button>
+                <button
+                  type="button"
+                  className={`segmentedItem ${tab === 'models' ? 'on' : ''}`}
+                  onClick={() => setTab('models')}
+                >
+                  候选模型
+                </button>
+                <button
+                  type="button"
+                  className={`segmentedItem ${tab === 'test' ? 'on' : ''}`}
+                  onClick={() => setTab('test')}
+                >
+                  连通诊断
+                </button>
+                <button
+                  type="button"
+                  className={`segmentedItem ${tab === 'usage' ? 'on' : ''}`}
+                  onClick={() => setTab('usage')}
+                >
+                  运行时调用
+                </button>
               </div>
-            )}
-            {tab === 'basic' && <ProviderForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />}
-            {tab === 'models' && draft.id && (
-              <ProviderModelsPanel providerID={draft.id} onChanged={reload} />
-            )}
-            {tab === 'test' && draft.id && (
-              <ProviderTestPanel provider={draft as Provider} canPreviewContent={canPreviewContent} onTested={reload} />
-            )}
-            {tab === 'usage' && draft.id && (
-              <RuntimeSummaryPanel
-                kind="provider"
-                id={draft.id}
-                canOpenRawLogs={canOpenRawLogs}
-                onOpenLogs={onOpenLogs}
-              />
-            )}
-          </div>
+
+              {tab === 'basic' && (
+                <ProviderForm
+                  value={draft}
+                  onSave={save}
+                  onCancel={() => setDraft(null)}
+                />
+              )}
+
+              {tab === 'models' && (
+                <ProviderModelsPanel
+                  providerID={draft.id}
+                  onChanged={reload}
+                />
+              )}
+
+              {tab === 'test' && activeProvider && (
+                <ProviderTestPanel
+                  provider={activeProvider}
+                  canPreviewContent={canPreviewContent}
+                  onTested={reload}
+                />
+              )}
+
+              {tab === 'usage' && (
+                <RuntimeSummaryPanel
+                  kind="provider"
+                  id={draft.id}
+                  canOpenRawLogs={canOpenRawLogs}
+                  onOpenLogs={filters => {
+                    setDraft(null)
+                    onOpenLogs?.(filters)
+                  }}
+                />
+              )}
+            </div>
+          ) : (
+            <ProviderForm
+              value={draft}
+              onSave={save}
+              onCancel={() => setDraft(null)}
+            />
+          )}
         </Drawer>
       )}
-    </>
+    </div>
   )
 }

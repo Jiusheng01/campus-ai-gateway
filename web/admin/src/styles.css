@@ -1590,3 +1590,1503 @@ input:focus, select:focus, textarea:focus {
    than a single value. */
 .detailRow.column{display:flex;flex-direction:column;align-items:flex-start;gap:9px}
 .detailRow.column .detailKey{margin:0}
+
+/* ========================================================================== */
+/* Campus AI Gateway - Modern SaaS Console Redesign (Images 1-5)               */
+/* ========================================================================== */
+
+/* --- 1. Top Page Banner & Illustrations ----------------------------------- */
+.pageBanner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 20px;
+}
+.pageBannerBody {
+  position: relative;
+  z-index: 2;
+  max-width: 680px;
+}
+.pageBannerTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 6px 0;
+  letter-spacing: -0.02em;
+}
+.pageBannerSubtitle {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.pageBannerActions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pageBannerIllustration {
+  position: absolute;
+  right: 16px;
+  bottom: 0;
+  top: 0;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.9;
+  display: flex;
+  align-items: flex-end;
+}
+.campusIllustrationWrap svg {
+  display: block;
+  max-height: 110px;
+  width: auto;
+}
+
+/* Sidebar Campus Promo Card */
+.campusSidebarPromo {
+  padding: 12px 14px;
+  margin: 12px 10px 4px;
+  background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.campusSidebarPromoIllustration {
+  display: flex;
+  justify-content: center;
+}
+.campusSidebarPromoIllustration svg {
+  max-width: 140px;
+  height: auto;
+}
+.campusSidebarPromoText {
+  text-align: center;
+}
+.campusSidebarPromoTitle {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #1e40af;
+  letter-spacing: 0.02em;
+}
+.campusSidebarPromoSub {
+  display: block;
+  font-size: 10.5px;
+  color: #3b82f6;
+  margin-top: 1px;
+}
+
+/* --- 2. Stat Grid & Standardized Stat Cards ------------------------------- */
+.statGrid {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.statGrid.cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.statGrid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.statGrid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.statCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.statCard:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.statCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.statCardLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.statCardIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.statCard.default .statCardIcon {
+  background: #f1f5f9;
+  color: #475569;
+}
+.statCard.success .statCardIcon {
+  background: #ecfdf5;
+  color: #059669;
+}
+.statCard.purple .statCardIcon {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+.statCard.info .statCardIcon {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.statCard.warning .statCardIcon {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.statCardMiddle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.statCardValue {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.statCardChart {
+  display: flex;
+  align-items: center;
+}
+
+.statCardBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 8px;
+}
+.statCardSubtext {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.statCardBadge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.statCardBadge.positive {
+  background: #ecfdf5;
+  color: #059669;
+}
+.statCardBadge.negative {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+/* --- 3. Unified Filter Cards ---------------------------------------------- */
+.filterCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 16px;
+}
+.filtersBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.searchFieldGroup {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.searchFieldIcon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.filterSearchInput {
+  width: 100%;
+  padding-left: 32px;
+  height: 36px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.filterSearchInput:focus {
+  border-color: var(--primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+.filterField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filterLabel {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.filterInput, .filterSelect {
+  height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.filterActionButtons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Status Pill Indicators */
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  line-height: 1;
+}
+.statusPill.ok {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.statusPill.down {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.statusPill.warn {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+.statusPill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+.statusPill .dot.on { background: #10b981; }
+.statusPill .dot.down { background: #ef4444; }
+
+/* Table Action Links */
+.tableActionLink {
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tableActionLink:hover {
+  background: var(--primary-soft);
+  text-decoration: underline;
+}
+.tableActionLink.dangerText {
+  color: var(--danger);
+}
+.tableActionLink.dangerText:hover {
+  background: #fee2e2;
+}
+
+/* Section Header With Count */
+.sectionHeaderWithCount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.sectionTitle {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.sectionCount {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+/* --- 4. Quick Search Command Palette (Ctrl+K) ----------------------------- */
+.quickSearchBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.quickSearchModal {
+  width: 90vw;
+  max-width: 580px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  animation: modalIn 0.15s ease-out;
+}
+.quickSearchInputWrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.quickSearchInput {
+  flex: 1;
+  border: none;
+  font-size: 15px;
+  color: var(--text);
+  background: transparent;
+  outline: none;
+}
+.quickSearchInput::placeholder {
+  color: var(--text-muted);
+}
+.quickSearchList {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 8px;
+}
+.quickSearchItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.quickSearchItem:hover, .quickSearchItem.selected {
+  background: var(--primary-soft);
+}
+.quickSearchItemLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.quickSearchItemLeft svg {
+  width: 16px;
+  height: 16px;
+  color: var(--primary);
+}
+.quickSearchTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.quickSearchSub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
+}
+.quickSearchFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--surface-subtle);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.quickSearchKbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.quickSearchKbd kbd {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* --- 5. Image 1: Dashboard Page Sections ---------------------------------- */
+.dashboardHeroContent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dashboardHeroTitle {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+.dashboardHeroSubtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.infraGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.infraCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.infraCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.infraName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.infraStatusTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.infraStatusTag.ok { color: #059669; }
+.infraStatusTag.down { color: #dc2626; }
+.infraCardMetric {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.configOverviewGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.configOverviewCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.configCardIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #eff6ff;
+  color: #2563eb;
+  flex: none;
+}
+.configCardContent {
+  display: flex;
+  flex-direction: column;
+}
+.configCardTitle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.configCardValue {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.snapshotTwoColsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.snapshotCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.snapshotCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.snapshotCardTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+/* --- 6. Image 2: Upstream Channels (Providers) ---------------------------- */
+.channelNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.channelNameTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.channelUrl {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channelProtocolBadge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  text-transform: uppercase;
+}
+.latencyBadge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.latencyBadge.fast {
+  background: #ecfdf5;
+  color: #065f46;
+}
+.latencyBadge.normal {
+  background: #eff6ff;
+  color: #1e40af;
+}
+.latencyBadge.slow {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+/* Provider Drawer Tabs */
+.providerDrawerTabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  gap: 4px;
+  margin-bottom: 18px;
+}
+.providerTabBtn {
+  border: none;
+  background: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.providerTabBtn:hover {
+  color: var(--text);
+}
+.providerTabBtn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* --- 7. Image 3: Published Models Grid Cards ------------------------------ */
+.modelsCardGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.modelCardNew {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.modelCardNew:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.modelCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.modelCardTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.modelCardAlias {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.modelCardDisplayName {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.modelCardDesc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  min-height: 36px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.modelCardTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.modelCardMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.modelCardActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+/* --- 8. Image 4: Routing Policy & Route Editor ---------------------------- */
+.routeStrategyPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.routeStrategyPill.primary {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.routeStrategyPill.weighted {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.routeStrategyPill.advanced {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.routeModelCardsStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.routeModelGroupCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.routeModelGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: linear-gradient(to right, #fafbfc, #f1f5f9);
+  border-bottom: 1px solid var(--border);
+  gap: 14px;
+}
+.routeModelHeadLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.routeModelIconMark {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #2563eb;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.routeModelTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.routeModelNameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.routeModelAlias {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.routeModelDisplayName {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.routeModelSubInfo {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.routeModelHeadRight {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.routeModeBadgeBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.routeStrategyDesc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.priorityTag {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+}
+.weightTag {
+  font-size: 12px;
+  font-weight: 700;
+  color: #047857;
+}
+
+/* Route Editor Rules */
+.routeEditorCards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0;
+}
+.routeRuleCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.routeRuleCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.routeRuleCardTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.routeRuleIndex {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.routeRuleChannelName {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.routeRuleModelTag {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.routeRuleCardActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.routeOrderControls {
+  display: flex;
+  gap: 4px;
+}
+.routeRuleCardFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+/* --- 9. Image 5: Call Management (Calls, Keys, Tenants) ------------------- */
+.callsPageTabs {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+}
+.keysSectionCard, .tenantsSectionCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px 22px;
+  box-shadow: var(--shadow-sm);
+}
+.keysSectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.keysSectionTitleBlock {
+  max-width: 680px;
+}
+.keysSectionTitle {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 4px 0;
+}
+.keysSectionSub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Key Name Cell & Prefix Copy */
+.keyNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.keyNameTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.keyPrefixRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.keyPrefixCode {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.keyCopyPrefixBtn {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+}
+.keyCopyPrefixBtn:hover {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.keyCopyPrefixBtn svg {
+  width: 12px;
+  height: 12px;
+}
+.copySuccessIcon {
+  color: #059669;
+}
+
+/* Tenant Cell */
+.tenantCell {
+  display: flex;
+  flex-direction: column;
+}
+.tenantName {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Model Chips */
+.allowedModelsChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.modelTag {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+}
+.modelTag.wildcard {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+  font-family: inherit;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.modelTag.wildcard svg {
+  width: 12px;
+  height: 12px;
+}
+.modelTag.extraBadge {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+  font-weight: 600;
+}
+
+/* Expiration Tags */
+.expireCell {
+  font-size: 12px;
+}
+.permanentTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #a7f3d0;
+}
+.expireDate {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.usageRecentCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lastUsedTime {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.usageSummary {
+  font-size: 11px;
+}
+
+.tableFooterBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 4px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* --- 10. KeyForm & Drawer Form Styles ------------------------------------- */
+.keyFormStack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.formStepsBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 4px;
+}
+.formStep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stepNumber {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+.stepLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.stepDivider {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.formSectionFieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+.formSectionLegend {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.formSectionLegend svg {
+  width: 14px;
+  height: 14px;
+  color: var(--primary);
+}
+
+/* Multi-select Component */
+.multiSelectWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.multiSelectHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.multiSelectTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wildcardToggleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6d28d9;
+  cursor: pointer;
+}
+.wildcardActiveNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius-sm);
+  color: #5b21b6;
+}
+.wildcardActiveNotice svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 2px;
+}
+.wildcardActiveNotice b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.wildcardActiveNotice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chipsContainer {
+  min-height: 48px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.modelSelectChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1e40af;
+}
+.chipRemoveButton {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  color: #3b82f6;
+  display: inline-flex;
+  align-items: center;
+}
+.chipRemoveButton:hover {
+  color: #dc2626;
+}
+.chipRemoveButton svg {
+  width: 12px;
+  height: 12px;
+}
+.chipsEmptyPlaceholder {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.addModelDropdownRow {
+  margin-top: 2px;
+}
+.addModelSelect {
+  width: 100%;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+/* Expiration Presets */
+.expireInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.expireInput {
+  flex: 1 1 200px;
+}
+.expirePresetButtons {
+  display: flex;
+  gap: 4px;
+}
+.presetBtn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.presetBtn:hover {
+  background: var(--surface-hover);
+  border-color: var(--primary);
+}
+.presetBtn.textBtn {
+  color: #059669;
+  font-weight: 600;
+}
+
+/* Tenant Quota Preview Card matching Image 5 */
+.tenantQuotaPreviewCard {
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quotaPreviewHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.quotaPreviewTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1e40af;
+  font-size: 13.5px;
+}
+.quotaPreviewTitle svg {
+  width: 16px;
+  height: 16px;
+}
+.quotaPreviewSub {
+  font-size: 12px;
+  color: #3b82f6;
+}
+.quotaPreviewGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.quotaPreviewMetric {
+  background: var(--surface);
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.quotaMetricLabel {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.quotaMetricValue {
+  font-size: 15px;
+  color: var(--text);
+}
+.quotaPreviewFooter {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px dashed #bfdbfe;
+  padding-top: 6px;
+}
+
+/* --- 11. Secret Modal One-Time Display ------------------------------------ */
+.secretModalContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.secretSuccessBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-md);
+  color: #065f46;
+}
+.secretSuccessIcon {
+  width: 20px;
+  height: 20px;
+  color: #10b981;
+  flex: none;
+  margin-top: 1px;
+}
+.secretSuccessText b {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.secretSuccessText p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.secretCodeBox {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.secretBoxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+.secretKeyLabel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #38bdf8;
+  font-weight: 600;
+}
+.secretKeyLabel svg {
+  width: 14px;
+  height: 14px;
+}
+.secretValueRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.secretValueText {
+  color: #f8fafc;
+  font-size: 14px;
+  word-break: break-all;
+  user-select: all;
+}
+
+.secretSecurityNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-md);
+  color: #92400e;
+}
+.secretAlertIcon {
+  width: 18px;
+  height: 18px;
+  color: #f59e0b;
+  flex: none;
+  margin-top: 2px;
+}
+.secretSecurityNotice b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.secretSecurityNotice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.secretAckLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.secretAckLabel input {
+  width: 16px;
+  height: 16px;
+}
+.ackCheckText {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* --- 12. Tenant Table Limit Tags ------------------------------------------ */
+.quotaUnlimitedTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #a7f3d0;
+}
+.quotaUnsetTag {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.quotaNumericValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.quotaUnit {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+

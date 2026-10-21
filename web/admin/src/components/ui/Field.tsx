@@ -1,19 +1,20 @@
 import type {ReactNode} from 'react'
 
 type Props = {
-  label: string
-  hint?: string
+  label: ReactNode
+  hint?: ReactNode
   children: ReactNode
   htmlFor?: string
+  className?: string
 }
 
 /**
  * Form row. The label wraps the control so the association holds without
  * threading ids through every form.
  */
-export function Field({label, hint, children, htmlFor}: Props) {
+export function Field({label, hint, children, htmlFor, className = ''}: Props) {
   return (
-    <label className="field" htmlFor={htmlFor}>
+    <label className={`field ${className}`.trim()} htmlFor={htmlFor}>
       <span className="fieldLabel">{label}</span>
       {children}
       {hint && <small className="fieldHint">{hint}</small>}
