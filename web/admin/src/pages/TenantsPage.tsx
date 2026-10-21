@@ -8,7 +8,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react'
-import {api, deleteTenant, type Tenant, type TenantUsage} from '../api'
+import {api, deleteTenant, type ModelConfig, type Tenant, type TenantUsage} from '../api'
 import {Button} from '../components/ui/Button'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
@@ -31,6 +31,7 @@ import {quotaState, quotaText} from '../lib/quota'
  */
 export function TenantsPage({
   tenants,
+  models = [],
   keyCounts = {},
   loading = false,
   error = '',
@@ -38,6 +39,8 @@ export function TenantsPage({
   onReload,
 }: {
   tenants: Tenant[] | null
+  /** The enabled model catalog the allowlist form offers as named choices. */
+  models?: ModelConfig[]
   /** API Keys per tenant id, so the delete confirmation can name the cost. */
   keyCounts?: Record<string, number>
   loading?: boolean
@@ -373,7 +376,12 @@ export function TenantsPage({
           subtitle="配额与限流均为 0 表示不限制；限流规则为该租户内所有 API Key 共享。"
           onClose={() => setDraft(null)}
         >
-          <TenantForm value={draft} onSave={v => void save(v)} onCancel={() => setDraft(null)} />
+          <TenantForm
+            value={draft}
+            models={models}
+            onSave={v => void save(v)}
+            onCancel={() => setDraft(null)}
+          />
         </Drawer>
       )}
 

@@ -33,6 +33,7 @@ const tenants = [
     rpm_limit: 600,
     tpm_limit: 100000,
     max_concurrency: 50,
+    allowed_models: ['*'],
   },
 ] as Tenant[]
 

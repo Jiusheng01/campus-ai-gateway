@@ -1543,6 +1543,9 @@ func validateTenant(v *model.Tenant) string {
 	if v.Code == "" || v.Name == "" {
 		return "code and name are required"
 	}
+	if reason := normalizeTenantAllowedModels(&v.AllowedModels); reason != "" {
+		return reason
+	}
 	if v.Status == 0 {
 		v.Status = 1
 	}
@@ -1556,6 +1559,23 @@ func validateTenant(v *model.Tenant) string {
 		return "tenant rate limit values cannot be negative"
 	}
 	return ""
+}
+
+// normalizeTenantAllowedModels applies the Tenant default before sharing the
+// key path's rules.
+//
+// A nil list is an omitted field, not the empty-list decision, so it becomes
+// the wildcard: that is the stored column default and the meaning every
+// pre-existing Tenant already has. An explicit [] stays empty and keeps
+// denying every model. Everything else — a lone wildcard, a sorted deduplicated
+// list, rejection of blank entries and of wildcard-plus-names — is the same
+// normalisation a key performs, so the two scopes cannot drift apart.
+func normalizeTenantAllowedModels(list *[]string) string {
+	if list == nil || *list == nil {
+		*list = []string{model.AllModelsWildcard}
+		return ""
+	}
+	return normalizeAllowedModels(list)
 }
 
 // normalizeAllowedModels validates and canonicalises a key's model allow-list.
