@@ -39,7 +39,7 @@ describe('TenantsPage on a narrow screen', () => {
   it('renders a card per tenant with its identity, quota dimensions and actions', async () => {
     render(
       <ToastProvider>
-        <TenantsPage />
+        <TenantsPage tenants={tenants} onReload={() => {}} />
       </ToastProvider>,
     )
 
@@ -61,7 +61,7 @@ describe('TenantsPage on a narrow screen', () => {
   it('renders a card limit as its number, zero as 无限制 and an absent field as 未设置', async () => {
     render(
       <ToastProvider>
-        <TenantsPage />
+        <TenantsPage tenants={tenants} onReload={() => {}} />
       </ToastProvider>,
     )
 

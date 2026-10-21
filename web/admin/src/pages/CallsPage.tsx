@@ -1,10 +1,8 @@
-import {useCallback, useMemo, useState} from 'react'
+import {useCallback, useState} from 'react'
 import {
   Activity,
   Boxes,
-  CheckCircle2,
   KeyRound,
-  Shield,
   Users,
 } from 'lucide-react'
 import {api, type ApiKey, type DashboardStatus, type ModelConfig, type Tenant} from '../api'
@@ -17,69 +15,79 @@ import {fmt, num} from '../lib/format'
 
 type Tab = 'keys' | 'tenants'
 
+/** The three resources the key table and its drawer need. Loaded once, here. */
 type CallsBundle = {
   keys: ApiKey[]
   tenants: Tenant[]
   models: ModelConfig[]
-  dashboard: DashboardStatus | null
 }
 
 /**
  * 调用管理 (Call Management)
- * Redesigned to match Image 5:
- * - Top banner with segmented tab navigation (API 密钥 / 租户配额)
- * - 4 Stat Cards: 租户总数, 活跃 Key, 受限模型, 今日调用
- * - Embedded high-density API Key & Tenant Quota tables with drawer workflows
+ *
+ * The period figures come from `/admin/status`, the one endpoint that reports
+ * today's totals. `ApiKey.usage_requests` is a lifetime counter; it belongs on
+ * the key's own row (where "累计" is what it says) and must never be substituted
+ * for a number under a period label.
  */
 export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
   const [tab, setTab] = useState<Tab>(initialTab)
 
-  const loader = useCallback(async (): Promise<CallsBundle> => {
-    const [k, t, m, dash] = await Promise.all([
-      api<{data: ApiKey[]}>('/admin/api-keys').catch(() => ({data: []})),
-      api<{data: Tenant[]}>('/admin/tenants').catch(() => ({data: []})),
-      api<{data: ModelConfig[]}>('/admin/models').catch(() => ({data: []})),
-      api<DashboardStatus>('/admin/dashboard/status').catch(() => null),
+  const bundleLoader = useCallback(async (): Promise<CallsBundle> => {
+    const [k, t, m] = await Promise.all([
+      api<{data: ApiKey[]}>('/admin/api-keys'),
+      api<{data: Tenant[]}>('/admin/tenants'),
+      api<{data: ModelConfig[]}>('/admin/models'),
     ])
-    return {
-      keys: k.data || [],
-      tenants: t.data || [],
-      models: m.data || [],
-      dashboard: dash,
-    }
+    return {keys: k.data || [], tenants: t.data || [], models: m.data || []}
   }, [])
+  const bundle = useResource(bundleLoader, [])
 
-  const {data, reload} = useResource(loader, [])
+  // Loaded separately so a failing summary cannot blank the key and tenant
+  // lists, and a failing list cannot hide today's figures.
+  const status = useResource(() => api<DashboardStatus>('/admin/status'))
 
-  const tenants = data?.tenants || []
-  const keys = data?.keys || []
-  const models = data?.models || []
-  const dash = data?.dashboard
+  const tenants = bundle.data?.tenants || []
+  const keys = bundle.data?.keys || []
+  const models = bundle.data?.models || []
+  // The bundle resolves to `null` only before the first response; a post-load
+  // reload keeps the previous data on screen, so cards never flash a dash.
+  const loaded = bundle.data !== null
 
-  // Metrics computation using 100% real data
   const tenantCount = tenants.length
   const activeTenantsCount = tenants.filter(t => t.status === 1).length
   const activeKeysCount = keys.filter(k => k.status === 1).length
   const totalKeysCount = keys.length
 
-  // Models with explicit whitelist or restricted access
-  const restrictedModelsCount = useMemo(() => {
-    const explicitModels = new Set<string>()
-    keys.forEach(k => {
-      (k.allowed_models || []).forEach(m => {
-        if (m !== '*') explicitModels.add(m)
-      })
-    })
-    return explicitModels.size || models.filter(m => m.status === 1).length
-  }, [keys, models])
+  // Enabled Virtual Models, straight from /admin/models. The previous card
+  // counted distinct aliases across key allow-lists and fell back to every
+  // enabled model when no key named any — two different quantities under one
+  // label. This is one quantity the endpoint can answer by itself.
+  const enabledModelsCount = models.filter(m => m.status === 1).length
 
-  // Real-time call count
-  const todayRequests = dash?.stats?.today_requests ?? keys.reduce((acc, k) => acc + (k.usage_requests || 0), 0)
-  const todayTokens = dash?.stats?.today_tokens ?? keys.reduce((acc, k) => acc + (k.usage_tokens || 0), 0)
+  const reloadAll = () => {
+    bundle.reload()
+    status.reload()
+  }
+
+  // `stats` is present only on a successful response; on failure the card says
+  // so instead of showing a number from anywhere else. The previous fallback
+  // summed `ApiKey.usage_requests`, a lifetime counter, and labelled the sum
+  // with today's period — an error is more honest than that substitution.
+  const todayStats = status.data?.stats
+  const todayValue = todayStats ? num(todayStats.today_requests) : '—'
+  const todaySubtext = todayStats ? (
+    `今日消耗 ${fmt(todayStats.today_tokens)} Tokens`
+  ) : status.loading ? (
+    '正在读取今日统计…'
+  ) : (
+    <button type="button" className="callsStatUnavailable" onClick={status.reload} title={status.error}>
+      今日统计不可用，点击重试
+    </button>
+  )
 
   return (
     <div className="stack">
-      {/* Top Banner with tab navigation matching Image 5 */}
       <PageBanner
         title="调用管理"
         subtitle="管理租户配额与业务调用凭据"
@@ -105,48 +113,73 @@ export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
         }
       />
 
-      {/* 4 Stat Cards matching Image 5 */}
       <section aria-label="调用管理统计概览">
         <StatGrid columns={4}>
           <StatCard
             label="租户总数"
-            value={tenantCount}
+            value={loaded ? tenantCount : '—'}
             icon={<Users />}
-            subtext={`正常启用 ${activeTenantsCount} 个租户`}
+            subtext={
+              bundle.error
+                ? '租户列表读取失败'
+                : loaded
+                  ? `正常启用 ${activeTenantsCount} 个租户`
+                  : '正在读取租户…'
+            }
             tone="default"
           />
           <StatCard
             label="活跃 Key"
-            value={activeKeysCount}
+            value={loaded ? activeKeysCount : '—'}
             icon={<KeyRound />}
-            subtext={`全部 Key 共 ${totalKeysCount} 个`}
+            subtext={
+              bundle.error
+                ? 'API Key 列表读取失败'
+                : loaded
+                  ? `全部 Key 共 ${totalKeysCount} 个`
+                  : '正在读取 API Key…'
+            }
             tone="success"
           />
           <StatCard
-            label="受限模型"
-            value={restrictedModelsCount}
+            label="启用对外模型"
+            value={loaded ? enabledModelsCount : '—'}
             icon={<Boxes />}
-            subtext="白名单与权限管控"
+            subtext={
+              bundle.error
+                ? '对外模型列表读取失败'
+                : loaded
+                  ? '对外模型中处于启用状态的数量'
+                  : '正在读取模型…'
+            }
             tone="purple"
           />
           <StatCard
             label="今日调用"
-            value={num(todayRequests)}
+            value={todayValue}
             icon={<Activity />}
-            subtext={`今日消耗 ${fmt(todayTokens)} Tokens`}
+            subtext={todaySubtext}
             tone="info"
           />
         </StatGrid>
       </section>
 
-      {/* Main Tab Content */}
       {tab === 'keys' ? (
         <ApiKeysPage
-          bundle={data ? {keys, tenants, models} : undefined}
-          onReload={reload}
+          bundle={bundle.data}
+          loading={bundle.loading}
+          error={bundle.error}
+          errorStatus={bundle.errorStatus}
+          onReload={reloadAll}
         />
       ) : (
-        <TenantsPage onReload={reload} />
+        <TenantsPage
+          tenants={bundle.data ? tenants : null}
+          loading={bundle.loading}
+          error={bundle.error}
+          errorStatus={bundle.errorStatus}
+          onReload={reloadAll}
+        />
       )}
     </div>
   )
