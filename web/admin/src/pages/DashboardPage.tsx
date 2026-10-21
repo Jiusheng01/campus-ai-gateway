@@ -612,11 +612,7 @@ export function DashboardPage({
       {testing && <ModelTestDrawer models={testing} onClose={() => setTesting(null)} />}
       {publishing && <PublishModelWizard onClose={() => setPublishing(false)} onPublished={refreshConfig} />}
       {creating && <Drawer title="新增渠道" subtitle="连接上游服务，之后在渠道详情中维护候选模型。" onClose={() => {if (!createBusy) setCreating(false)}} dismissable={!createBusy}>
-        {createError && <p className="notice danger" role="alert">{createError}</p>}
-        {createBusy && <p role="status">正在创建渠道…</p>}
-        <fieldset className="overviewCreateFields" disabled={createBusy}>
-          <ProviderForm value={{name: '', base_url: '', protocol: 'openai-chat', provider_type: 'custom', status: 1}} onSave={value => void saveProvider(value)} onCancel={() => setCreating(false)} />
-        </fieldset>
+        <ProviderForm value={{name: '', base_url: '', protocol: 'openai-chat', provider_type: 'custom', status: 1}} saving={createBusy} error={createError} onSave={value => void saveProvider(value)} onCancel={() => setCreating(false)} />
       </Drawer>}
     </div>
   )
