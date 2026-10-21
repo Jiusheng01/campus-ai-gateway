@@ -1,8 +1,9 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {render, screen, within} from '@testing-library/react'
+import {fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {TenantsPage} from './TenantsPage'
 import {ToastProvider} from '../components/ui/Toast'
+import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import type {Tenant} from '../api'
 
 /**
@@ -114,5 +115,46 @@ describe('TenantsPage on a narrow screen', () => {
 
     expect(await screen.findByRole('dialog', {name: '租户用量'})).toBeInTheDocument()
     expect(fetch).toHaveBeenCalledWith('/admin/tenants/t-1/usage', expect.anything())
+  })
+
+  it('deletes a tenant only after its name is typed, and names the keys that go with it', async () => {
+    const calls: {url: string; method: string}[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push({url, method: init?.method || 'GET'})
+        if (url === '/admin/tenants') return jsonResponse({data: tenants})
+        if (url === '/admin/tenants/t-1' && init?.method === 'DELETE') {
+          return jsonResponse({ok: true, id: 't-1', deleted_keys: 2})
+        }
+        return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+      }),
+    )
+    const user = userEvent.setup()
+    render(
+      <ToastProvider>
+        <ConfirmProvider>
+          <TenantsPage tenants={tenants} keyCounts={{'t-1': 2}} onReload={() => {}} />
+        </ConfirmProvider>
+      </ToastProvider>,
+    )
+
+    // The table row and the phone card both carry the action; either opens the
+    // same confirmation.
+    const buttons = await screen.findAllByRole('button', {name: /^删除$/})
+    await user.click(buttons[0])
+
+    expect(screen.getByText(/2 个 API Key/)).toBeInTheDocument()
+    expect(calls.some(c => c.method === 'DELETE')).toBe(false)
+
+    // set the whole value in one change event: userEvent types character by
+    // character, and each keystroke re-renders the confirmation dialog.
+    fireEvent.change(screen.getByLabelText(/输入租户名称/), {target: {value: '计算机学院'}})
+    await user.click(screen.getByRole('button', {name: '确认删除'}))
+
+    await waitFor(() =>
+      expect(calls.some(c => c.method === 'DELETE' && c.url === '/admin/tenants/t-1')).toBe(true),
+    )
   })
 })

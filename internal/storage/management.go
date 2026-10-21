@@ -792,6 +792,44 @@ RETURNING `+tenantColumns+`
 	return v, err
 }
 
+// DeleteTenant removes a tenant and every API Key issued under it.
+//
+// Both statements run in one transaction because the foreign key on
+// gateway_api_key.tenant_id makes the order load-bearing: deleting the tenant
+// first would either fail or, if the constraint were ever relaxed, leave
+// credentials pointing at a tenant that no longer exists. The returned count is
+// what the console reports as deleted, so the operator sees the keys that went
+// with the tenant rather than only the tenant row.
+func (p *Postgres) DeleteTenant(ctx context.Context, id string) (int64, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_tenant WHERE id=$1::uuid)`, id).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if !exists {
+		return 0, pgx.ErrNoRows
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM gateway_api_key WHERE tenant_id=$1::uuid`, id)
+	if err != nil {
+		return 0, err
+	}
+	deletedKeys := tag.RowsAffected()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway_tenant WHERE id=$1::uuid`, id); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return deletedKeys, nil
+}
+
 // TenantUsageStats reports a tenant's usage for the current day and month. It is
 // the numerator of the quota share the console shows.
 //

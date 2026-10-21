@@ -1,4 +1,4 @@
-import {useCallback, useState} from 'react'
+import {useCallback, useMemo, useState} from 'react'
 import {
   Activity,
   Boxes,
@@ -64,6 +64,15 @@ export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
   // enabled model when no key named any — two different quantities under one
   // label. This is one quantity the endpoint can answer by itself.
   const enabledModelsCount = models.filter(m => m.status === 1).length
+
+  // The tenant tab is handed the count of keys it would delete with a tenant,
+  // because the delete confirmation has to name the cost and this page already
+  // holds the keys it would otherwise have to fetch again.
+  const keyCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const k of keys) counts[k.tenant_id] = (counts[k.tenant_id] || 0) + 1
+    return counts
+  }, [keys])
 
   const reloadAll = () => {
     bundle.reload()
@@ -175,6 +184,7 @@ export function CallsPage({initialTab = 'keys'}: {initialTab?: Tab}) {
       ) : (
         <TenantsPage
           tenants={bundle.data ? tenants : null}
+          keyCounts={keyCounts}
           loading={bundle.loading}
           error={bundle.error}
           errorStatus={bundle.errorStatus}

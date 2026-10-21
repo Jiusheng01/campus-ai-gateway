@@ -498,6 +498,18 @@ export async function deleteApiKey(id:string){
   return api<{ok:boolean;id:string;deleted:boolean}>(`/admin/api-keys/${encodeURIComponent(id)}?purge=1`,{method:'DELETE'})
 }
 
+/**
+ * deleteTenant removes a tenant and the API Keys issued under it.
+ *
+ * The gateway runs both deletes in one transaction because the keys must go
+ * first (their tenant_id is a required foreign key). `deleted_keys` is the
+ * count it actually removed, which the console reports back so the operator
+ * sees what the confirmation touched.
+ */
+export async function deleteTenant(id:string){
+  return api<{ok:boolean;id:string;deleted_keys:number}>(`/admin/tenants/${encodeURIComponent(id)}`,{method:'DELETE'})
+}
+
 export type TenantFacet={id:string;code:string;name:string}
 export type APIKeyFacet={id:string;name:string;key_prefix:string;tenant_id:string}
 export type RequestLogFacets={tenants:TenantFacet[];keys:APIKeyFacet[]}

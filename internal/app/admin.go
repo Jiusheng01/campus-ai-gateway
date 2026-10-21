@@ -651,31 +651,57 @@ func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", "PUT")
-		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
-		return
-	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
 	if id == "" {
 		http.NotFound(w, r)
 		return
 	}
-	var in model.Tenant
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+	switch r.Method {
+	case http.MethodPut:
+		var in model.Tenant
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
+			return
+		}
+		if err := validateTenant(&in); err != "" {
+			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
+			return
+		}
+		out, err := s.pg.UpdateTenant(r.Context(), id, in)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodDelete:
+		s.deleteTenant(w, r, id, reqID)
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+	}
+}
+
+// deleteTenant removes a tenant together with the API Keys issued under it.
+//
+// The keys have to go first: gateway_api_key.tenant_id is a NOT NULL foreign
+// key, so the tenant row cannot be removed while any credential still points at
+// it. The response reports how many were removed so the console can say what
+// the confirmation actually deleted rather than only that it succeeded.
+func (s *Server) deleteTenant(w http.ResponseWriter, r *http.Request, id, reqID string) {
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found", reqID)
 		return
 	}
-	if err := validateTenant(&in); err != "" {
-		httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
-		return
-	}
-	out, err := s.pg.UpdateTenant(r.Context(), id, in)
+	deletedKeys, err := s.pg.DeleteTenant(r.Context(), id)
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found", reqID)
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "database_error", "Tenant could not be deleted", reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted_keys": deletedKeys})
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {

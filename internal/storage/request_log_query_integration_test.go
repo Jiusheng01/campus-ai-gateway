@@ -451,6 +451,41 @@ func TestDeleteAPIKeyRemovesTheRow(t *testing.T) {
 	}
 }
 
+// TestDeleteTenantRemovesItsKeys covers the order the foreign key forces: the
+// tenant cannot be deleted while a key still references it, so the transaction
+// removes the keys first and reports how many went with the tenant.
+func TestDeleteTenantRemovesItsKeys(t *testing.T) {
+	pg := testPostgres(t)
+	clearRequestLogs(t, pg)
+	clearTenantsAndKeys(t, pg)
+
+	fx := seedTenantAndKey(t, pg, "purge-tenant", "purge-tenant-key")
+	ctx := context.Background()
+
+	deleted, err := pg.DeleteTenant(ctx, fx.tenantID)
+	if err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted_keys = %d, want 1", deleted)
+	}
+
+	var tenantsLeft, keysLeft int
+	if err := pg.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_tenant WHERE id=$1::uuid`, fx.tenantID).Scan(&tenantsLeft); err != nil {
+		t.Fatalf("count tenants: %v", err)
+	}
+	if err := pg.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_api_key WHERE tenant_id=$1::uuid`, fx.tenantID).Scan(&keysLeft); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if tenantsLeft != 0 || keysLeft != 0 {
+		t.Fatalf("after delete: tenants=%d keys=%d, want 0 and 0", tenantsLeft, keysLeft)
+	}
+
+	if _, err := pg.DeleteTenant(ctx, fx.tenantID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("deleting a missing tenant returned %v, want pgx.ErrNoRows", err)
+	}
+}
+
 // TestListAPIKeysReportsCumulativeUsage checks the column the console shows
 // next to the rate limits, including the case that matters most: a key that has
 // served nothing must read as zero rather than disappear from the list.
