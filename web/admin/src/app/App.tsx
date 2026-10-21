@@ -39,10 +39,8 @@ import {AccessPage} from '../pages/AccessPage'
 import {ConsoleOverviewPage} from '../pages/ConsoleOverviewPage'
 import {ConsoleKeysPage} from '../pages/ConsoleKeysPage'
 import {ConsoleModelsPage} from '../pages/ConsoleModelsPage'
-import {
-  ConsoleLogsPage,
-  ConsoleUsagePage,
-} from '../pages/ConsolePlaceholderPages'
+import {ConsoleLogsPage} from '../pages/ConsoleLogsPage'
+import {ConsoleUsagePage} from '../pages/ConsolePlaceholderPages'
 
 // loading   — checking the auth config and trying to restore a session
 // setup     — no administrator exists yet, show the first-run form

@@ -82,7 +82,13 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleKeys(w, r)
 	case "/api/console/models":
 		s.handleConsoleModels(w, r)
+	case "/api/console/request-logs":
+		s.handleConsoleRequestLogs(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/console/request-logs/") {
+			s.handleConsoleRequestLog(w, r)
+			return
+		}
 		httpx.Error(w, http.StatusNotFound, "not_found", "Unknown endpoint", reqID)
 	}
 }

@@ -31,12 +31,3 @@ export function ConsoleUsagePage() {
     />
   )
 }
-
-export function ConsoleLogsPage() {
-  return (
-    <ComingSoon
-      title="调用日志"
-      description="查看你自己发起的请求记录，包括时间、模型、Tokens、延迟与状态，并打开单条记录查看尝试链路。"
-    />
-  )
-}
