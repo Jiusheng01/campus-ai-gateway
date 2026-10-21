@@ -14,10 +14,14 @@ export function ProviderForm({
   value,
   onSave,
   onCancel,
+  saving = false,
+  error = '',
 }: {
   value: ProviderDraft
   onSave: (v: ProviderDraft) => void
   onCancel: () => void
+  saving?: boolean
+  error?: string
 }) {
   const [v, setV] = useState<ProviderDraft>(value)
   const [templateId, setTemplateId] = useState('custom')
@@ -47,6 +51,7 @@ export function ProviderForm({
   }
 
   const submit = () => {
+    if (saving) return
     const credentialSecret = (v.credential_secret || '').trim()
     const credentialEnv = (v.credential_env || '').trim()
     if (mode === 'env' && !credentialEnv) {
@@ -81,6 +86,8 @@ export function ProviderForm({
     >
       {/* Editing an existing supplier must never silently overwrite its
           configuration, so the template picker only appears on create. */}
+      <fieldset className="formSectionFieldset" disabled={saving}>
+        <legend className="formSectionLegend">基础信息</legend>
       {isNew && (
         <Field label="渠道模板" hint="模板只用于预填默认值，选择后所有字段仍可手工修改。">
           <select value={templateId} onChange={e => applyTemplate(e.target.value)}>
@@ -101,6 +108,20 @@ export function ProviderForm({
         <input className="mono" value={v.provider_type || ''} onChange={e => setV({...v, provider_type: e.target.value})} />
       </Field>
 
+      <Field label="描述（可选）" hint="给管理员看的说明，不影响运行时行为。">
+        <input value={v.description || ''} onChange={e => setV({...v, description: e.target.value})} />
+      </Field>
+      <Field label="状态" hint="启用允许渠道参与线路调用，不代表上游当前健康。">
+        <select value={v.status || 1} onChange={e => setV({...v, status: +e.target.value})}>
+          <option value="1">启用</option>
+          <option value="2">停用</option>
+        </select>
+      </Field>
+      </fieldset>
+
+      <fieldset className="formSectionFieldset" disabled={saving}>
+        <legend className="formSectionLegend">连接设置</legend>
+
       <Field label="接口协议" hint="网关只支持 OpenAI Compatible 协议；其他协议的渠道会在保存时被拒绝。">
         <select value={v.protocol || 'openai-chat'} onChange={e => setV({...v, protocol: e.target.value})}>
           {PROTOCOLS.map(p => (
@@ -115,9 +136,10 @@ export function ProviderForm({
         <input className="mono" value={v.base_url || ''} onChange={e => setV({...v, base_url: e.target.value})} />
       </Field>
 
-      <Field label="描述（可选）" hint="给管理员看的说明，不影响运行时行为。">
-        <input value={v.description || ''} onChange={e => setV({...v, description: e.target.value})} />
-      </Field>
+      </fieldset>
+
+      <fieldset className="formSectionFieldset" disabled={saving}>
+        <legend className="formSectionLegend">访问凭据</legend>
 
       {mode === 'inline' ? (
         <Field
@@ -179,28 +201,22 @@ export function ProviderForm({
       {inlineConfigured && (
         <div className="notice info">
           <Info aria-hidden />
-          当前已保存内联密钥
+          当前已保存内联凭据
           {credential.last4 ? `（尾号 ${credential.last4}）` : ''}
           ；内容不会回显。
         </div>
       )}
+      </fieldset>
 
-      {formError && (
+      {(formError || error) && (
         <div className="notice warning" role="alert">
-          {formError}
+          {formError || error}
         </div>
       )}
 
-      <Field label="状态">
-        <select value={v.status || 1} onChange={e => setV({...v, status: +e.target.value})}>
-          <option value="1">启用</option>
-          <option value="2">停用</option>
-        </select>
-      </Field>
-
       <div className="formActions">
-        <Button onClick={onCancel}>取消</Button>
-        <Button variant="primary" type="submit" icon={isNew ? <Plus /> : undefined}>
+        <Button disabled={saving} onClick={onCancel}>取消</Button>
+        <Button variant="primary" type="submit" loading={saving} icon={isNew ? <Plus /> : undefined}>
           {isNew ? '创建渠道' : '保存修改'}
         </Button>
       </div>

@@ -89,10 +89,10 @@ describe('ProvidersPage channel summary', () => {
 
     const totalCard = await waitFor(() => summaryCard('渠道总数'))
     expect(within(totalCard).getByText('9', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('(33.33%)')).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('(66.67%)')).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('(33.33%)')).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('(66.67%)')).toBeInTheDocument()
 
     await userEvent.type(screen.getByPlaceholderText('请输入渠道名称'), 'alpha')
     await userEvent.click(screen.getByRole('button', {name: '筛选'}))
@@ -100,12 +100,66 @@ describe('ProvidersPage channel summary', () => {
 
     // Filtering narrows the table, not the totals.
     expect(within(summaryCard('渠道总数')).getByText('9', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
   })
 })
 
 describe('ProvidersPage channel facts', () => {
+  it('keeps an edit draft after a save failure and refreshes the actual saved channel after retry', async () => {
+    let current = provider()
+    let rejectSave = true
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/admin/status') return jsonResponse(status)
+      if (init?.method === 'PUT') {
+        if (rejectSave) return jsonResponse({error: {message: '连接地址不允许访问'}}, 400)
+        current = {...current, ...JSON.parse(String(init.body))}
+        return jsonResponse(current)
+      }
+      return jsonResponse({data: [current], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '编辑'}))
+    const name = screen.getByLabelText(/渠道名称/)
+    await userEvent.clear(name)
+    await userEvent.type(name, 'alpha-updated')
+    await userEvent.click(screen.getByRole('button', {name: '保存修改'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('连接地址不允许访问')
+    expect(name).toHaveValue('alpha-updated')
+    rejectSave = false
+    await userEvent.click(screen.getByRole('button', {name: '保存修改'}))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText('alpha-updated')).toBeInTheDocument()
+  })
+
+  it('uses the stored Vendor classification and never describes enabled channels as online', async () => {
+    stubProviders(() => jsonResponse({data: [provider({name: 'qwen', provider_type: 'deepseek'}), provider({id: 'p-other', name: 'openai', provider_type: ''})], total: 2}))
+    renderPage()
+    const first = await waitFor(() => row('qwen'))
+    expect(within(first).getByText('DeepSeek')).toBeInTheDocument()
+    expect(within(first).queryByText(/通义千问/)).not.toBeInTheDocument()
+    expect(within(first).getByText('已启用')).toBeInTheDocument()
+    expect(within(first).queryByText('在线')).not.toBeInTheDocument()
+    expect(within(row('openai')).getByText('未分类')).toBeInTheDocument()
+  })
+
+  it('starts a new server-side search from the first page when Enter is pressed', async () => {
+    const urls: string[] = []
+    stubProviders(url => {
+      urls.push(url)
+      return jsonResponse({data: [provider()], total: 30})
+    })
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(screen.getByRole('button', {name: '下一页'}))
+    await waitFor(() => expect(urls.at(-1)).toContain('offset=15'))
+    await userEvent.type(screen.getByPlaceholderText('请输入渠道名称'), 'alpha{Enter}')
+    await waitFor(() => expect(urls.at(-1)).toContain('name=alpha'))
+    expect(urls.at(-1)).toContain('offset=0')
+  })
+
   it('renders an open Provider Circuit as a label distinct from the disabled state', async () => {
     const alpha = provider()
     const beta = provider({id: 'p-beta', name: 'beta', status: 2})

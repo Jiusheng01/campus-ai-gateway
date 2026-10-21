@@ -274,6 +274,23 @@ describe('PublishedModelsPage restored workflows', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
+  it('offers a next step for the model returned by a successful publication', async () => {
+    const user = userEvent.setup()
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === '/admin/providers') return jsonResponse({data: [{...providers[0], status: 1}]})
+      if (String(input) === `/admin/providers/${providers[0].id}/models`) return jsonResponse({data: [{id: 'pm-1', upstream_model: 'deepseek-chat', status: 1}]})
+      if (String(input) === '/admin/models/publish') return jsonResponse({model: models[0], created: true, route_created: true, version: 1}, 201)
+      return original(input, init)
+    })
+    renderPage()
+    await user.click(await screen.findByRole('button', {name: '发布模型'}))
+    await waitFor(() => expect(screen.getByLabelText(/对外名称/)).toHaveValue('deepseek-chat'))
+    await user.click(screen.getByRole('button', {name: '发布'}))
+    await user.click(await screen.findByRole('button', {name: '查看发布结果'}))
+    expect(await screen.findByText('模型详情：campus-vision')).toBeInTheDocument()
+  })
+
   it('runs a model diagnostic from the model detail drawer', async () => {
     const user = userEvent.setup()
     renderPage()
