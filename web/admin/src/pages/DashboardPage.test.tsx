@@ -1,5 +1,6 @@
 import {describe, expect, it, vi, afterEach} from 'vitest'
 import {act, render, screen, within} from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import {DashboardPage} from './DashboardPage'
 import {ToastProvider} from '../components/ui/Toast'
 
@@ -90,7 +91,7 @@ function stubFetch({dashboard = status, trend = zeroTrend, routes = [], models, 
   // The models response is the count source: default it to one route per model
   // so the sum equals the route list unless a test supplies its own rows.
   const modelRows = models ?? routes.map(modelForRoute)
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input)
     // The trend path shares the /admin/status prefix, so it has to be matched
     // first or the status payload would be decoded as a series.
@@ -106,6 +107,7 @@ function stubFetch({dashboard = status, trend = zeroTrend, routes = [], models, 
       return jsonResponse({data: routes.slice(offset, offset + limit), limit, offset})
     }
     if (url.startsWith('/admin/models')) return jsonResponse({data: modelRows})
+    if (url.startsWith('/admin/model-test-options')) return jsonResponse({data: []})
     if (url.startsWith('/admin/tenants')) return jsonResponse({data: tenants})
     // A fresh database has no request rows; the API sends data: null.
     if (url.startsWith('/admin/request-logs')) return jsonResponse({data: null})
@@ -156,6 +158,32 @@ describe('DashboardPage on a fresh deployment', () => {
     for (const literal of ['12 ms', '8 ms', '3 ms', '6 ms']) {
       expect(screen.queryByText(literal)).toBeNull()
     }
+  })
+  it('identifies undefined rates and latency when no requests exist', async () => {
+    stubFetch()
+    renderPage()
+    const rate = (await screen.findByText('错误率')).closest('.statCard') as HTMLElement
+    const latency = screen.getByText('P95 延迟').closest('.statCard') as HTMLElement
+    expect(within(rate).getByText('—')).toBeInTheDocument()
+    expect(within(rate).getByText('暂无请求')).toBeInTheDocument()
+    expect(within(latency).getByText('—')).toBeInTheDocument()
+    expect(within(latency).getByText('暂无请求')).toBeInTheDocument()
+    expect(screen.getByText(/日统计按服务端日界/)).toBeInTheDocument()
+  })
+  it('shows a recent-request error and reloads it instead of presenting an empty result', async () => {
+    const fetchMock = stubFetch()
+    const base = fetchMock.getMockImplementation()!
+    let failed = true
+    fetchMock.mockImplementation(async input => String(input).startsWith('/admin/request-logs') && failed
+      ? jsonResponse({error: {message: '记录服务暂不可用'}}, 500)
+      : base(input))
+    renderPage()
+    const panel = (await screen.findByText('最近请求')).closest('.panel') as HTMLElement
+    expect(await within(panel).findByText('记录服务暂不可用')).toBeInTheDocument()
+    expect(within(panel).queryByText('暂无调用记录')).not.toBeInTheDocument()
+    failed = false
+    await userEvent.click(within(panel).getByRole('button', {name: '重新加载'}))
+    expect(await within(panel).findByText('暂无调用记录')).toBeInTheDocument()
   })
 })
 
@@ -271,5 +299,62 @@ describe('DashboardPage route facts', () => {
     await screen.findByText('租户')
     await settle()
     expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/admin/tenants'))).toBe(false)
+  })
+  it('does not report a partial route total when a model count is absent', async () => {
+    stubFetch({models: [{id: 'a', alias: 'a', route_count: 3}, {id: 'b', alias: 'b'}]})
+    renderPage()
+    const tile = (await screen.findByText('模型线路')).closest('.configTile') as HTMLElement
+    await settle()
+    expect(within(tile).getByText('—')).toBeInTheDocument()
+    expect(within(tile).queryByText('3')).not.toBeInTheDocument()
+  })
+})
+
+describe('DashboardPage quick actions', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('opens the real channel creation form for a configuration administrator', async () => {
+    stubFetch()
+    renderPage(['gateway_admin'])
+    await userEvent.click(await screen.findByRole('button', {name: '新增渠道'}))
+    expect(screen.getByRole('dialog', {name: '新增渠道'})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '创建渠道'})).toBeInTheDocument()
+  })
+  it('creates a channel with a supported protocol and refreshes the overview', async () => {
+    const fetchMock = stubFetch()
+    const base = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/admin/providers' && init?.method === 'POST'
+      ? jsonResponse({id: 'new-provider'}) : base(input, init))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', {name: '新增渠道'}))
+    const dialog = screen.getByRole('dialog', {name: '新增渠道'})
+    await user.type(within(dialog).getByRole('textbox', {name: /渠道名称/}), 'campus-provider')
+    await user.type(within(dialog).getByRole('textbox', {name: 'Base URL'}), 'https://models.example.edu/v1')
+    await user.click(within(dialog).getByRole('checkbox', {name: '改为引用环境变量'}))
+    await user.type(within(dialog).getByRole('textbox', {name: /凭据环境变量/}), 'CAMPUS_PROVIDER_TEST')
+    await user.click(within(dialog).getByRole('button', {name: '创建渠道'}))
+    expect(await screen.findByText(/渠道已创建/)).toBeInTheDocument()
+    const write = fetchMock.mock.calls.find(([input, init]) => String(input) === '/admin/providers' && init?.method === 'POST')
+    expect(JSON.parse(String(write?.[1]?.body))).toMatchObject({name: 'campus-provider', protocol: 'openai-chat', credential_env: 'CAMPUS_PROVIDER_TEST'})
+    expect(screen.queryByRole('dialog', {name: '新增渠道'})).not.toBeInTheDocument()
+  })
+  it('opens publishing from the overview without leaving the current task', async () => {
+    const fetchMock = stubFetch()
+    const base = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => String(input).startsWith('/admin/providers') ? jsonResponse({data: []}) : base(input, init))
+    renderPage()
+    await userEvent.click(screen.getByRole('button', {name: '发布模型'}))
+    expect(await screen.findByRole('dialog', {name: '发布模型'})).toBeInTheDocument()
+  })
+  it('gives an operator diagnostic access without management reads or actions', async () => {
+    const fetchMock = stubFetch()
+    renderPage(['operator'])
+    await screen.findByText('配置概况')
+    expect(screen.queryByRole('button', {name: '新增渠道'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', {name: '发布模型'})).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', {name: '模型连通测试'}))
+    expect(await screen.findByRole('dialog', {name: '模型连通测试'})).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([url]) => /^\/admin\/(routes|models|tenants|request-logs)/.test(String(url)))).toBe(false)
   })
 })
