@@ -403,4 +403,21 @@ describe('PublishedModelsPage restored workflows', () => {
       expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({status: 2, expected_version: 1})
     })
   })
+
+
+  // The route page links a model's alias to this page by id. Opening that
+  // address must land on that model's detail rather than the unfiltered list.
+  it('opens the model named by ?model=', async () => {
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/models?model=model-chat')
+    renderPage()
+    expect(await screen.findByRole('dialog', {name: /campus-gpt/})).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/models')
+  })
+
+  it('says an id in the address matches no model instead of ignoring it', async () => {
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/models?model=missing')
+    renderPage()
+    expect(await screen.findByText(/找不到地址中指定的对外模型/)).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/models')
+  })
 })

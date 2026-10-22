@@ -1,4 +1,4 @@
-import {useCallback, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useState} from 'react'
 import {AlertCircle, CheckCircle2, Network, Plus} from 'lucide-react'
 import {
   api,
@@ -57,6 +57,11 @@ type Bundle = {
 
 async function deleteImpact(providerID: string): Promise<ProviderImpact> {
   return api<ProviderImpact>(`/admin/providers/${providerID}/impact`)
+}
+
+/** The channel id another page linked to, if the address names one. */
+function linkProviderID(): string {
+  return new URLSearchParams(window.location.search).get('provider') || ''
 }
 
 /**
@@ -210,6 +215,36 @@ export function ProvidersPage({
   }, [query])
 
   const {data, loading, error, errorStatus, reload} = useResource(loader, [query])
+
+  // A line on the route page links here with ?provider=<id>, because channel
+  // names are not unique. The list is the real source, so the drawer opens
+  // once the channel is in it; an id that never arrives is reported instead of
+  // leaving the operator on an unfiltered list wondering what happened.
+  const linkedProviderID = linkProviderID()
+  const [linkMissing, setLinkMissing] = useState(false)
+  useEffect(() => {
+    if (!linkedProviderID || !data) return
+    if (draft) return
+    const target = data.providers.find(p => p.id === linkedProviderID)
+    if (!target) {
+      setLinkMissing(true)
+      return
+    }
+    setSaveError('')
+    setTab('details')
+    setActiveProvider(target)
+    setDraft({
+      id: target.id,
+      name: target.name,
+      base_url: target.base_url,
+      protocol: target.protocol,
+      provider_type: target.provider_type,
+      description: target.description,
+      credential_env: target.credential_env,
+      credential: target.credential,
+      status: target.status,
+    })
+  }, [linkedProviderID, data, draft])
 
   const save = async (v: ProviderDraft) => {
     if (saving) return
@@ -512,6 +547,15 @@ export function ProvidersPage({
               批量停用
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* A link from the route page names a channel by id. If that channel is
+          not in this page's result, say so rather than showing the whole list
+          as if the address had meant nothing. */}
+      {linkMissing && (
+        <div className="notice warning" role="alert">
+          找不到地址中指定的渠道，可能已被删除，或不在当前筛选结果内。下方为完整的渠道列表。
         </div>
       )}
 

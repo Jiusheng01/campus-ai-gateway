@@ -1,4 +1,4 @@
-import {useCallback, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {
   Boxes,
   Eye,
@@ -120,6 +120,9 @@ export function PublishedModelsPage({
 
   const {data, loading, error, errorStatus, reload} = useResource(loader, [canAuthorize])
   const [detail, setDetail] = useState<ModelDetail | null>(null)
+  // A line on the route page links a model here by id. The detail read is the
+  // same one the card's action uses, so the address opens the real drawer.
+  const [linkMissing, setLinkMissing] = useState(false)
   const toast = useToast()
   const confirm = useConfirm()
   const [detailBusy, setDetailBusy] = useState('')
@@ -229,6 +232,23 @@ export function PublishedModelsPage({
   const providers = data?.providers || []
   const tenants = data?.tenants ?? null
   const routes = data?.routes ?? null
+
+  // ?model=<id> is the address the route page links to. It resolves against the
+  // list the page already loaded, so an id that is not in it can say so.
+  const linkedModelID = new URLSearchParams(window.location.search).get('model') || ''
+  const openedLink = useRef('')
+  useEffect(() => {
+    if (!linkedModelID || !data || openedLink.current === linkedModelID) return
+    openedLink.current = linkedModelID
+    const target = allModels.find(m => m.id === linkedModelID)
+    if (!target) {
+      setLinkMissing(true)
+      return
+    }
+    void open(target)
+    // `open` reads state setters only; it is stable for this purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedModelID, data])
   const totalModels = allModels.length
   const enabledModels = allModels.filter(m => m.status === 1).length
   // Null means the collection was not readable or did not load; no card then.
@@ -275,6 +295,9 @@ export function PublishedModelsPage({
       {publication && <div className="notice success" role="status">
         <span>{publication.created ? '已发布' : publication.route_created ? '已追加线路' : '已有相同线路'}：{publication.model.alias}。API Key 授权请单独管理。</span>
         <Button size="sm" onClick={() => void open(publication.model)}>查看发布结果</Button>
+      </div>}
+      {linkMissing && <div className="notice warning" role="alert">
+        找不到地址中指定的对外模型，可能已被删除。下方为完整的模型列表。
       </div>}
       {data && !error && (routes === null || !data.providersAvailable) && <div className="notice warning" role="alert">
         {data.providersAvailable ? '线路关系读取失败' : '渠道列表读取失败'}，暂无法按渠道筛选。模型基础信息仍可查看。

@@ -296,6 +296,34 @@ describe('ProvidersPage channel facts', () => {
   })
 })
 
+describe('ProvidersPage deep links', () => {
+  // The route page links a line to its channel by id, because channel names are
+  // not unique. Opening that address has to land on the channel's own drawer,
+  // not on the unfiltered list with the id ignored.
+  it('opens the channel named by ?provider=', async () => {
+    const alpha = provider()
+    const beta = provider({id: 'p-beta', name: 'beta'})
+    stubProviders(() => jsonResponse({data: [alpha, beta], total: 2}))
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers?provider=p-alpha')
+
+    renderPage()
+
+    const drawer = await screen.findByRole('dialog', {name: /alpha/})
+    expect(within(drawer).getByText('渠道事实')).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers')
+  })
+
+  it('reports an unknown channel id instead of silently showing the whole list', async () => {
+    stubProviders(() => jsonResponse({data: [provider()], total: 1}))
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers?provider=missing-id')
+
+    renderPage()
+
+    expect(await screen.findByText(/找不到地址中指定的渠道/)).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers')
+  })
+})
+
 describe('ProvidersPage naming', () => {
   // The navigation, the topbar title and the banner all name one page. A
   // different banner title makes the same address read as two pages.
