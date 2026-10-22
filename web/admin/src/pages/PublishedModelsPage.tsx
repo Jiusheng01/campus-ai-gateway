@@ -10,8 +10,6 @@ import {
   RefreshCw,
   Route,
   Search,
-  Sparkles,
-  Users,
 } from 'lucide-react'
 import {
   api,
@@ -39,10 +37,12 @@ import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
 import {ModelAuthorizationPanel} from '../components/models/ModelAuthorizationPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
 import {PageBanner} from '../components/ui/PageBanner'
-import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {useToast} from '../components/ui/Toast'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useResource} from '../lib/useResource'
+import {Pagination} from '../components/ui/Pagination'
+import {CopyButton} from '../components/ui/CopyButton'
+import {Table} from '../components/ui/Table'
 
 /**
  * The channel filter needs the model → channel association, which the model
@@ -103,7 +103,7 @@ export function PublishedModelsPage({
       : Promise.resolve(null)
     const [modelsRes, providersRes, tenants, routes] = await Promise.all([
       api<{data: ModelConfig[]}>('/admin/models'),
-      api<{data: Provider[]}>('/admin/providers?limit=100').catch(() => ({data: []})),
+      api<{data: Provider[]}>('/admin/providers').catch(() => null),
       tenantsPromise,
       // A failed route read leaves the channel filter unavailable rather than
       // matching every channel to nothing.
@@ -111,7 +111,8 @@ export function PublishedModelsPage({
     ])
     return {
       models: modelsRes.data || [],
-      providers: providersRes.data || [],
+      providers: providersRes?.data || [],
+      providersAvailable: providersRes !== null,
       tenants,
       routes,
     }
@@ -131,11 +132,15 @@ export function PublishedModelsPage({
   const [impact, setImpact] = useState<{model: ModelConfig; preview: ModelImpact} | null>(null)
   const [impactError, setImpactError] = useState('')
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
+  const [testingAlias, setTestingAlias] = useState('')
+  const [testBusy, setTestBusy] = useState(false)
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 12
 
   const setModelStatus = async (model: ModelConfig, status: 1 | 2) => {
     setDisableBusy(true)
@@ -163,11 +168,15 @@ export function PublishedModelsPage({
     }
   }
 
-  const openTest = async () => {
+  const openTest = async (alias = detail?.model.alias || '') => {
+    setTestBusy(true)
     try {
       setTesting(await listModelTestOptions())
+      setTestingAlias(alias)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无法加载模型测试选项')
+    } finally {
+      setTestBusy(false)
     }
   }
 
@@ -231,9 +240,9 @@ export function PublishedModelsPage({
   const channelsByModel = useMemo(() => {
     const map = new Map<string, Set<string>>()
     for (const r of routes || []) {
-      const names = map.get(r.model_id) || new Set<string>()
-      names.add(r.provider_name)
-      map.set(r.model_id, names)
+      const ids = map.get(r.model_id) || new Set<string>()
+      ids.add(r.provider_id)
+      map.set(r.model_id, ids)
     }
     return map
   }, [routes])
@@ -249,10 +258,11 @@ export function PublishedModelsPage({
         if (!matchAlias && !matchName && !matchDesc) return false
       }
       if (statusFilter && String(m.status) !== statusFilter) return false
-      if (channelFilter && !channelsByModel.get(m.id)?.has(channelFilter)) return false
+      if (routes !== null && channelFilter && !channelsByModel.get(m.id)?.has(channelFilter)) return false
       return true
     })
-  }, [allModels, searchQuery, statusFilter, channelFilter, channelsByModel])
+  }, [allModels, searchQuery, statusFilter, channelFilter, channelsByModel, routes])
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(filteredModels.length / pageSize)))
 
   return (
     <div className="stack">
@@ -260,52 +270,22 @@ export function PublishedModelsPage({
       <PageBanner
         title="对外模型"
         subtitle="管理业务系统调用的模型名称与线路配置"
+        actions={<Button variant="primary" icon={<Plus />} onClick={() => setPublishing(true)}>发布模型</Button>}
       />
       {publication && <div className="notice success" role="status">
         <span>{publication.created ? '已发布' : publication.route_created ? '已追加线路' : '已有相同线路'}：{publication.model.alias}。API Key 授权请单独管理。</span>
         <Button size="sm" onClick={() => void open(publication.model)}>查看发布结果</Button>
       </div>}
+      {data && !error && (routes === null || !data.providersAvailable) && <div className="notice warning" role="alert">
+        {data.providersAvailable ? '线路关系读取失败' : '渠道列表读取失败'}，暂无法按渠道筛选。模型基础信息仍可查看。
+        <Button size="sm" loading={loading} onClick={() => void reload()}>重试加载关系</Button>
+      </div>}
 
-      {/* Each card counts one collection this page reads. The route tally that
-          stood here answered a question about routes; this page is about the
-          models and the tenants that may call them. */}
-      <section aria-label="模型概览统计" className="modelsSummarySection">
-        <StatGrid columns={enabledTenants === null ? 2 : 3} className="modelsSummaryGrid">
-          <StatCard
-            label="已发布模型"
-            value={totalModels}
-            icon={<Boxes />}
-            subtext="对外模型列表中的条目数"
-            tone="default"
-          />
-          <StatCard
-            label="启用中"
-            value={enabledModels}
-            icon={<Play />}
-            subtext="状态为启用中的对外模型数"
-            tone="success"
-          />
-          {enabledTenants !== null && (
-            <StatCard
-              label="启用租户"
-              value={enabledTenants}
-              icon={<Users />}
-              subtext="状态为启用中的租户数"
-              tone="purple"
-            />
-          )}
-        </StatGrid>
-
-        <div className="modelsSummaryAction">
-          <Button
-            variant="primary"
-            icon={<Plus />}
-            onClick={() => setPublishing(true)}
-          >
-            发布模型
-          </Button>
-        </div>
-      </section>
+      {data && !error && <div aria-label="模型概览统计" className="modelListSummary">
+        <span>已发布模型 <b>{totalModels}</b></span>
+        <span>启用中 <b>{enabledModels}</b></span>
+        {enabledTenants !== null && <span>启用租户 <b>{enabledTenants}</b></span>}
+      </div>}
 
       {/* Filters narrow the rendered cards only; the summary above keeps
           counting the whole model list. */}
@@ -317,7 +297,7 @@ export function PublishedModelsPage({
               className="filterSearchInput"
               placeholder="搜索对外名称、显示名称或描述..."
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              onChange={e => { setSearchQuery(e.target.value); setPage(1) }}
             />
           </div>
 
@@ -326,7 +306,7 @@ export function PublishedModelsPage({
             <select
               className="filterSelect"
               value={statusFilter}
-              onChange={e => setStatusFilter(e.target.value)}
+              onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
             >
               <option value="">全部状态</option>
               <option value="1">启用中</option>
@@ -336,17 +316,17 @@ export function PublishedModelsPage({
 
           {/* Without the route projection there is no model → channel mapping,
               so the control is not shown rather than shown doing nothing. */}
-          {routes && (
+          {routes && data?.providersAvailable && (
             <label className="filterFieldInline">
               <span className="filterLabel">上游渠道</span>
               <select
                 className="filterSelect"
                 value={channelFilter}
-                onChange={e => setChannelFilter(e.target.value)}
+                onChange={e => { setChannelFilter(e.target.value); setPage(1) }}
               >
                 <option value="">全部上游渠道</option>
                 {providers.map(p => (
-                  <option key={p.id} value={p.name}>
+                  <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
                 ))}
@@ -361,6 +341,7 @@ export function PublishedModelsPage({
                 setSearchQuery('')
                 setStatusFilter('')
                 setChannelFilter('')
+                setPage(1)
               }}
             >
               重置
@@ -378,76 +359,38 @@ export function PublishedModelsPage({
         ) : error ? (
           <ErrorState message={error} status={errorStatus} onRetry={reload} />
         ) : filteredModels.length ? (
-          <div className="modelsCardGrid">
-            {filteredModels.map(m => {
+          <Table heads={['对外模型 / Alias', '渠道 → 上游模型', '线路配置', '状态', '操作']} minWidth={1080}>
+            {filteredModels.slice((currentPage - 1) * pageSize, currentPage * pageSize).map(m => {
               const isOnline = m.status === 1
               const tags = getModelTags(m)
+              const modelRoutes = (routes || []).filter(r => r.model_id === m.id)
 
               return (
-                <article
-                  className={`modelCardNew ${isOnline ? 'active' : 'disabled'}`}
-                  key={m.id}
-                >
-                  <header className="modelCardHead">
-                    <div className="modelCardIdentity">
-                      <div className="modelCardIconBadge">
-                        <Sparkles aria-hidden />
-                      </div>
-                      <div className="modelCardTitleBlock">
-                        <div className="modelCardAliasRow">
-                          <h3 className="modelCardAlias mono">{m.alias}</h3>
-                          <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
-                            <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
-                            {isOnline ? '启用中' : '已停用'}
-                          </span>
-                        </div>
-                        {m.display_name && (
-                          <span className="modelCardDisplayName">{m.display_name}</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="modelCardMetaRight">
-                      <span className="configVersionBadge">配置版本 v{m.config_version}</span>
-                    </div>
-                  </header>
-
-                  {/* An absent description is shown as an em-dash. Generating
-                      prose here would attribute a purpose to the model that
-                      the gateway never recorded. */}
-                  <p className="modelCardDesc">
-                    {m.description || '—'}
-                  </p>
-
-                  {tags.length > 0 && (
-                    <div className="modelCardTags">
-                      {tags.map(t => (
-                        <span key={t.label} className={`modelTagBadge ${t.warn ? 'warn' : ''}`}>
-                          {t.label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="modelCardMetaDivider" />
-
-                  <div className="modelCardInfoGrid">
-                    <div className="modelCardInfoItem">
-                      <span className="infoItemLabel">线路状态</span>
-                      <span className="infoItemValue">
-                        {m.enabled_route_count ?? 0} / {m.route_count ?? 0} 条启用
-                      </span>
-                    </div>
-                    <div className="modelCardInfoItem">
-                      <span className="infoItemLabel">路由模式</span>
-                      <span className="infoItemValue">
-                        {m.routing_mode_summary || '未配置'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <footer className="modelCardActions">
-                    <div className="modelCardActionsLeft">
+                <tr key={m.id}>
+                  <td><div className="modelListIdentity">
+                    <strong className="mono">{m.alias}</strong>
+                    {m.display_name && <span>{m.display_name}</span>}
+                    <small className="muted" title={m.description}>{m.description || '—'}</small>
+                    <CopyButton value={m.alias} label="复制模型 ID" />
+                  </div></td>
+                  <td><div className="modelListRelations">
+                    {routes === null ? <span className="muted">关系读取失败</span> : modelRoutes.length ? <>
+                      <small className="muted">{new Set(modelRoutes.map(r => r.provider_id)).size} 个渠道</small>
+                      {modelRoutes.slice(0, 2).map(r => <div key={r.id}>
+                        <span>{r.provider_name}</span>
+                        <span className="mono">{r.upstream_model}</span>
+                      </div>)}
+                      {modelRoutes.length > 2 && <Button size="sm" onClick={() => void open(m)}>查看全部 {modelRoutes.length} 条线路</Button>}
+                    </> : <span className="muted">暂无线路</span>}
+                  </div></td>
+                  <td><div className="modelListConfig">
+                    <span>{m.enabled_route_count ?? '—'} / {m.route_count ?? '—'} 条启用</span>
+                    <span>{m.routing_mode_summary || '未配置'}</span>
+                    <small className="muted">配置版本 v{m.config_version}</small>
+                    {tags.map(t => <small key={t.label} className={t.warn ? 'modelListWarning' : 'muted'}>{t.label}</small>)}
+                  </div></td>
+                  <td><StatusBadge status={m.status} /></td>
+                  <td><div className="modelListActions">
                       <Button
                         size="sm"
                         icon={<Eye />}
@@ -471,11 +414,9 @@ export function PublishedModelsPage({
                         icon={<Route />}
                         onClick={() => setEditingRoutesModel({id: m.id, alias: m.alias})}
                       >
-                        查看路由
+                        路由策略
                       </Button>
-                    </div>
-
-                    <div className="modelCardActionsRight">
+                      <Button size="sm" icon={<FlaskConical />} loading={testBusy} disabled={!isOnline} title={!isOnline ? '启用模型后可测试' : '管理诊断不经过 API Key 与租户配额'} onClick={() => void openTest(m.alias)}>模型测试</Button>
                       <Button
                         size="sm"
                         variant={isOnline ? 'danger' : 'primary'}
@@ -485,12 +426,11 @@ export function PublishedModelsPage({
                       >
                         {isOnline ? '停用' : '启用'}
                       </Button>
-                    </div>
-                  </footer>
-                </article>
+                  </div></td>
+                </tr>
               )
             })}
-          </div>
+          </Table>
         ) : allModels.length ? (
           // The list is not empty; the filters hid every card. Saying "暂无
           // 对外模型" here would claim the deployment has none.
@@ -512,6 +452,7 @@ export function PublishedModelsPage({
           />
         )}
       </Panel>
+      {!error && data && <Pagination page={currentPage} pageSize={pageSize} total={filteredModels.length} loading={loading} onPageChange={setPage} />}
 
       {/* Publish Model Wizard Drawer */}
       {publishing && (
@@ -552,12 +493,12 @@ export function PublishedModelsPage({
             <Detail
               title="基本信息"
               rows={[
-                ['对外名称（alias）', <span key="alias" className="mono">{detail.model.alias}</span>],
+                ['对外名称（alias）', <span key="alias" className="modelListIdentity"><span className="mono">{detail.model.alias}</span><CopyButton value={detail.model.alias} label="复制模型 ID" /></span>],
                 ['显示名称', detail.model.display_name || '—'],
                 ['描述', detail.model.description || '—'],
                 ['状态', <StatusBadge key="status" status={detail.model.status} />],
                 ['配置版本', <span key="ver" className="mono">{detail.model.config_version}</span>],
-                ['静态可路由', detail.model.statically_routable ? <Badge key="r1" tone="success">是</Badge> : <Badge key="r2" tone="warning">否</Badge>],
+                ['静态可路由', typeof detail.model.statically_routable !== 'boolean' ? '未知' : detail.model.statically_routable ? <Badge key="r1" tone="success">是</Badge> : <Badge key="r2" tone="warning">否</Badge>],
                 ['路由模式总结', detail.model.routing_mode_summary || '未配置'],
               ]}
             />
@@ -581,7 +522,7 @@ export function PublishedModelsPage({
                     <div className="compactRouteRow" key={r.id}>
                       <span className="compactRouteIndex">#{i + 1}</span>
                       <b className="compactRouteProvider">{r.provider_name}</b>
-                      <span className="mono compactRouteModel">{r.upstream_model}</span>
+                      <span className="compactRouteModel"><span className="mono">{r.upstream_model}</span> <CopyButton value={r.upstream_model} label="复制上游模型" /></span>
                       <span className="compactRoutePriority">优先级 {r.priority}</span>
                       <span className="compactRouteWeight">权重 {r.weight}</span>
                       <StatusBadge status={r.status} />
@@ -633,7 +574,7 @@ export function PublishedModelsPage({
       {testing && (
         <ModelTestDrawer
           models={testing}
-          initialModel={detail?.model.alias}
+          initialModel={testingAlias}
           onClose={() => setTesting(null)}
         />
       )}

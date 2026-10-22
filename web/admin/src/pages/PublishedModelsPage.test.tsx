@@ -157,7 +157,7 @@ describe('PublishedModelsPage', () => {
 
   it('does not infer a capability tag from text in the alias', async () => {
     renderPage()
-    const card = (await screen.findByText('campus-vision')).closest('article')
+    const card = await screen.findByRole('row', {name: /campus-vision/})
     expect(card).not.toBeNull()
 
     expect(card).not.toHaveTextContent('多模态')
@@ -170,7 +170,7 @@ describe('PublishedModelsPage', () => {
 
   it('renders neutral placeholders when the description and routing summary are empty', async () => {
     renderPage()
-    const card = (await screen.findByText('campus-vision')).closest('article')
+    const card = await screen.findByRole('row', {name: /campus-vision/})
     expect(card).not.toBeNull()
     const scope = within(card as HTMLElement)
 
@@ -185,17 +185,17 @@ describe('PublishedModelsPage', () => {
     renderPage()
 
     expect(await screen.findByText('campus-gpt')).toBeInTheDocument()
-    expect(screen.getAllByRole('article')).toHaveLength(3)
+    expect(screen.getAllByRole('row')).toHaveLength(4)
 
-    await user.selectOptions(screen.getByLabelText(/上游渠道/), 'qwen-official')
+    await user.selectOptions(screen.getByLabelText(/上游渠道/), 'p-qwen')
 
-    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2))
     expect(screen.getByText('campus-gpt')).toBeInTheDocument()
     expect(screen.queryByText('campus-vision')).not.toBeInTheDocument()
 
     await user.selectOptions(screen.getByLabelText(/上游渠道/), '')
 
-    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(3))
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(4))
     expect(screen.getByText('campus-vision')).toBeInTheDocument()
   })
 
@@ -203,13 +203,11 @@ describe('PublishedModelsPage', () => {
     renderPage({canAuthorize: true})
     await screen.findByText('campus-gpt')
 
-    const value = (label: string) =>
-      screen.getByText(label, {selector: '.statCardLabel'}).closest('.statCard')?.querySelector('.statCardValue')?.textContent
-
     // Three models, two of them enabled; two tenants enabled out of three.
-    expect(value('已发布模型')).toBe('3')
-    expect(value('启用中')).toBe('2')
-    expect(value('启用租户')).toBe('2')
+    const summary = screen.getByLabelText('模型概览统计')
+    expect(summary).toHaveTextContent('已发布模型 3')
+    expect(summary).toHaveTextContent('启用中 2')
+    expect(summary).toHaveTextContent('启用租户 2')
 
     const tenantCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith('/admin/tenants'))
     expect(tenantCalls).toHaveLength(1)
@@ -219,9 +217,82 @@ describe('PublishedModelsPage', () => {
     renderPage()
     await screen.findByText('campus-gpt')
 
-    expect(screen.queryByText('启用租户', {selector: '.statCardLabel'})).toBeNull()
+    expect(screen.getByLabelText('模型概览统计')).not.toHaveTextContent('启用租户')
     const tenantCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith('/admin/tenants'))
     expect(tenantCalls).toHaveLength(0)
+  })
+
+  it('paginates the complete collection and resets to the first page when searching', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === '/admin/models') return jsonResponse({data: Array.from({length: 13}, (_, index) => ({...models[0], id: `m-${index}`, alias: `campus-${index}`}))})
+      return original(input, init)
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('campus-0')
+    expect(screen.queryByText('campus-12')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', {name: '下一页'}))
+    expect(await screen.findByText('campus-12')).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText(/搜索对外名称/), 'campus-0')
+    expect(await screen.findByText('campus-0')).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '上一页'})).toBeDisabled()
+  })
+
+  it('shows the real channel and upstream relationship, copies the full alias and opens its diagnostic directly', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+    renderPage()
+    const row = await screen.findByRole('row', {name: /campus-vision/})
+    expect(row).toHaveTextContent('deepseek-official')
+    expect(row).toHaveTextContent('deepseek-chat')
+    await user.click(within(row).getByRole('button', {name: '复制模型 ID'}))
+    expect(writeText).toHaveBeenCalledWith('campus-vision')
+    await user.click(within(row).getByRole('button', {name: '模型测试'}))
+    expect(await screen.findByText('模型连通测试')).toBeInTheDocument()
+    expect(screen.getByLabelText(/对外模型/)).toHaveValue('campus-vision')
+  })
+
+  it('keeps models visible when relationships fail and restores channel filtering after retry', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!
+    let routeFailure = true
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).startsWith('/admin/routes') && routeFailure) return jsonResponse({error: {message: '线路读取失败'}}, 500)
+      return original(input, init)
+    })
+    const user = userEvent.setup()
+    renderPage()
+    expect(await screen.findByRole('row', {name: /campus-vision/})).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('线路关系读取失败')
+    expect(screen.queryByLabelText(/上游渠道/)).not.toBeInTheDocument()
+    routeFailure = false
+    await user.click(screen.getByRole('button', {name: '重试加载关系'}))
+    expect(await screen.findByLabelText(/上游渠道/)).toBeInTheDocument()
+  })
+
+  it('offers channel filtering beyond the old first hundred providers', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === '/admin/providers') return jsonResponse({data: [...Array.from({length: 104}, (_, index) => ({id: `extra-${index}`, name: `渠道${index}`})), ...providers]})
+      if (String(input).startsWith('/admin/providers?')) return jsonResponse({data: []})
+      return original(input, init)
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('campus-gpt')
+    await user.selectOptions(screen.getByLabelText(/上游渠道/), 'p-qwen')
+    expect(screen.getByRole('row', {name: /campus-gpt/})).toBeInTheDocument()
+    expect(screen.queryByRole('row', {name: /campus-vision/})).not.toBeInTheDocument()
+  })
+
+  it('explains a failed channel collection instead of presenting an empty filter', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === '/admin/providers'
+      ? jsonResponse({error: {message: '渠道列表不可读'}}, 500) : original(input, init))
+    renderPage()
+    await screen.findByRole('row', {name: /campus-gpt/})
+    expect(screen.getByRole('alert')).toHaveTextContent('渠道列表读取失败')
+    expect(screen.queryByLabelText(/上游渠道/)).not.toBeInTheDocument()
   })
 })
 
@@ -294,7 +365,7 @@ describe('PublishedModelsPage restored workflows', () => {
   it('runs a model diagnostic from the model detail drawer', async () => {
     const user = userEvent.setup()
     renderPage()
-    const card = (await screen.findByText('campus-vision')).closest('article')
+    const card = await screen.findByRole('row', {name: /campus-vision/})
     expect(card).not.toBeNull()
 
     await user.click(within(card as HTMLElement).getByRole('button', {name: /详情/}))
@@ -310,7 +381,7 @@ describe('PublishedModelsPage restored workflows', () => {
   it('previews the disabling impact before it disables a model', async () => {
     const user = userEvent.setup()
     renderPage()
-    const card = (await screen.findByText('campus-vision')).closest('article')
+    const card = await screen.findByRole('row', {name: /campus-vision/})
     expect(card).not.toBeNull()
 
     await user.click(within(card as HTMLElement).getByRole('button', {name: '停用'}))
