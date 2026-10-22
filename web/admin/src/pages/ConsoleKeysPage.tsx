@@ -94,11 +94,17 @@ export function ConsoleKeysPage() {
     })
   }, [keys.data, search, statusFilter])
 
+  // A refused clipboard must say so; silence would leave the operator thinking
+  // the prefix is on the clipboard, which is the same mistake the admin key
+  // list already fixed.
   const copyPrefix = async (prefix: string) => {
     if (await copyText(prefix)) {
       setCopiedPrefix(prefix)
+      toast.success(`Key 前缀已复制: ${prefix}`)
       setTimeout(() => setCopiedPrefix(null), 2000)
+      return
     }
+    toast.error('复制失败，请手动选择并复制 Key 前缀')
   }
 
   const resetFilters = () => {
