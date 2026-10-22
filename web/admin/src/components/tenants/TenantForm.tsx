@@ -85,6 +85,14 @@ export function TenantForm({
           <Layers aria-hidden /> 模型授权
         </legend>
 
+        {/* Narrowing the list looks like a revocation and is not one. Say so
+            where the operator changes it, not in a doc they would have to
+            find. */}
+        <p className="formSectionNote">
+          此列表是成员创建或编辑个人 API Key 时可选的模型上限。缩减它不会撤销或追溯修改已签发的 API Key，
+          已有 Key 继续按签发时的授权范围调用。管理员签发 Key 的授权在「调用管理」中单独维护。
+        </p>
+
         <ModelScopePicker
           value={allowedModels}
           onChange={next => setV(prev => ({...prev, allowed_models: next}))}

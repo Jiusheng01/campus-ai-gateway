@@ -1247,6 +1247,10 @@ input:focus, select:focus, textarea:focus {
 .progressFill.warning { background: var(--warning); }
 .progressFill.danger { background: var(--danger); }
 .progressFill.muted { background: var(--border-strong); }
+/* The bar stops at full width, so the note carries the facts it cannot: the
+   share, the overage, or the fact that there is no limit to measure against. */
+.progressNote { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.detailHint { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 
 /* --- secret reveal -------------------------------------------------------- */
 
@@ -2511,6 +2515,9 @@ input:focus, select:focus, textarea:focus {
   height: 14px;
   color: var(--primary);
 }
+/* One sentence at the top of a section, where the operator is about to change
+   the thing it describes. */
+.formSectionNote { margin: 0 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 
 /* Multi-select Component */
 .multiSelectWrapper {
