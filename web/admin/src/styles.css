@@ -1936,6 +1936,12 @@ input:focus, select:focus, textarea:focus {
   padding: 3px 8px;
   border-radius: 999px;
   line-height: 1;
+  /* A chip is one short status word, so it must never break. Without this an
+     auto-laid-out table column can hand it less width than the word needs, and
+     CJK text then wraps between every character: 已配置 rendered as three
+     stacked lines inside a 44px-tall pill. The column widens instead, which is
+     what the table's horizontal scroll is for. */
+  white-space: nowrap;
 }
 .statusChip.ok {
   background: var(--success-soft);
