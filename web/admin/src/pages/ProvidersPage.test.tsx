@@ -106,6 +106,55 @@ describe('ProvidersPage channel summary', () => {
 })
 
 describe('ProvidersPage channel facts', () => {
+  it('previews the cascade and requires the channel name, leaving the channel present when deletion fails', async () => {
+    const mutations: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/admin/status') return jsonResponse(status)
+      if (url.endsWith('/impact')) return jsonResponse({routes: 2, provider_models: 3, orphaned_models: 1, affected_models: [{model_id: 'm1', alias: 'qa-public-model', routes_to_provider: 2, remaining_routes: 0, orphaned: true}]})
+      if (init?.method === 'DELETE') {mutations.push(url); return jsonResponse({error: {message: '删除操作失败，请重试'}}, 500)}
+      return jsonResponse({data: [provider()], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '删除'}))
+    expect(await screen.findByText(/失去全部线路/)).toBeInTheDocument()
+    expect(screen.getByText(/qa-public-model/)).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '永久删除'})).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', {name: '取消'}))
+    expect(mutations).toEqual([])
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '删除'}))
+    await userEvent.type(await screen.findByLabelText(/输入渠道名/), 'alpha')
+    expect(screen.getByRole('button', {name: '永久删除'})).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', {name: '永久删除'}))
+    await waitFor(() => expect(mutations).toHaveLength(1))
+    expect(await screen.findByRole('alert')).toHaveTextContent('删除操作失败')
+    expect(row('alpha')).toBeInTheDocument()
+    expect(mutations).toHaveLength(1)
+  })
+
+  it('opens a read-only detail view and updates its diagnostic facts after the real response', async () => {
+    let current = provider()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/admin/status') return jsonResponse(status)
+      if (init?.method === 'POST') {
+        current = {...current, last_test: {at: '2026-10-22T01:20:00Z', ok: true, status_code: 200, latency_ms: 120, upstream_model: 'qa-model'}}
+        return jsonResponse({channel: 'alpha', upstream_model: 'qa-model', status_code: 200, latency_ms: 120, input_tokens: 2, output_tokens: 1, total_tokens: 3})
+      }
+      return jsonResponse({data: [current], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '详情'}))
+    const drawer = screen.getByRole('dialog')
+    expect(within(drawer).queryByRole('button', {name: '保存修改'})).not.toBeInTheDocument()
+    expect(within(drawer).getByText('尚未诊断')).toBeInTheDocument()
+    await userEvent.click(within(drawer).getByRole('button', {name: '连通诊断'}))
+    await userEvent.type(screen.getByLabelText(/上游模型/), 'qa-model')
+    await userEvent.click(screen.getByRole('button', {name: '开始诊断'}))
+    expect(await within(drawer).findByText(/成功 · HTTP 200/)).toBeInTheDocument()
+  })
+
   it('keeps an edit draft after a save failure and refreshes the actual saved channel after retry', async () => {
     let current = provider()
     let rejectSave = true
