@@ -323,6 +323,16 @@ export function ProvidersPage({
   const onlinePct = channelTotal ? ratio(onlineCount ?? 0, channelTotal) : null
   const offlinePct = channelTotal ? ratio(offlineCount ?? 0, channelTotal) : null
 
+  // The list's own subtitle is a count of the filtered result, so it may only
+  // quote one the page has: while the first page is in flight there is no
+  // result yet, and after a failure `total` is still its initial zero. Saying
+  // "共 0 个渠道" in either case reports an empty list that was never returned.
+  const listSub = error
+    ? '渠道列表读取失败；上方统计为全部配置，不代表实时健康。'
+    : loading && !data
+      ? '正在读取渠道列表；上方统计为全部配置，不代表实时健康。'
+      : `当前筛选共 ${total} 个渠道；上方统计为全部配置，不代表实时健康。`
+
   const circuits = useMemo(
     () => new Map((data?.circuits ?? []).map(c => [c.provider, c])),
     [data?.circuits],
@@ -502,7 +512,7 @@ export function ProvidersPage({
         </div>
       )}
 
-      <Panel title="渠道列表" sub={`当前筛选共 ${total} 个渠道；上方统计为全部配置，不代表实时健康。`}>
+      <Panel title="渠道列表" sub={listSub}>
         {loading && !data ? (
           <SkeletonRows rows={5} columns={9} />
         ) : error ? (

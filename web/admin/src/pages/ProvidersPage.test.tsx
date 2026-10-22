@@ -295,3 +295,40 @@ describe('ProvidersPage channel facts', () => {
     expect(tag).toHaveClass('statusChip', 'warn')
   })
 })
+
+describe('ProvidersPage list states', () => {
+  // The subtitle is a count, so it may only state one it actually has. Before
+  // the list answers, "当前筛选共 0 个渠道" describes an empty result that was
+  // never returned, and under a failed request the same sentence turns a
+  // failure into a confident zero.
+  it('does not claim an empty result while the channel list is still loading', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/admin/status')) return jsonResponse(status)
+      if (url.startsWith('/admin/providers')) return new Promise<Response>(() => {})
+      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+    }))
+
+    renderPage()
+    expect(await screen.findByText(/正在读取渠道列表/)).toBeInTheDocument()
+    expect(screen.queryByText(/当前筛选共/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status', {name: '正在加载'})).toBeInTheDocument()
+  })
+
+  it('reports the failed read instead of a zero count and offers a retry', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/admin/status')) return jsonResponse(status)
+      if (url.startsWith('/admin/providers')) return jsonResponse({error: {message: '渠道服务暂不可用'}}, 500)
+      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+    }))
+
+    renderPage()
+    const message = await screen.findByText('渠道服务暂不可用')
+    const panel = message.closest('.panel') as HTMLElement
+    expect(within(panel).getByText(/渠道列表读取失败/)).toBeInTheDocument()
+    expect(within(panel).queryByText(/当前筛选共/)).not.toBeInTheDocument()
+    expect(within(panel).queryByText(/0 个渠道/)).not.toBeInTheDocument()
+    expect(within(panel).getByRole('button', {name: '重新加载'})).toBeInTheDocument()
+  })
+})
