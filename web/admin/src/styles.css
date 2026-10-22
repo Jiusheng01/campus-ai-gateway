@@ -1394,6 +1394,43 @@ input:focus, select:focus, textarea:focus {
 .authModeTitle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .authModeText p { margin: 8px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.65; }
 
+/* System settings: deployment facts grouped by responsibility. Everything is
+   read-only, so the layout is a definition list rather than a form. */
+.settingsGroups { display: flex; flex-direction: column; gap: 20px; }
+.settingsGroup { border-top: 1px solid var(--border); padding-top: 16px; }
+.settingsGroup:first-child { border-top: 0; padding-top: 0; }
+.settingsGroupTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.settingsGroupTitle svg { width: 16px; height: 16px; color: var(--primary); }
+.settingsFacts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 20px;
+}
+.settingFact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.settingFactLabel { font-size: 12px; color: var(--text-muted); }
+.settingFactValue { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.settingFactHint { font-size: 12px; color: var(--text-faint); line-height: 1.5; }
+.settingsNote { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+.settingsReadOnly {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.settingsReadOnly svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+
 /* --- utilities ------------------------------------------------------------ */
 
 .mono { font-family: var(--font-mono); font-size: 12px; }
