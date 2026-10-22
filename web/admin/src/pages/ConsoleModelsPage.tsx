@@ -15,6 +15,7 @@ import {Table} from '../components/ui/Table'
 import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonRows} from '../components/ui/Skeleton'
 import {Button} from '../components/ui/Button'
+import {CopyButton} from '../components/ui/CopyButton'
 import {copyText} from '../lib/format'
 import {useResource} from '../lib/useResource'
 import {useToast} from '../components/ui/Toast'
@@ -109,7 +110,12 @@ print(resp.choices[0].message.content)`
                 {models.map(m => (
                   <tr key={m.alias}>
                     <td>
-                      <code className="mono">{m.alias}</code>
+                      <div className="modelAliasCell">
+                        <code className="mono">{m.alias}</code>
+                        {/* The alias is what the request body names; copying it
+                            whole is the one thing an integrator does with it. */}
+                        <CopyButton value={m.alias} label="复制模型 ID" />
+                      </div>
                     </td>
                     <td>{m.display_name || '—'}</td>
                     <td>{m.description || '—'}</td>

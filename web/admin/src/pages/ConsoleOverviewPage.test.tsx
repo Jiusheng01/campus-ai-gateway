@@ -338,7 +338,9 @@ describe('personal console next steps', () => {
     expect(within(items[1]).getByRole('link')).toHaveAttribute('href', '/console/keys')
     expect(items[2]).toHaveTextContent('复制接入示例')
     expect(items[3]).toHaveTextContent('查看用量与调用记录')
-    expect(within(items[3]).getByRole('link')).toHaveAttribute('href', '/console/usage')
+    expect(within(items[3]).getAllByRole('link')[0]).toHaveAttribute('href', '/console/usage')
+    // The same step also reaches the records it names.
+    expect(within(items[3]).getAllByRole('link')[1]).toHaveAttribute('href', '/console/logs')
   })
 
   it('marks completed steps from real data, not from the fact that the page loaded', async () => {

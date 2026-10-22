@@ -120,7 +120,7 @@ export function LogDetail({v}: {v: RequestLog}) {
           title="尝试链"
           sub="本次请求按服务端记录的顺序打过的每一条线路。熔断跳过的线路没有真的发出请求，单独标记。"
         >
-          <AttemptVerdict v={v} attempts={attempts} />
+          <AttemptVerdict v={v} attempts={attempts} failed={Boolean(attemptsError)} />
           {attempts === null ? (
             <p className="muted">加载中…</p>
           ) : attemptsError ? (
@@ -203,8 +203,10 @@ function attemptTone(a: RequestAttempt): 'ok' | 'down' | 'unknown' {
  * also a failover. The verdict therefore reads the outcomes, and says nothing
  * while the chain is still loading or could not be read.
  */
-function AttemptVerdict({v, attempts}: {v: RequestLog; attempts: RequestAttempt[] | null}) {
-  if (attempts === null) return null
+function AttemptVerdict({v, attempts, failed}: {v: RequestLog; attempts: RequestAttempt[] | null; failed: boolean}) {
+  // A read that failed says nothing about the request: claiming "no attempts"
+  // would state a fact the console does not have.
+  if (failed || attempts === null) return null
   const tried = attempts.filter(a => a.outcome !== 'skipped')
   const served = attempts.some(a => a.outcome === 'served')
   const timeline = (list: RequestAttempt[]) => (

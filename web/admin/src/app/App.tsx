@@ -345,7 +345,7 @@ function Console() {
         </>
       ) : (
         <>
-          {route.page === 'dashboard' && <DashboardPage roles={roles} who={who} onNavigate={navigate} />}
+          {route.page === 'dashboard' && <DashboardPage roles={roles} onNavigate={navigate} />}
           {route.page === 'analytics' && <AnalyticsPage />}
           {route.page === 'providers' && (
             <ProvidersPage

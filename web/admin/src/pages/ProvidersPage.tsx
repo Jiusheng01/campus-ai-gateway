@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {AlertCircle, CheckCircle2, Network, Plus} from 'lucide-react'
 import {
   api,
@@ -217,34 +217,47 @@ export function ProvidersPage({
   const {data, loading, error, errorStatus, reload} = useResource(loader, [query])
 
   // A line on the route page links here with ?provider=<id>, because channel
-  // names are not unique. The list is the real source, so the drawer opens
-  // once the channel is in it; an id that never arrives is reported instead of
-  // leaving the operator on an unfiltered list wondering what happened.
+  // names are not unique. The page's own list is paginated, so the id is
+  // resolved against the full collection: reporting a channel on page two as
+  // "deleted" would be a false claim. One lookup per visited address, so
+  // closing the drawer cannot reopen it.
   const linkedProviderID = linkProviderID()
   const [linkMissing, setLinkMissing] = useState(false)
+  const linkOpened = useRef('')
   useEffect(() => {
-    if (!linkedProviderID || !data) return
-    if (draft) return
-    const target = data.providers.find(p => p.id === linkedProviderID)
-    if (!target) {
-      setLinkMissing(true)
-      return
+    if (!linkedProviderID || linkOpened.current === linkedProviderID) return
+    let live = true
+    void api<{data: Provider[]}>('/admin/providers')
+      .then(d => {
+        if (!live) return
+        linkOpened.current = linkedProviderID
+        const target = (d.data || []).find(p => p.id === linkedProviderID)
+        if (!target) {
+          setLinkMissing(true)
+          return
+        }
+        setSaveError('')
+        setTab('details')
+        setActiveProvider(target)
+        setDraft({
+          id: target.id,
+          name: target.name,
+          base_url: target.base_url,
+          protocol: target.protocol,
+          provider_type: target.provider_type,
+          description: target.description,
+          credential_env: target.credential_env,
+          credential: target.credential,
+          status: target.status,
+        })
+      })
+      .catch(() => {
+        if (live) setLinkMissing(true)
+      })
+    return () => {
+      live = false
     }
-    setSaveError('')
-    setTab('details')
-    setActiveProvider(target)
-    setDraft({
-      id: target.id,
-      name: target.name,
-      base_url: target.base_url,
-      protocol: target.protocol,
-      provider_type: target.provider_type,
-      description: target.description,
-      credential_env: target.credential_env,
-      credential: target.credential,
-      status: target.status,
-    })
-  }, [linkedProviderID, data, draft])
+  }, [linkedProviderID])
 
   const save = async (v: ProviderDraft) => {
     if (saving) return
@@ -555,7 +568,7 @@ export function ProvidersPage({
           as if the address had meant nothing. */}
       {linkMissing && (
         <div className="notice warning" role="alert">
-          找不到地址中指定的渠道，可能已被删除，或不在当前筛选结果内。下方为完整的渠道列表。
+          找不到地址中指定的渠道。该 id 在网关的渠道集合中不存在，可能已被删除。下方为按当前筛选读取的列表。
         </div>
       )}
 

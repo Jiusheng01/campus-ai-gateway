@@ -17,6 +17,7 @@ import {RouteEditor} from '../components/models/RouteEditor'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {useResource} from '../lib/useResource'
+import {pathFor} from '../app/routing'
 import {ms} from '../lib/format'
 
 type Filters = {model: string; provider: string; status: string}
@@ -52,7 +53,6 @@ function analyzeShape(routes: RouteView[]): {shape: LineShape; shapeLabel: strin
   const priorities = new Set(enabled.map(r => r.priority))
   const equalPriorities = enabled.length > 1 && priorities.size === 1
   const allDistinct = priorities.size === enabled.length
-  const sameWeight = new Set(enabled.map(r => r.weight)).size <= 1
 
   if (enabled.length <= 1) {
     return {
@@ -68,7 +68,7 @@ function analyzeShape(routes: RouteView[]): {shape: LineShape; shapeLabel: strin
       shapeDesc: '启用线路同一优先级，按权重决定由谁开始一次请求；其余线路按权重顺序接替。',
     }
   }
-  if (allDistinct && sameWeight) {
+  if (allDistinct) {
     return {
       shape: 'failover',
       shapeLabel: '主备层级',
@@ -167,6 +167,7 @@ export function RoutesPage() {
   const failoverCount = groupedModels.filter(m => m.shape === 'failover').length
   const splitCount = groupedModels.filter(m => m.shape === 'weighted' || m.shape === 'mixed').length
   const totalCount = routes.length
+  const filtersActive = Object.values(filters).some(v => v.trim() !== '')
 
   return (
     <div className="stack">
@@ -202,7 +203,7 @@ export function RoutesPage() {
             label="线路总数"
             value={totalCount}
             icon={<Link2 />}
-            subtext={`共覆盖 ${groupedModels.length} 个对外模型`}
+            subtext={`${filtersActive ? '当前筛选：' : ''}共覆盖 ${groupedModels.length} 个对外模型`}
             tone="info"
           />
         </StatGrid>
@@ -286,7 +287,7 @@ export function RoutesPage() {
                       <div className="routeModelNameRow">
                         <Link
                           className="mono routeModelAlias"
-                          href={`/admin-ui/models?model=${encodeURIComponent(gm.model_id)}`}
+                          href={`${pathFor('admin', 'models')}?model=${encodeURIComponent(gm.model_id)}`}
                           title={`在对外模型中查看 ${gm.model_alias}`}
                         >
                           {gm.model_alias}
@@ -353,7 +354,7 @@ export function RoutesPage() {
                               the id; the channel page narrows its own list. */}
                           <Link
                             className="mono tableEntityLink"
-                            href={`/admin-ui/providers?provider=${encodeURIComponent(r.provider_id)}`}
+                            href={`${pathFor('admin', 'providers')}?provider=${encodeURIComponent(r.provider_id)}`}
                             title={`在上游渠道中查看 ${r.provider_name}`}
                           >
                             {r.provider_name}

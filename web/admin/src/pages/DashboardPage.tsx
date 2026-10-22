@@ -26,7 +26,6 @@ import {
   type RouteView,
   type Tenant,
   type TrendBucket,
-  type WhoAmI,
 } from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
@@ -147,7 +146,6 @@ export function DashboardPage({
   onNavigate,
 }: {
   roles: string[]
-  who?: WhoAmI | null
   onNavigate?: (p: Page) => void
 }) {
   const toast = useToast()

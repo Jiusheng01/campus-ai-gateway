@@ -1,7 +1,8 @@
-import {useCallback, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {AlertTriangle, ArrowDown, ArrowUp, Plus, Trash2} from 'lucide-react'
 import {api, ApiError, type ModelDetail, type ModelRoute, type Provider} from '../../api'
 import {Button} from '../ui/Button'
+import {containTab} from '../ui/focus'
 import {Field, Notice} from '../ui/Field'
 import {EmptyState, ErrorState} from '../ui/EmptyState'
 import {SkeletonRows} from '../ui/Skeleton'
@@ -48,9 +49,32 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
   const [mode, setMode] = useState<RouteMode>('advanced')
   const [pending, setPending] = useState<{mode: RouteMode; projected: RouteDraft[]; diff: string[]} | null>(null)
   const [confirming, setConfirming] = useState<{routes: RouteDraft[]; diff: string[]} | null>(null)
+  const confirmRef = useRef<HTMLDivElement>(null)
+  const confirmReturn = useRef<HTMLElement | null>(null)
   const [busy, setBusy] = useState(false)
   const [conflict, setConflict] = useState<{version: number | null} | null>(null)
   const [formError, setFormError] = useState('')
+
+  // The save preview behaves like the drawer it replaces: Escape cancels it,
+  // Tab stays inside it, and closing it returns focus to the save button that
+  // opened it. Without this the element is a dialog in name only.
+  useEffect(() => {
+    if (!confirming) return
+    confirmReturn.current = document.activeElement as HTMLElement | null
+    confirmRef.current?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setConfirming(null)
+        return
+      }
+      if (confirmRef.current) containTab(event, confirmRef.current)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      confirmReturn.current?.focus?.()
+    }
+  }, [confirming])
 
   const routes = useMemo(() => draft ?? (data ? toDraft(data.detail.routes) : []), [draft, data])
   const savedRoutes = useMemo(() => (data ? toDraft(data.detail.routes) : []), [data])
@@ -240,7 +264,7 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
           it, so the list being confirmed is the only thing in view and cannot
           be edited while the operator decides. */}
       {confirming ? (
-        <div className="routeConfirm" role="dialog" aria-modal="true" aria-label="确认保存线路">
+        <div className="routeConfirm" role="dialog" aria-modal="true" aria-label="确认保存线路" tabIndex={-1} ref={confirmRef}>
           <div className="notice warning">
             <AlertTriangle aria-hidden />
             <div>

@@ -162,11 +162,11 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
  * tick there would be a guess.
  */
 function NextSteps({data, onNavigate}: {data: ConsoleMe; onNavigate?: Navigate}) {
-  const steps: {label: string; detail: string; page: Page; done: boolean | null}[] = [
+  const steps: {label: string; detail: string; page: Page; also?: {page: Page; label: string}; done: boolean | null}[] = [
     {label: '查看模型', detail: '确认你的租户允许调用哪些模型。', page: 'models', done: null},
     {label: '创建 API Key', detail: '创建后完整 Key 只显示一次，当次复制。', page: 'keys', done: data.key_count > 0},
     {label: '复制接入示例', detail: '在模型页复制 Base URL、curl 或 SDK 示例。', page: 'models', done: null},
-    {label: '查看用量与调用记录', detail: '调用之后在这里核对请求与 Token。', page: 'usage', done: null},
+    {label: '查看用量与调用记录', detail: '调用之后在这里核对请求与 Token。', page: 'usage', also: {page: 'logs', label: '调用记录'}, done: null},
   ]
   return (
     <section aria-label="接下来">
@@ -177,7 +177,17 @@ function NextSteps({data, onNavigate}: {data: ConsoleMe; onNavigate?: Navigate})
               <ConsoleLink page={step.page} onNavigate={onNavigate} className="nextStepLink">
                 {step.label}
               </ConsoleLink>
-              <span className="nextStepDetail">{step.detail}</span>
+              <span className="nextStepDetail">
+                {step.detail}
+                {step.also && (
+                  <>
+                    {' '}
+                    <ConsoleLink page={step.also.page} onNavigate={onNavigate} className="nextStepLink">
+                      {step.also.label}
+                    </ConsoleLink>
+                  </>
+                )}
+              </span>
               <span className="nextStepState">
                 {step.done === true ? '已完成' : step.done === false ? '待完成' : '按需'}
               </span>

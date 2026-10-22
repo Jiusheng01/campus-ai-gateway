@@ -38,6 +38,8 @@ describe('personal model catalog', () => {
     expect(await screen.findByText('校园 GPT')).toBeInTheDocument()
     const table = screen.getByRole('table')
     expect(within(table).getByText('campus-gpt')).toBeInTheDocument()
+    // The alias is copyable on its own, not only inside the whole example.
+    expect(within(table).getAllByRole('button', {name: '复制模型 ID'})).toHaveLength(2)
     expect(within(table).getByText('校园 Code')).toBeInTheDocument()
     expect(within(table).getByText('代码助手')).toBeInTheDocument()
 

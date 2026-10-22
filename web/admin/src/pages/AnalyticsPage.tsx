@@ -31,7 +31,7 @@ export function AnalyticsPage() {
         actions={
           <span className="panelFootnote">
             <Route aria-hidden />
-            故障切换 {num(stats?.failover_count)} 次
+            故障切换 {stats ? `${num(stats.failover_count)} 次` : '—'}
           </span>
         }
       >

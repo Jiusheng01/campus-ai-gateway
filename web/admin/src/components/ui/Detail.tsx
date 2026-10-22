@@ -69,7 +69,9 @@ export function Progress({label, used, limit}: {label: string; used: number; lim
             ? used === 0
               ? '本周期暂无使用'
               : `已用 ${share}`
-            : '未设置上限，不计算占比'}
+            : state === 'unlimited'
+              ? '无限制，不计算占比'
+              : '未设置上限，不计算占比'}
       </p>
     </div>
   )
