@@ -281,11 +281,11 @@ export function PublishedModelsPage({
         <Button size="sm" loading={loading} onClick={() => void reload()}>重试加载关系</Button>
       </div>}
 
-      {data && !error && <div aria-label="模型概览统计" className="modelListSummary">
+      {data && !error && <section aria-label="模型概览统计" className="modelListSummary">
         <span>已发布模型 <b>{totalModels}</b></span>
         <span>启用中 <b>{enabledModels}</b></span>
         {enabledTenants !== null && <span>启用租户 <b>{enabledTenants}</b></span>}
-      </div>}
+      </section>}
 
       {/* Filters narrow the rendered cards only; the summary above keeps
           counting the whole model list. */}
