@@ -141,9 +141,9 @@ func usageSeedTenant(t *testing.T, pg *storage.Postgres, code string, daily, mon
 	ctx := context.Background()
 	tenant, err := pg.CreateTenant(ctx, model.Tenant{
 		Code: code, Name: code, Status: 1,
-		DailyTokenLimit:     daily,
-		MonthlyTokenLimit:   monthlyTokens,
-		MonthlyRequestLimit: monthlyReqs,
+		DailyTokenLimit:     &daily,
+		MonthlyTokenLimit:   &monthlyTokens,
+		MonthlyRequestLimit: &monthlyReqs,
 	})
 	if err != nil {
 		t.Fatalf("create tenant %s: %v", code, err)

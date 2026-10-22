@@ -34,19 +34,27 @@ type AdminUser struct {
 	// TenantID is the Account's single Tenant Membership, or "" when the
 	// account has not been assigned one. TenantName is projected beside it for
 	// display; it is never used as an identifier, because names are not unique.
-	TenantID    string
-	TenantName  string
+	TenantID   string
+	TenantName string
 	// PasswordResetRequired is set when an administrator resets the password,
-	// and cleared only when the account holder chooses a password of their own.
-	//
-	// It exists because a reset password is a password the console shows to
-	// somebody else. Signing in with it proves possession of the slip, not of
-	// the account, so every session it opens is fenced to "choose a new
-	// password" until the account holder replaces it.
+	// and cleared when that reset password is replaced. It fences every session
+	// the reset password opens to choosing a new password; see ADR-0021 for
+	// what the fence does and does not prove about the holder.
 	PasswordResetRequired bool
-	LastLoginAt           *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// ScopeTenantID confines a tenant_admin to one subtree. nil means global
+	// reach, which is the default and what every account predating 0019 keeps.
+	// It is separate from TenantID: membership says which tenant an account
+	// belongs to, scope says which subtree it may administer. A scoped
+	// administrator is not necessarily a member of the tenant it administers.
+	//
+	// ScopeTenantName is projected beside it for display only. A scope without
+	// the tenant_admin role is refused by the storage layer, so the pair can
+	// never describe an inert grant.
+	ScopeTenantID   *string
+	ScopeTenantName string
+	LastLoginAt     *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // AdminUserStats backs the summary strip on the user management page. It is

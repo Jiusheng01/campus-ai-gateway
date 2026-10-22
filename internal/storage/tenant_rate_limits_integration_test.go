@@ -7,45 +7,48 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// Rate limits live on the Tenant now (ADR-0015). This pins the storage contract:
-// the three values round-trip through create, update and list, and a zero is
-// stored and read back verbatim so "unlimited" stays unlimited.
+// Rate limits live on the Tenant and are three-state since 0019. This pins the
+// storage contract: an inherited limit stays nil, an explicit zero stays 0, and
+// a positive cap stays itself through create, allocation and list.
 func TestTenantRateLimitsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pg := testPostgres(t)
 	clearTenantsAndKeys(t, pg)
 
+	rpm, tpm, conc := int64(120), int64(200000), int64(25)
 	created, err := pg.CreateTenant(ctx, model.Tenant{
 		Code: "rate-limits", Name: "Rate Limits", Status: 1,
-		RPMLimit: 120, TPMLimit: 200000, MaxConcurrency: 25,
+		RPMLimit: &rpm, TPMLimit: &tpm, MaxConcurrency: &conc,
 	})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if created.RPMLimit != 120 || created.TPMLimit != 200000 || created.MaxConcurrency != 25 {
-		t.Fatalf("create returned rpm=%d tpm=%d concurrency=%d, want 120/200000/25",
-			created.RPMLimit, created.TPMLimit, created.MaxConcurrency)
+	if created.RPMLimit == nil || *created.RPMLimit != 120 ||
+		created.TPMLimit == nil || *created.TPMLimit != 200000 ||
+		created.MaxConcurrency == nil || *created.MaxConcurrency != 25 {
+		t.Fatalf("create returned limits that do not match: %+v", created)
 	}
 
-	zero, err := pg.CreateTenant(ctx, model.Tenant{Code: "rate-zero", Name: "Zero", Status: 1})
+	inherited, err := pg.CreateTenant(ctx, model.Tenant{Code: "rate-zero", Name: "Zero", Status: 1})
 	if err != nil {
-		t.Fatalf("CreateTenant zero: %v", err)
+		t.Fatalf("CreateTenant inherited: %v", err)
 	}
-	if zero.RPMLimit != 0 || zero.TPMLimit != 0 || zero.MaxConcurrency != 0 {
-		t.Fatalf("zero limits were not preserved on create: rpm=%d tpm=%d concurrency=%d",
-			zero.RPMLimit, zero.TPMLimit, zero.MaxConcurrency)
+	if inherited.RPMLimit != nil || inherited.TPMLimit != nil || inherited.MaxConcurrency != nil {
+		t.Fatalf("an unset limit was not stored as inherit: %+v", inherited)
 	}
 
-	created.RPMLimit = 60
-	created.TPMLimit = 0
-	created.MaxConcurrency = 5
-	updated, err := pg.UpdateTenant(ctx, created.ID, TenantUpdate{Tenant: created, AllowedModels: &created.AllowedModels})
+	zero := int64(0)
+	rpm, conc = 60, 5
+	updated, err := pg.AllocateTenantQuota(ctx, created.ID, model.TenantAllocation{
+		RPMLimit: &rpm, TPMLimit: &zero, MaxConcurrency: &conc,
+	})
 	if err != nil {
-		t.Fatalf("UpdateTenant: %v", err)
+		t.Fatalf("AllocateTenantQuota: %v", err)
 	}
-	if updated.RPMLimit != 60 || updated.TPMLimit != 0 || updated.MaxConcurrency != 5 {
-		t.Fatalf("update returned rpm=%d tpm=%d concurrency=%d, want 60/0/5",
-			updated.RPMLimit, updated.TPMLimit, updated.MaxConcurrency)
+	if updated.RPMLimit == nil || *updated.RPMLimit != 60 ||
+		updated.TPMLimit == nil || *updated.TPMLimit != 0 ||
+		updated.MaxConcurrency == nil || *updated.MaxConcurrency != 5 {
+		t.Fatalf("allocation returned limits that do not match: %+v", updated)
 	}
 
 	listed, err := pg.ListTenants(ctx)
@@ -58,12 +61,28 @@ func TestTenantRateLimitsRoundTrip(t *testing.T) {
 			continue
 		}
 		found = true
-		if v.RPMLimit != 60 || v.TPMLimit != 0 || v.MaxConcurrency != 5 {
-			t.Fatalf("list returned rpm=%d tpm=%d concurrency=%d, want 60/0/5",
-				v.RPMLimit, v.TPMLimit, v.MaxConcurrency)
+		if v.RPMLimit == nil || *v.RPMLimit != 60 ||
+			v.TPMLimit == nil || *v.TPMLimit != 0 ||
+			v.MaxConcurrency == nil || *v.MaxConcurrency != 5 {
+			t.Fatalf("list returned limits that do not match: %+v", v)
 		}
 	}
 	if !found {
 		t.Fatal("the created tenant is missing from ListTenants")
+	}
+
+	// A rename must not disturb the allocation. This is the property that
+	// motivated moving quota writes out of UpdateTenant.
+	renamed, err := pg.UpdateTenant(ctx, created.ID, TenantUpdate{Tenant: model.Tenant{Code: "rate-limits", Name: "Renamed", Status: 1}})
+	if err != nil {
+		t.Fatalf("UpdateTenant: %v", err)
+	}
+	if renamed.Name != "Renamed" {
+		t.Fatalf("rename did not take effect: %q", renamed.Name)
+	}
+	if renamed.RPMLimit == nil || *renamed.RPMLimit != 60 ||
+		renamed.TPMLimit == nil || *renamed.TPMLimit != 0 ||
+		renamed.MaxConcurrency == nil || *renamed.MaxConcurrency != 5 {
+		t.Fatalf("a rename rewrote the allocation: %+v", renamed)
 	}
 }

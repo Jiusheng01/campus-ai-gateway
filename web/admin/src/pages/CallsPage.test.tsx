@@ -173,20 +173,17 @@ describe('CallsPage', () => {
     expect(screen.queryByText('受限模型')).not.toBeInTheDocument()
   })
 
-  it('does not refetch anything when switching between the two tabs', async () => {
+  it('renders the key table directly, without the retired tenant-quota tab', async () => {
     const paths = stubFetch()
     renderCalls()
 
     await waitFor(() => expect(screen.getByText('校园问答')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', {name: '租户配额'}))
-    // The tenant view renders the desktop table and the phone cards from the
-    // same data; CSS hides one, but both are in the DOM.
-    await waitFor(() => expect(screen.getAllByText('校园信息化').length).toBeGreaterThan(0))
-    fireEvent.click(screen.getByRole('button', {name: 'API Key'}))
-    await waitFor(() => expect(screen.getByText('校园问答')).toBeInTheDocument())
+    // Tenant quotas moved to their own page in the hierarchy workspace; the key
+    // page must not keep offering a second, differently-scoped copy of them.
+    expect(screen.queryByRole('button', {name: '租户配额'})).not.toBeInTheDocument()
 
-    // Remounting either table must not reload what the page already owns: both
-    // views render the page bundle, so switching tabs costs no requests.
+    // The bundle is still loaded once: the tenant list feeds the drawer's
+    // Tenant selector even though the tenant table is gone.
     for (const path of ['/admin/api-keys', '/admin/tenants', '/admin/models', '/admin/status']) {
       expect(paths.filter(requested => requested === path), `requests to ${path}`).toHaveLength(1)
     }

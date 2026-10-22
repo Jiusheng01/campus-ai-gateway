@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest'
 import {landingPath, mayUseWorkspace, pathFor, resolveRoute} from './routing'
+import {allowedPages} from './navigation'
 
 describe('workspace resolver', () => {
   it('maps both workspace roots to their default page', () => {
@@ -46,8 +47,11 @@ describe('landing and workspace access', () => {
     expect(mayUseWorkspace('console', ['member'])).toBe(true)
     expect(mayUseWorkspace('console', [])).toBe(true)
     expect(mayUseWorkspace('admin', ['member'])).toBe(false)
-    // The withdrawn global tenant_admin grant offers no admin workspace access.
-    expect(mayUseWorkspace('admin', ['tenant_admin'])).toBe(false)
+    // A scoped tenant_admin enters the admin workspace, but only the pages its
+    // subtree grants; it is not admitted to the campus-wide dashboard.
+    expect(mayUseWorkspace('admin', ['tenant_admin'])).toBe(true)
+    expect(landingPath(['tenant_admin'])).toBe('/admin-ui/calls')
+    expect(allowedPages(['tenant_admin'])).not.toContain('dashboard')
     expect(mayUseWorkspace('admin', ['auditor'])).toBe(true)
     expect(mayUseWorkspace('admin', ['super_admin'])).toBe(true)
   })

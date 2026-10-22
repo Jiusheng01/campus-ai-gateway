@@ -15,6 +15,11 @@ const AllModelsWildcard = "*"
 type APIKey struct {
 	ID       string
 	TenantID string
+	// TenantPath is the owning tenant's materialized path ("/<root>/<leaf>/").
+	// The key lookup returns it so the admission path can resolve the ancestor
+	// chain without a second lookup of the tenant itself: the path's segments
+	// are the chain.
+	TenantPath string
 	// OwnerUserID is the Account that owns the key, or "" when the key was
 	// created by an administrator and belongs to no Account. It is read with
 	// the rest of the key during identity resolution and copied onto each
@@ -27,21 +32,14 @@ type APIKey struct {
 	ExpireAt      *time.Time
 	AllowedModels []string
 	AllowedIPs    []string
-	// The three minute-level limits are the OWNING TENANT's, read here as part
-	// of the key lookup (see FindAPIKeyByDigest). The key carries them only so
-	// the admission path has them after authentication; they are not the key's
-	// own budget. Zero means unlimited.
-	RPMLimit       int64
-	TPMLimit       int64
-	MaxConcurrency int64
-	RouteGroup     string
+	RouteGroup    string
 	// TenantStatus is the owning tenant's status. It is read here because a
 	// key may not serve traffic for a tenant that has been switched off, and
 	// the key row on its own cannot answer that question.
-	TenantStatus        int
-	DailyTokenLimit     int64
-	MonthlyTokenLimit   int64
-	MonthlyRequestLimit int64
+	TenantStatus int
+	// The limits deliberately do not live here. A tenant's limit columns are
+	// nullable (NULL = inherit), so the concrete numbers only exist after the
+	// ancestor chain is resolved -- see TenantQuota and TenantChain.
 }
 
 // Enabled reports whether the key itself may serve traffic, independent of the
@@ -63,6 +61,41 @@ func (k APIKey) TenantEnabled() bool {
 	return k.TenantStatus == 1
 }
 
+// TenantQuota is one node of a resolved ancestor chain.
+//
+// Each limit is that level's OWN declaration, not an inherited number, and the
+// three states are the whole point:
+//
+//	NULL -> inherit: this level declares nothing, so it is not checked on its
+//	        own. The nearest ancestor that does declare a value already counts
+//	        this level's usage, because a parent's counter is inclusive.
+//	   0 -> explicitly unlimited: not checked.
+//	  >0 -> this level's cap: checked.
+//
+// Storing the declaration rather than an effective number is what keeps
+// "inherit" meaningful. Collapsing it to an effective value would check the
+// same number twice at best, and at worst turn "this level is unlimited" into
+// "this level is capped by its parent" -- which the parent already does for the
+// whole subtree.
+type TenantQuota struct {
+	TenantID string
+	// Name is carried alongside the id purely so a rejection can name the level
+	// in a way an operator recognises. "level=3f2a-..." says nothing;
+	// "level=计算机学院" says whose budget ran out.
+	Name                string
+	DailyTokenLimit     *int64
+	MonthlyTokenLimit   *int64
+	MonthlyRequestLimit *int64
+	RPMLimit            *int64
+	TPMLimit            *int64
+	MaxConcurrency      *int64
+}
+
+// Unlimited reports whether a three-state limit declares "no cap". A nil
+// (inherit) and a zero (explicitly unlimited) both mean "this level does not
+// reject", which is the only question the admission path asks of a single node.
+func Unlimited(v *int64) bool { return v == nil || *v == 0 }
+
 type Identity struct {
 	TenantID string
 	APIKeyID string
@@ -74,15 +107,13 @@ type Identity struct {
 	// AllModels reports that the key was granted the wildcard. It is kept
 	// separate from AllowedModels so that "unrestricted" and "restricted to
 	// nothing" cannot collapse into the same empty map.
-	AllModels           bool
-	AllowedIPs          []string
-	RPMLimit            int64
-	TPMLimit            int64
-	MaxConcurrency      int64
-	RouteGroup          string
-	DailyTokenLimit     int64
-	MonthlyTokenLimit   int64
-	MonthlyRequestLimit int64
+	AllModels  bool
+	AllowedIPs []string
+	RouteGroup string
+	// TenantChain is the resolved ancestor chain, root first, ending with the
+	// key's own tenant. Every limit check walks it, so a parent's budget caps
+	// its whole subtree.
+	TenantChain []TenantQuota
 }
 
 // AllowsModel reports whether this identity may call the named model.

@@ -43,3 +43,8 @@ docs/
 
 # Package installs
 node_modules/
+
+# Machine-local build output, run logs and database dumps. The dumps contain
+# administrator password hashes, so they must never be committed.
+.local-bin/
+.local-backups/

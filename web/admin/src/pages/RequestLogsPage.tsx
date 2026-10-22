@@ -184,7 +184,10 @@ export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filt
   // key table, which the log may predate). A select whose value has no matching
   // option renders blank, which would hide the filter that is actually applied,
   // so the drilled key is offered as an option of its own when it is absent.
-  const drilledKey = usage?.by_key.find(k => k.api_key_id === applied.api_key_id)
+  // The API types this as an array, but an empty grouping has been observed
+  // serialising as null; reading it defensively keeps the page from unmounting
+  // the whole console over a missing option list.
+  const drilledKey = usage?.by_key?.find(k => k.api_key_id === applied.api_key_id)
   const drilledKeyMissing = applied.api_key_id !== '' && !keyOptions.some(k => k.id === applied.api_key_id)
 
   return (
