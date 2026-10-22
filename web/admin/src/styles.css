@@ -869,6 +869,8 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .quotaCell small { color: var(--text-faint); font-size: var(--fs-caption); }
 .quotaCell .quotaValue { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .quotaCell .quotaMeta { font-size: var(--fs-caption); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* The bar caps at 100%, so an over-limit band states the excess in words. */
+.quotaCell .quotaOverage { font-size: var(--fs-caption); font-weight: 600; color: var(--danger); font-variant-numeric: tabular-nums; }
 .quotaCell.danger .quotaValue { color: var(--danger); }
 .quotaCell.warning .quotaValue { color: var(--warning); }
 /* The bar is carried over from the tenant drawer's progress rows rather than
