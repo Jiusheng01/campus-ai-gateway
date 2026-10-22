@@ -46,6 +46,7 @@ export function RuntimeSummaryPanel({
   const recent = data?.recent || []
   const attempts = data && 'attempts' in data ? data.attempts : null
   const empty = !!data && data.totals.requests === 0 && recent.length === 0
+  const logIdentity = data && (kind === 'model' && 'alias' in data ? data.alias : kind === 'provider' && 'provider' in data ? data.provider : undefined)
 
   return (
     <div className="drawerStack">
@@ -60,7 +61,9 @@ export function RuntimeSummaryPanel({
         </select>
         {canOpenRawLogs && onOpenLogs && (
           <Button
-            onClick={() => onOpenLogs(kind === 'model' ? {model: data && 'alias' in data ? data.alias : undefined} : {provider: data && 'provider' in data ? data.provider : undefined})}
+            disabled={loading || !!error || !logIdentity}
+            title={loading || error || !logIdentity ? '成功加载当前对象的运行信息后可查看日志' : undefined}
+            onClick={() => logIdentity && onOpenLogs(kind === 'model' ? {model: logIdentity} : {provider: logIdentity})}
           >
             打开原始调用日志
           </Button>

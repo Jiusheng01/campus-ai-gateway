@@ -16,12 +16,14 @@ type Props = {
 export function Modal({title, subtitle, onClose, children, footer, dismissable = true}: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const restoreTo = useRef<HTMLElement | null>(null)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
 
   useEffect(() => {
     restoreTo.current = document.activeElement as HTMLElement | null
     panelRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissable) onClose()
+      if (e.key === 'Escape' && dismissable) closeRef.current()
       if (e.key !== 'Tab') return
       const panel = panelRef.current
       if (!panel) return
@@ -58,7 +60,7 @@ export function Modal({title, subtitle, onClose, children, footer, dismissable =
       document.removeEventListener('keydown', onKey)
       restoreTo.current?.focus?.()
     }
-  }, [onClose, dismissable])
+  }, [dismissable])
 
   return (
     <div className="overlay center" onMouseDown={e => e.target === e.currentTarget && dismissable && onClose()}>
