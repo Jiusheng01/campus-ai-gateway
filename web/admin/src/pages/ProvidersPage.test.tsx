@@ -296,6 +296,18 @@ describe('ProvidersPage channel facts', () => {
   })
 })
 
+describe('ProvidersPage naming', () => {
+  // The navigation, the topbar title and the banner all name one page. A
+  // different banner title makes the same address read as two pages.
+  it('uses the navigation name 上游渠道 for the page heading', async () => {
+    stubProviders(() => jsonResponse({data: [provider()], total: 1}))
+    renderPage()
+    await screen.findByText('alpha')
+    expect(screen.getByRole('heading', {name: '上游渠道', level: 2})).toBeInTheDocument()
+    expect(screen.queryByRole('heading', {name: '渠道管理'})).not.toBeInTheDocument()
+  })
+})
+
 describe('ProvidersPage list states', () => {
   // The subtitle is a count, so it may only state one it actually has. Before
   // the list answers, "当前筛选共 0 个渠道" describes an empty result that was

@@ -360,8 +360,11 @@ export function ProvidersPage({
 
   return (
     <div className="stack">
+      {/* The banner repeats the page title the topbar and the navigation
+          already use. It used to say 渠道管理 here while both of those said
+          上游渠道, which read as two pages with one address. */}
       <PageBanner
-        title="渠道管理"
+        title="上游渠道"
         subtitle="维护模型服务的连接配置、凭据与候选模型。启用状态与最近诊断分别展示。"
       />
 
