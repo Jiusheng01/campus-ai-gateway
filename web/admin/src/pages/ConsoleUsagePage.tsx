@@ -184,6 +184,12 @@ export function ConsoleUsagePage() {
                 <p className="hint">
                   所属租户：<b>{quota.tenant_name || quota.tenant_id}</b>。以下为只读汇总，每日与每月用量由网关按租户统计。
                 </p>
+                {/* The personal window above is local time; the shared quota is
+                    enforced on UTC days and months. Naming both stops the two
+                    figures from looking like they disagree. */}
+                <p className="hint">
+                  配额按 UTC 自然日 / 自然月计算，由租户内全部成员共享；上方个人用量按本机时区的所选时间段统计，两者口径不同。
+                </p>
                 <div className="quotaStrip">
                   <QuotaBand label="每日 Token 配额" q={quota.daily_token} format={num} />
                   <QuotaBand label="每月 Token 配额" q={quota.monthly_token} format={num} />

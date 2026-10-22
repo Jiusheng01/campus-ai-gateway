@@ -190,3 +190,25 @@ describe('Shell user menu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 })
+
+describe('Shell mobile navigation keyboard', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('contains focus while open and returns to the menu trigger after Escape', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({data: []})))
+    vi.stubGlobal('matchMedia', vi.fn(() => ({matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn()})))
+    const user = userEvent.setup()
+    renderShell(['member'], 'console')
+    const trigger = screen.getByRole('button', {name: '打开导航菜单'})
+    await user.click(trigger)
+    const panel = screen.getByRole('dialog', {name: '工作区导航'})
+    expect(panel).toHaveFocus()
+    await user.tab({shift: true})
+    expect(screen.getByRole('button', {name: '收起侧栏'})).toHaveFocus()
+    await user.tab()
+    expect(panel).toContainElement(document.activeElement as HTMLElement)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', {name: '工作区导航'})).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
+})

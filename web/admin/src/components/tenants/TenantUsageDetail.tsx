@@ -23,6 +23,13 @@ export function TenantUsageDetail({tenant, usage}: {tenant: Tenant; usage: Tenan
       />
       <section className="detailBox">
         <h3>配额使用情况</h3>
+        {/* The counts and the quotas they are measured against share one
+            window per band. The gateway enforces both in UTC, while other
+            pages report in the reader's time zone, so naming the window here
+            is what keeps the two surfaces from looking contradictory. */}
+        <p className="detailHint">
+          用量与配额按 UTC 自然日 / 自然月统计，与网关的配额周期一致。
+        </p>
         <Progress label="每日 Token" used={usage.daily_tokens} limit={tenant.daily_token_limit} />
         <Progress label="每月 Token" used={usage.monthly_tokens} limit={tenant.monthly_token_limit} />
         <Progress label="每月请求" used={usage.monthly_requests} limit={tenant.monthly_request_limit} />

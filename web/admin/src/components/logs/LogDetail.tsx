@@ -1,11 +1,13 @@
 import {useEffect, useState} from 'react'
+import {Copy} from 'lucide-react'
 import {api, type RequestAttempt, type RequestLog} from '../../api'
 import {Detail, TelemetryRow} from '../ui/Detail'
 import {Badge} from '../ui/Badge'
 import {EmptyState} from '../ui/EmptyState'
 import {Panel} from '../ui/Panel'
 import {Table} from '../ui/Table'
-import {ms, num, when} from '../../lib/format'
+import {useToast} from '../ui/Toast'
+import {copyText, ms, num, when} from '../../lib/format'
 
 /**
  * Request detail, split into sections.
@@ -26,32 +28,59 @@ import {ms, num, when} from '../../lib/format'
  * a page of fifty requests should not drag every attempt of every row with it.
  */
 export function LogDetail({v}: {v: RequestLog}) {
+  const toast = useToast()
   const input = v.input_tokens > 0
   const output = v.output_tokens > 0
   const total = v.total_tokens > 0
   const [attempts, setAttempts] = useState<RequestAttempt[] | null>(null)
+  // A read that failed is not the same fact as a chain the server says is
+  // empty: one is an outage, the other is a request that produced no lines.
+  const [attemptsError, setAttemptsError] = useState('')
 
   useEffect(() => {
     let live = true
     setAttempts(null)
+    setAttemptsError('')
     api<{data: RequestAttempt[]}>(`/admin/request-logs/${encodeURIComponent(v.request_id)}/attempts`)
       .then(d => {
         if (live) setAttempts(d.data || [])
       })
-      .catch(() => {
-        if (live) setAttempts([])
+      .catch((e: unknown) => {
+        if (!live) return
+        setAttempts([])
+        setAttemptsError(e instanceof Error ? e.message : '无法读取尝试链')
       })
     return () => {
       live = false
     }
   }, [v.request_id])
 
+  const copyRequestID = async () => {
+    if (await copyText(v.request_id)) toast.success('Request ID 已复制')
+    else toast.error('复制失败，请手动选择并复制 Request ID')
+  }
+
   return (
     <div className="detailStack">
       <Detail
         title="请求"
         rows={[
-          ['Request ID', <span key="rid" className="mono wrap">{v.request_id}</span>],
+          [
+            'Request ID',
+            <span key="rid" className="requestIdRow">
+              <span className="mono wrap">{v.request_id}</span>
+              <button
+                type="button"
+                className="tableActionLink"
+                title={`复制 ${v.request_id}`}
+                aria-label="复制 Request ID"
+                onClick={() => void copyRequestID()}
+              >
+                <Copy aria-hidden />
+                复制
+              </button>
+            </span>,
+          ],
           ['时间', when(v.created_at)],
           ['租户', v.tenant_id],
           ['API 密钥', v.api_key_id],
@@ -86,30 +115,40 @@ export function LogDetail({v}: {v: RequestLog}) {
         ]}
       />
 
-      <Panel
-        title="尝试链"
-        sub="本次请求按顺序打过的每一条线路，以及各自的结果。尝试次数包含凭据解析等拨号前失败；熔断跳过不计入尝试次数。"
-      >
-        {attempts === null ? (
-          <p className="muted">加载中…</p>
-        ) : attempts.length ? (
-          <Table heads={['#', '渠道', '上游模型', '结果', '状态', '错误分类', '耗时']} minWidth={800}>
-            {attempts.map(a => (
-              <tr key={a.attempt_no}>
-                <td className="numeric">{a.attempt_no}</td>
-                <td>{a.provider || '—'}</td>
-                <td className="mono">{a.upstream_model || '—'}</td>
-                <td>{outcomeLabel(a)}</td>
-                <td className="numeric">{a.status_code > 0 ? a.status_code : '—'}</td>
-                <td>{a.error_kind || '—'}</td>
-                <td className="numeric">{ms(a.latency_ms)}</td>
-              </tr>
-            ))}
-          </Table>
-        ) : (
-          <EmptyState title="暂无尝试记录" description="直连数据面会为每次上游尝试留下一行；熔断跳过会单独标记。" />
-        )}
-      </Panel>
+      <section aria-label="尝试链">
+        <Panel
+          title="尝试链"
+          sub="本次请求按服务端记录的顺序打过的每一条线路。熔断跳过的线路没有真的发出请求，单独标记。"
+        >
+          <AttemptVerdict v={v} attempts={attempts} failed={Boolean(attemptsError)} />
+          {attempts === null ? (
+            <p className="muted">加载中…</p>
+          ) : attemptsError ? (
+            <p className="filterNote" role="alert">尝试链读取失败：{attemptsError}。当前请求的事实仍以上方为准。</p>
+          ) : attempts.length ? (
+            <Table heads={['#', '渠道', '上游模型', '结果', '状态', '错误分类', '耗时']} minWidth={800}>
+              {attempts.map(a => (
+                <tr key={a.attempt_no}>
+                  <td className="numeric">{a.attempt_no}</td>
+                  <td>{a.provider || '—'}</td>
+                  <td className="mono">{a.upstream_model || '—'}</td>
+                  <td>
+                    <span className={`statusChip ${attemptTone(a)}`}>
+                      <i className={`dot ${attemptTone(a) === 'ok' ? 'on' : attemptTone(a) === 'down' ? 'down' : 'unknown'}`} aria-hidden />
+                      {outcomeLabel(a)}
+                    </span>
+                  </td>
+                  <td className="numeric">{a.status_code > 0 ? a.status_code : '—'}</td>
+                  <td>{a.error_kind || '—'}</td>
+                  <td className="numeric">{a.outcome === 'skipped' ? '未发起' : ms(a.latency_ms)}</td>
+                </tr>
+              ))}
+            </Table>
+          ) : (
+            <EmptyState title="暂无尝试记录" description="直连数据面会为每次上游尝试留下一行；熔断跳过会单独标记。" />
+          )}
+        </Panel>
+      </section>
 
       <Detail
         title="用量"
@@ -144,8 +183,61 @@ function outcomeLabel(a: RequestAttempt): string {
     case 'served':
       return '成功'
     case 'skipped':
-      return '跳过（熔断）'
+      return '熔断跳过'
     default:
       return '失败'
   }
+}
+
+function attemptTone(a: RequestAttempt): 'ok' | 'down' | 'unknown' {
+  if (a.outcome === 'served') return 'ok'
+  if (a.outcome === 'skipped') return 'unknown'
+  return 'down'
+}
+
+/**
+ * What the attempt chain means for the request as a whole.
+ *
+ * `failover` in the record says the data plane tried another line, which is
+ * not the same as the request recovering: a chain where every line failed is
+ * also a failover. The verdict therefore reads the outcomes, and says nothing
+ * while the chain is still loading or could not be read.
+ */
+function AttemptVerdict({v, attempts, failed}: {v: RequestLog; attempts: RequestAttempt[] | null; failed: boolean}) {
+  // A read that failed says nothing about the request: claiming "no attempts"
+  // would state a fact the console does not have.
+  if (failed || attempts === null) return null
+  const tried = attempts.filter(a => a.outcome !== 'skipped')
+  const served = attempts.some(a => a.outcome === 'served')
+  const timeline = (list: RequestAttempt[]) => (
+    <ol className="attemptTimeline">
+      {list.map(a => (
+        <li key={a.attempt_no} className={`attemptItem ${attemptTone(a)}`}>
+          <span className="attemptOrder">第 {a.attempt_no} 次尝试</span>
+          <span className="attemptOutcome">{outcomeLabel(a)}</span>
+          <span className="attemptWhere">{(a.provider || '未知渠道') + ' · ' + (a.upstream_model || '未知上游模型')}</span>
+        </li>
+      ))}
+    </ol>
+  )
+  if (tried.length <= 1) {
+    return (
+      <div className="attemptVerdict">
+        <b>{served ? '首次尝试即成功' : attempts.length ? '唯一的尝试没有成功' : '没有可用的尝试记录'}</b>
+        {attempts.length > 0 && timeline(attempts)}
+      </div>
+    )
+  }
+  return (
+    <div className="attemptVerdict">
+      <b>{served ? '故障切换成功' : '故障切换后仍失败'}</b>
+      <span>
+        {v.failover
+          ? `服务端记录本次请求尝试了 ${tried.length} 条线路${attempts.length > tried.length ? `，另有 ${attempts.length - tried.length} 条因熔断跳过` : ''}。`
+          : `尝试链有 ${tried.length} 条被实际发起的线路。`}
+        {' '}“发生故障切换”表示换过线路，不代表最终成功。
+      </span>
+      {timeline(attempts)}
+    </div>
+  )
 }

@@ -12,7 +12,7 @@ import {useResource} from '../lib/useResource'
  * is, and repeating the username and roles on a second page would let the two
  * disagree the moment one of them is refreshed and the other is not.
  */
-export function AccessPage({who, onSignedOut}: {who: WhoAmI | null; onSignedOut: () => void}) {
+export function AccessPage({who, onSignedOut, minPasswordLength}: {who: WhoAmI | null; onSignedOut: () => void; minPasswordLength?: number}) {
   const {data, loading, error, errorStatus, reload} = useResource(() => api<WhoAmI>('/admin/whoami', {}, false))
   const identity = data || who
 
@@ -27,7 +27,7 @@ export function AccessPage({who, onSignedOut}: {who: WhoAmI | null; onSignedOut:
           <SkeletonRows rows={3} columns={2} />
         </Panel>
       ) : (
-        <AccountSecurity who={identity} onSignedOut={onSignedOut} showIdentity={false} />
+        <AccountSecurity who={identity} onSignedOut={onSignedOut} showIdentity={false} minPasswordLength={minPasswordLength} />
       )}
     </div>
   )

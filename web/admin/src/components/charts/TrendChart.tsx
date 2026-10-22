@@ -62,16 +62,38 @@ export function TrendChart({
       acc.requests += p.requests
       acc.tokens += p.tokens
       acc.errors += p.errors
-      acc.latency += p.p95_latency_ms
+      // The slowest bucket, not an average of the buckets' P95s. Averaging
+      // percentiles does not produce a percentile: the mean of (200, 0, 400)
+      // is 200 ms, which is no bucket's P95 and no window's P95 either. The
+      // server's own window P95 is on the overview; this readout only speaks
+      // about the series it is drawn from.
+      acc.slowestP95 = Math.max(acc.slowestP95, p.p95_latency_ms)
       return acc
     },
-    {requests: 0, tokens: 0, errors: 0, latency: 0},
+    {requests: 0, tokens: 0, errors: 0, slowestP95: 0},
   )
+  const p95Label = shown ? 'P95' : '最慢分桶 P95'
+  const p95Value = shown ? shown.p95_latency_ms : totals.slowestP95
+  // Each chart leads with the metric it draws. Repeating all four figures under
+  // every chart made the three read as the same chart three times and left the
+  // reader to find the one that belonged to the bars above it. A latency band's
+  // values do not add up, so its aggregate is the peak the chart already
+  // reports rather than a sum that corresponds to nothing.
+  const additive = metric === '请求数' || metric === 'Token 用量'
+  const ownValue = shown
+    ? value(shown)
+    : additive
+      ? points.reduce((sum, p) => sum + value(p), 0)
+      : peak
+  const ownLabel = shown ? metric : additive ? `${metric}合计` : `${metric}峰值`
 
   return (
     <div className="chart">
       <div className="chartReadout" role="status">
         <b className="chartReadoutWhen">{shown ? shown.bucket : '区间合计'}</b>
+        <span className="chartReadoutOwn">
+          {ownLabel} <b>{format(ownValue)}</b>
+        </span>
         <span>
           请求 <b>{num(shown ? shown.requests : totals.requests)}</b>
         </span>
@@ -82,7 +104,7 @@ export function TrendChart({
           Token <b>{num(shown ? shown.tokens : totals.tokens)}</b>
         </span>
         <span>
-          P95 <b>{ms(shown ? shown.p95_latency_ms : totals.latency / points.length)}</b>
+          {p95Label} <b className={p95Value > 0 ? undefined : 'unknown'}>{p95Value > 0 ? ms(p95Value) : '—'}</b>
         </span>
       </div>
 

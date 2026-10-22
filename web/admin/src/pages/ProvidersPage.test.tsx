@@ -89,10 +89,10 @@ describe('ProvidersPage channel summary', () => {
 
     const totalCard = await waitFor(() => summaryCard('渠道总数'))
     expect(within(totalCard).getByText('9', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('(33.33%)')).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('(66.67%)')).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('(33.33%)')).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('(66.67%)')).toBeInTheDocument()
 
     await userEvent.type(screen.getByPlaceholderText('请输入渠道名称'), 'alpha')
     await userEvent.click(screen.getByRole('button', {name: '筛选'}))
@@ -100,12 +100,115 @@ describe('ProvidersPage channel summary', () => {
 
     // Filtering narrows the table, not the totals.
     expect(within(summaryCard('渠道总数')).getByText('9', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('在线')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
-    expect(within(summaryCard('异常 / 停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已启用')).getByText('3', {selector: '.statCardValue'})).toBeInTheDocument()
+    expect(within(summaryCard('已停用')).getByText('6', {selector: '.statCardValue'})).toBeInTheDocument()
   })
 })
 
 describe('ProvidersPage channel facts', () => {
+  it('previews the cascade and requires the channel name, leaving the channel present when deletion fails', async () => {
+    const mutations: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/admin/status') return jsonResponse(status)
+      if (url.endsWith('/impact')) return jsonResponse({routes: 2, provider_models: 3, orphaned_models: 1, affected_models: [{model_id: 'm1', alias: 'qa-public-model', routes_to_provider: 2, remaining_routes: 0, orphaned: true}]})
+      if (init?.method === 'DELETE') {mutations.push(url); return jsonResponse({error: {message: '删除操作失败，请重试'}}, 500)}
+      return jsonResponse({data: [provider()], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '删除'}))
+    expect(await screen.findByText(/失去全部线路/)).toBeInTheDocument()
+    expect(screen.getByText(/qa-public-model/)).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '永久删除'})).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', {name: '取消'}))
+    expect(mutations).toEqual([])
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '删除'}))
+    await userEvent.type(await screen.findByLabelText(/输入渠道名/), 'alpha')
+    expect(screen.getByRole('button', {name: '永久删除'})).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', {name: '永久删除'}))
+    await waitFor(() => expect(mutations).toHaveLength(1))
+    expect(await screen.findByRole('alert')).toHaveTextContent('删除操作失败')
+    expect(row('alpha')).toBeInTheDocument()
+    expect(mutations).toHaveLength(1)
+  })
+
+  it('opens a read-only detail view and updates its diagnostic facts after the real response', async () => {
+    let current = provider()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/admin/status') return jsonResponse(status)
+      if (init?.method === 'POST') {
+        current = {...current, last_test: {at: '2026-10-22T01:20:00Z', ok: true, status_code: 200, latency_ms: 120, upstream_model: 'qa-model'}}
+        return jsonResponse({channel: 'alpha', upstream_model: 'qa-model', status_code: 200, latency_ms: 120, input_tokens: 2, output_tokens: 1, total_tokens: 3})
+      }
+      return jsonResponse({data: [current], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '详情'}))
+    const drawer = screen.getByRole('dialog')
+    expect(within(drawer).queryByRole('button', {name: '保存修改'})).not.toBeInTheDocument()
+    expect(within(drawer).getByText('尚未诊断')).toBeInTheDocument()
+    await userEvent.click(within(drawer).getByRole('button', {name: '连通诊断'}))
+    await userEvent.type(screen.getByLabelText(/上游模型/), 'qa-model')
+    await userEvent.click(screen.getByRole('button', {name: '开始诊断'}))
+    expect(await within(drawer).findByText(/成功 · HTTP 200/)).toBeInTheDocument()
+  })
+
+  it('keeps an edit draft after a save failure and refreshes the actual saved channel after retry', async () => {
+    let current = provider()
+    let rejectSave = true
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/admin/status') return jsonResponse(status)
+      if (init?.method === 'PUT') {
+        if (rejectSave) return jsonResponse({error: {message: '连接地址不允许访问'}}, 400)
+        current = {...current, ...JSON.parse(String(init.body))}
+        return jsonResponse(current)
+      }
+      return jsonResponse({data: [current], total: 1})
+    }))
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(within(row('alpha')).getByRole('button', {name: '编辑'}))
+    const name = screen.getByLabelText(/渠道名称/)
+    await userEvent.clear(name)
+    await userEvent.type(name, 'alpha-updated')
+    await userEvent.click(screen.getByRole('button', {name: '保存修改'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('连接地址不允许访问')
+    expect(name).toHaveValue('alpha-updated')
+    rejectSave = false
+    await userEvent.click(screen.getByRole('button', {name: '保存修改'}))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText('alpha-updated')).toBeInTheDocument()
+  })
+
+  it('uses the stored Vendor classification and never describes enabled channels as online', async () => {
+    stubProviders(() => jsonResponse({data: [provider({name: 'qwen', provider_type: 'deepseek'}), provider({id: 'p-other', name: 'openai', provider_type: ''})], total: 2}))
+    renderPage()
+    const first = await waitFor(() => row('qwen'))
+    expect(within(first).getByText('DeepSeek')).toBeInTheDocument()
+    expect(within(first).queryByText(/通义千问/)).not.toBeInTheDocument()
+    expect(within(first).getByText('已启用')).toBeInTheDocument()
+    expect(within(first).queryByText('在线')).not.toBeInTheDocument()
+    expect(within(row('openai')).getByText('未分类')).toBeInTheDocument()
+  })
+
+  it('starts a new server-side search from the first page when Enter is pressed', async () => {
+    const urls: string[] = []
+    stubProviders(url => {
+      urls.push(url)
+      return jsonResponse({data: [provider()], total: 30})
+    })
+    renderPage()
+    await screen.findByText('alpha')
+    await userEvent.click(screen.getByRole('button', {name: '下一页'}))
+    await waitFor(() => expect(urls.at(-1)).toContain('offset=15'))
+    await userEvent.type(screen.getByPlaceholderText('请输入渠道名称'), 'alpha{Enter}')
+    await waitFor(() => expect(urls.at(-1)).toContain('name=alpha'))
+    expect(urls.at(-1)).toContain('offset=0')
+  })
+
   it('renders an open Provider Circuit as a label distinct from the disabled state', async () => {
     const alpha = provider()
     const beta = provider({id: 'p-beta', name: 'beta', status: 2})
@@ -190,5 +293,82 @@ describe('ProvidersPage channel facts', () => {
     renderPage()
     const tag = await screen.findByText('环境变量未就绪')
     expect(tag).toHaveClass('statusChip', 'warn')
+  })
+})
+
+describe('ProvidersPage deep links', () => {
+  // The route page links a line to its channel by id, because channel names are
+  // not unique. Opening that address has to land on the channel's own drawer,
+  // not on the unfiltered list with the id ignored.
+  it('opens the channel named by ?provider=', async () => {
+    const alpha = provider()
+    const beta = provider({id: 'p-beta', name: 'beta'})
+    stubProviders(() => jsonResponse({data: [alpha, beta], total: 2}))
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers?provider=p-alpha')
+
+    renderPage()
+
+    const drawer = await screen.findByRole('dialog', {name: /alpha/})
+    expect(within(drawer).getByText('渠道事实')).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers')
+  })
+
+  it('reports an unknown channel id instead of silently showing the whole list', async () => {
+    stubProviders(() => jsonResponse({data: [provider()], total: 1}))
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers?provider=missing-id')
+
+    renderPage()
+
+    expect(await screen.findByText(/找不到地址中指定的渠道/)).toBeInTheDocument()
+    window.history.replaceState({}, '', window.location.origin + '/admin-ui/providers')
+  })
+})
+
+describe('ProvidersPage naming', () => {
+  // The navigation, the topbar title and the banner all name one page. A
+  // different banner title makes the same address read as two pages.
+  it('uses the navigation name 上游渠道 for the page heading', async () => {
+    stubProviders(() => jsonResponse({data: [provider()], total: 1}))
+    renderPage()
+    await screen.findByText('alpha')
+    expect(screen.getByRole('heading', {name: '上游渠道', level: 2})).toBeInTheDocument()
+    expect(screen.queryByRole('heading', {name: '渠道管理'})).not.toBeInTheDocument()
+  })
+})
+
+describe('ProvidersPage list states', () => {
+  // The subtitle is a count, so it may only state one it actually has. Before
+  // the list answers, "当前筛选共 0 个渠道" describes an empty result that was
+  // never returned, and under a failed request the same sentence turns a
+  // failure into a confident zero.
+  it('does not claim an empty result while the channel list is still loading', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/admin/status')) return jsonResponse(status)
+      if (url.startsWith('/admin/providers')) return new Promise<Response>(() => {})
+      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+    }))
+
+    renderPage()
+    expect(await screen.findByText(/正在读取渠道列表/)).toBeInTheDocument()
+    expect(screen.queryByText(/当前筛选共/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status', {name: '正在加载'})).toBeInTheDocument()
+  })
+
+  it('reports the failed read instead of a zero count and offers a retry', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/admin/status')) return jsonResponse(status)
+      if (url.startsWith('/admin/providers')) return jsonResponse({error: {message: '渠道服务暂不可用'}}, 500)
+      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+    }))
+
+    renderPage()
+    const message = await screen.findByText('渠道服务暂不可用')
+    const panel = message.closest('.panel') as HTMLElement
+    expect(within(panel).getByText(/渠道列表读取失败/)).toBeInTheDocument()
+    expect(within(panel).queryByText(/当前筛选共/)).not.toBeInTheDocument()
+    expect(within(panel).queryByText(/0 个渠道/)).not.toBeInTheDocument()
+    expect(within(panel).getByRole('button', {name: '重新加载'})).toBeInTheDocument()
   })
 })

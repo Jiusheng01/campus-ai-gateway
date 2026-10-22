@@ -1,12 +1,13 @@
-import {useCallback, useEffect, useState} from 'react'
+import {useEffect, useRef, useState} from 'react'
 import {Info} from 'lucide-react'
 import {api, type Provider, type ProviderModel, type PublishResult} from '../../api'
 import {Drawer} from '../ui/Drawer'
 import {Button} from '../ui/Button'
 import {Field, Notice} from '../ui/Field'
 import {useToast} from '../ui/Toast'
+import {pathFor} from '../../app/routing'
 
-export function PublishModelWizard({onClose, onPublished}: {onClose: () => void; onPublished: () => void}) {
+export function PublishModelWizard({onClose, onPublished}: {onClose: () => void; onPublished: (result: PublishResult) => void}) {
   const toast = useToast()
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerID, setProviderID] = useState('')
@@ -21,19 +22,26 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
   const [busy, setBusy] = useState(false)
   const [conflict, setConflict] = useState(false)
   const [error, setError] = useState('')
+  const [providerError, setProviderError] = useState('')
+  const [candidateError, setCandidateError] = useState('')
+  const [providerRetry, setProviderRetry] = useState(0)
+  const [candidateRetry, setCandidateRetry] = useState(0)
+  const [aliasError, setAliasError] = useState('')
+  const submitting = useRef(false)
 
   useEffect(() => {
     let live = true
     setLoading(true)
-    api<{data: Provider[]}>('/admin/providers?status=1&limit=200')
+    setProviderError('')
+    api<{data: Provider[]}>('/admin/providers')
       .then(d => {
         if (!live) return
-        const list = d.data || []
+        const list = (d.data || []).filter(p => p.status === 1)
         setProviders(list)
         setProviderID(list[0]?.id || '')
       })
       .catch(e => {
-        if (live) setError(e instanceof Error ? e.message : '无法加载上游渠道')
+        if (live) setProviderError(e instanceof Error ? e.message : '无法加载上游渠道')
       })
       .finally(() => {
         if (live) setLoading(false)
@@ -41,40 +49,48 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
     return () => {
       live = false
     }
-  }, [])
+  }, [providerRetry])
 
-  const loadCandidates = useCallback(async (id: string) => {
-    if (!id) return
+  useEffect(() => {
+    let live = true
+    if (!providerID) return
     setLoadingCandidates(true)
+    setCandidateError('')
     setCandidates([])
     setCandidateID('')
     setAlias('')
-    try {
-      const d = await api<{data: ProviderModel[]}>(`/admin/providers/${id}/models`)
+    setConflict(false)
+    setAppend(false)
+    void api<{data: ProviderModel[]}>(`/admin/providers/${providerID}/models`).then(d => {
+      if (!live) return
       const usable = (d.data || []).filter(m => m.status === 1)
       setCandidates(usable)
       if (usable[0]) {
         setCandidateID(usable[0].id)
         setAlias(usable[0].upstream_model)
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '无法加载候选模型')
-    } finally {
-      setLoadingCandidates(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadCandidates(providerID)
-  }, [providerID, loadCandidates])
+    }).catch(e => {
+      if (!live) return
+      setCandidateError(e instanceof Error ? e.message : '无法加载候选模型')
+    }).finally(() => {
+      if (live) setLoadingCandidates(false)
+    })
+    return () => { live = false }
+  }, [providerID, candidateRetry])
 
   const selectCandidate = (id: string) => {
+    const previous = candidates.find(c => c.id === candidateID)
     setCandidateID(id)
     const chosen = candidates.find(c => c.id === id)
-    if (chosen && !alias.trim()) setAlias(chosen.upstream_model)
+    if (chosen && (!alias.trim() || alias === previous?.upstream_model)) setAlias(chosen.upstream_model)
+    setConflict(false)
+    setAppend(false)
+    setError('')
   }
 
   const submit = async () => {
+    if (submitting.current || loadingCandidates) return
+    setAliasError('')
     const candidate = candidates.find(c => c.id === candidateID)
     if (!providerID) {
       setError('请选择上游渠道。')
@@ -85,9 +101,18 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
       return
     }
     if (!alias.trim()) {
-      setError('对外名称（alias）不能为空。')
+      setAliasError('对外名称（alias）不能为空。')
       return
     }
+    if (Array.from(alias.trim()).length > 128) {
+      setAliasError('对外名称（alias）最多 128 个字符。')
+      return
+    }
+    if (conflict && !append) {
+      setError('请先确认追加备用线路，或修改对外名称后重新发布。')
+      return
+    }
+    submitting.current = true
     setBusy(true)
     setError('')
     setConflict(false)
@@ -109,7 +134,7 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
             ? `已为 ${out.model.alias} 追加备用线路`
             : `${out.model.alias} 已存在相同绑定，无需重复发布`,
       )
-      onPublished()
+      onPublished(out)
       onClose()
     } catch (e) {
       const apiError = e as {status?: number; message?: string}
@@ -120,6 +145,7 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
         setError(apiError.message || '发布失败')
       }
     } finally {
+      submitting.current = false
       setBusy(false)
     }
   }
@@ -127,16 +153,17 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
   return (
     <Drawer
       title="发布模型"
-      subtitle="从上游渠道的候选模型创建一个对外模型；发布不会自动授权给任何 API Key。"
+      subtitle="选择渠道和上游模型，发布业务系统可调用的稳定名称。"
       size="md"
-      onClose={onClose}
+      onClose={() => { if (!submitting.current) onClose() }}
+      dismissable={!busy}
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button disabled={busy} onClick={onClose}>取消</Button>
           <Button
             variant="primary"
             loading={busy}
-            disabled={loading || !providerID || !candidateID}
+            disabled={loading || loadingCandidates || !providerID || !candidateID || (conflict && !append)}
             onClick={() => void submit()}
           >
             {conflict ? '确认发布' : '发布'}
@@ -147,9 +174,10 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
       <div className="drawerStack">
         <Notice>
           <Info aria-hidden />
-          <span>首先选择上游渠道及其提供的模型，之后可在「路由策略」中追加备用或加权线路。</span>
+          <span>发布不会自动授权给 API Key。发布后可管理授权或配置备用线路。</span>
         </Notice>
-
+        <fieldset className="formSectionFieldset" disabled={busy}>
+        <legend className="formSectionLegend">模型来源</legend>
         <Field label="上游渠道" hint="选择提供模型的上游渠道（仅显示已启用渠道）。">
           <select
             value={providerID}
@@ -159,7 +187,7 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
               setError('')
             }}
           >
-            {!providers.length && <option value="">暂无可用的上游渠道</option>}
+            {!providers.length && <option value="">{loading ? '正在加载渠道…' : providerError ? '渠道读取失败' : '暂无可用的上游渠道'}</option>}
             {providers.map(p => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -174,9 +202,9 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
           hint={
             loadingCandidates
               ? '正在加载候选模型…'
-              : candidates.length
-                ? '该渠道下的可用模型列表，请先到上游渠道页面完成配置。'
-                : '该渠道没有可用候选模型；请先到渠道详情 → 模型列表刷新或手动添加。'
+              : candidateError ? '候选模型读取失败，请重试。' : candidates.length
+                ? 'Provider Model 是该渠道接收请求时使用的 Upstream Model。'
+                : '暂无启用的候选模型，可到渠道详情刷新或手动添加。'
           }
         >
           <select
@@ -184,7 +212,7 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
             disabled={loadingCandidates || !candidates.length}
             onChange={e => selectCandidate(e.target.value)}
           >
-            {!candidates.length && <option value="">暂无候选模型</option>}
+            {!candidates.length && <option value="">{loadingCandidates ? '正在加载候选模型…' : candidateError ? '候选模型读取失败' : '暂无候选模型'}</option>}
             {candidates.map(c => (
               <option key={c.id} value={c.id}>
                 {c.upstream_model}
@@ -192,36 +220,44 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
             ))}
           </select>
         </Field>
-
+        </fieldset>
+        <fieldset className="formSectionFieldset" disabled={busy}>
+        <legend className="formSectionLegend">对外调用名称</legend>
         <Field
           label={
             <div className="fieldLabelWithCount">
               <span>对外名称（alias）</span>
-              <small className="charCountHint">{alias.length}/64</small>
+              <small className="charCountHint">{Array.from(alias).length}/128</small>
             </div>
           }
           hint="业务系统调用 /v1/* 时使用的 model 值，发布后在服务端不可改名。"
         >
           <input
             className="mono"
-            maxLength={64}
+            aria-invalid={!!aliasError}
+            aria-describedby={aliasError ? 'publish-alias-error' : undefined}
             value={alias}
-            onChange={e => setAlias(e.target.value)}
+            onChange={e => { setAlias(e.target.value); setAliasError(''); setConflict(false); setAppend(false); setError('') }}
             placeholder="例如：campus-gpt"
           />
         </Field>
-
+        {aliasError && <p className="notice warning" role="alert" id="publish-alias-error">{aliasError}</p>}
+        </fieldset>
+        <details className="formAdvanced">
+        <summary>显示名称与描述（可选）</summary>
+        <div className="drawerStack">
         <Field
           label={
             <div className="fieldLabelWithCount">
               <span>显示名称（可选）</span>
-              <small className="charCountHint">{displayName.length}/50</small>
+              <small className="charCountHint">{Array.from(displayName).length}/128</small>
             </div>
           }
           hint="只用于管理台展示，不改变客户端调用名。"
         >
           <input
-            maxLength={50}
+            maxLength={128}
+            disabled={busy}
             value={displayName}
             onChange={e => setDisplayName(e.target.value)}
             placeholder="例如：校园通用大语言模型"
@@ -232,20 +268,28 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
           label={
             <div className="fieldLabelWithCount">
               <span>描述（可选）</span>
-              <small className="charCountHint">{description.length}/200</small>
+              <small className="charCountHint">{Array.from(description).length}/1024</small>
             </div>
           }
           hint="简要说明适用场景，不影响运行时行为。"
         >
           <textarea
             rows={3}
-            maxLength={200}
+            maxLength={1024}
+            disabled={busy}
             value={description}
             onChange={e => setDescription(e.target.value)}
             placeholder="面向全校的通用大语言模型，适用于问答、写作、分析等多种场景。"
           />
         </Field>
-
+        </div>
+        </details>
+        {!loading && !providerError && !providers.length && <div className="notice warning">
+          暂无启用渠道。<a href={pathFor('admin', 'providers')} onClick={onClose}>前往上游渠道配置</a>
+        </div>}
+        {!loadingCandidates && providerID && !candidateError && !candidates.length && <p className="hint">
+          <a href={pathFor('admin', 'providers')} onClick={onClose}>前往渠道详情维护候选模型</a>
+        </p>}
         {conflict && (
           <div className="checks">
             <label>
@@ -255,6 +299,14 @@ export function PublishModelWizard({onClose, onPublished}: {onClose: () => void;
           </div>
         )}
 
+        {providerError && <div className="notice warning" role="alert">
+          {providerError}
+          <Button size="sm" onClick={() => setProviderRetry(n => n + 1)}>重试加载渠道</Button>
+        </div>}
+        {candidateError && <div className="notice warning" role="alert">
+          {candidateError}
+          <Button size="sm" onClick={() => setCandidateRetry(n => n + 1)}>重试加载候选模型</Button>
+        </div>}
         {error && <div className="notice warning" role="alert">{error}</div>}
       </div>
     </Drawer>

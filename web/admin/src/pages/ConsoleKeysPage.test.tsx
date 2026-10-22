@@ -444,3 +444,19 @@ describe('personal console API keys', () => {
     await waitFor(() => expect(screen.queryByLabelText('正在加载')).not.toBeInTheDocument())
   })
 })
+
+describe('personal console key copy feedback', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // A clipboard refusal must be visible: the button otherwise reports nothing
+  // and the operator believes the prefix is on the clipboard.
+  it('reports a refused prefix copy instead of staying silent', async () => {
+    stubConsole()
+    vi.stubGlobal('navigator', {...navigator, clipboard: {writeText: vi.fn(async () => { throw new Error('denied') })}})
+    renderPage()
+
+    await screen.findByText('教学系统')
+    fireEvent.click(screen.getAllByRole('button', {name: '复制 Key 前缀'})[0])
+    expect(await screen.findByText(/复制失败/)).toBeInTheDocument()
+  })
+})

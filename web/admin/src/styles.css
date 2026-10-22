@@ -14,52 +14,45 @@
      font you do not ship is not a style choice, it is a claim the browser
      silently declines to honour. */
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 
-  /* Type ramp. Functional text has an 11px floor — below it, nav labels and
-     meta rows stop being readable on high-DPI screens, and the size difference
-     stops being perceivable at all.
+  /* A readable Chinese text scale shared by both workspaces. */
+  --fs-caption: 12px;
+  --fs-meta: 13px;
+  --fs-body: 14px;
+  --fs-lead: 17px;
+  --fs-title: 26px;
+  --fs-display: 32px;
 
-     The ramp has two halves, and they obey different rules. Caption, meta and
-     body are a text scale: the steps are small (1.09–1.13) because they
-     separate a label from the value beneath it, not a heading from its section.
-     Lead, title and display are the heading steps, and those are held at or
-     above 1.25 — a heading that is only a pixel larger than body text reads as
-     slightly bolder text rather than as a heading. */
-  --fs-caption: 11px;
-  --fs-meta: 12px;
-  --fs-body: 13.5px;
-  --fs-lead: 15px;
-  --fs-title: 20px;
-  --fs-display: 28px;
-
-  --bg: #f4f6fa;
+  --bg: #f5f7fb;
   --surface: #ffffff;
   --surface-subtle: #f8fafc;
   --surface-hover: #eef2f8;
-  --text: #0f172a;
+  --text: #121c32;
   --text-muted: #475569;
   --text-faint: #5b6b82;
-  --border: #e2e8f0;
+  --border: #dce3ee;
   --border-strong: #cbd5e1;
 
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
-  --primary-soft: #eff6ff;
+  --primary: #315fea;
+  --primary-hover: #244ccc;
+  --primary-soft: #edf2ff;
   /* The semantic colours are used as text on their own -soft tint, so they are
      the 700-weight step of each hue rather than the 600. The lighter steps
      looked better as a swatch and measured 3.1:1 as a label, which is below the
      4.5:1 floor. A colour that only works as a dot is not a text colour. */
-  --success: #15803d;
-  --success-soft: #f0fdf4;
+  --success: #087f6d;
+  --success-soft: #edf9f5;
   --warning: #b45309;
   --warning-soft: #fffbeb;
   --danger: #b91c1c;
   --danger-soft: #fef2f2;
   --info: #0369a1;
   --info-soft: #f0f9ff;
+  --accent: #6d45bf;
+  --accent-soft: #f3effc;
 
   /* The label colour for a filled accent control. It is a token rather than
      a literal because it flips: on the light theme the accent is dark and the
@@ -69,24 +62,15 @@
   --on-danger: #ffffff;
 
   --radius-sm: 6px;
-  --radius-md: 9px;
-  --radius-lg: 13px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
 
   --shadow-sm: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.04);
   --shadow-md: 0 4px 14px -3px rgb(15 23 42 / 0.08), 0 2px 6px -2px rgb(15 23 42 / 0.04);
   --shadow-lg: 0 12px 32px -6px rgb(15 23 42 / 0.12), 0 4px 12px -2px rgb(15 23 42 / 0.06);
 
-  /* Colour of the shadow that marks a sideways-scrollable table. It has to be
-     a variable because a shadow that reads on a white surface disappears on a
-     dark one. It also has to stay light: the shadow is painted behind the
-     cells, and a cell has no background of its own, so the text in the edge
-     column sits directly on it. At 18% the blend measured #d4d5d9, which put
-     the primary-coloured row actions at 3.5:1 — the cue was costing the
-     contrast of the content it was pointing at. */
-  --scroll-hint: rgb(15 23 42 / 0.05);
-
-  --control-h: 34px;
-  --control-h-sm: 28px;
+  --control-h: 36px;
+  --control-h-sm: 32px;
 
   --font-mono: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
 }
@@ -113,6 +97,8 @@
   --danger-soft: #2c1618;
   --info: #7dd3fc;
   --info-soft: #132735;
+  --accent: #c8afff;
+  --accent-soft: #251c3b;
   --on-primary: #0a1020;
   --on-danger: #2a0b0b;
 
@@ -120,7 +106,6 @@
   --shadow-md: 0 6px 18px -4px rgb(0 0 0 / 0.6), 0 2px 6px -2px rgb(0 0 0 / 0.4);
   --shadow-lg: 0 16px 38px -6px rgb(0 0 0 / 0.75), 0 4px 14px -2px rgb(0 0 0 / 0.5);
 
-  --scroll-hint: rgb(0 0 0 / 0.55);
 }
 
 /* --- reset ---------------------------------------------------------------- */
@@ -173,7 +158,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .sidebar.collapsed { width: 62px; }
 
 .brand {
-  min-height: 62px;
+  min-height: 64px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -186,14 +171,14 @@ svg { width: 16px; height: 16px; flex: none; }
   width: 32px; height: 32px;
   border-radius: var(--radius-md);
   display: grid; place-items: center;
-  background: linear-gradient(135deg, #2563eb, #6d5cf6);
-  color: #fff;
+  background: var(--primary);
+  color: var(--on-primary);
   font-size: 12.5px;
   font-weight: 800;
   letter-spacing: 0.02em;
 }
-.brandText b { display: block; font-size: 13.5px; font-weight: 700; }
-.brandText span { display: block; color: var(--text-faint); font-size: 11px; margin-top: 1px; }
+.brandText b { display: block; font-size: 14px; font-weight: 700; }
+.brandText span { display: block; color: var(--text-faint); font-size: 12px; margin-top: 2px; }
 
 .nav { flex: 1; padding: 14px 12px 18px; overflow-y: auto; }
 .navGroup { margin-bottom: 16px; }
@@ -201,10 +186,9 @@ svg { width: 16px; height: 16px; flex: none; }
   display: block;
   font-size: var(--fs-caption);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: var(--text-faint);
   padding: 0 8px 6px;
-  text-transform: uppercase;
 }
 .navGroupRule {
   display: block;
@@ -221,12 +205,12 @@ svg { width: 16px; height: 16px; flex: none; }
   background: transparent;
   color: var(--text-muted);
   border-radius: var(--radius-md);
-  padding: 9px 11px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 2px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -266,18 +250,17 @@ svg { width: 16px; height: 16px; flex: none; }
 .shell.isCollapsed .workspace { margin-left: 62px; }
 
 .topbar {
-  height: 62px;
+  height: 64px;
   position: sticky;
   top: 0;
   z-index: 20;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(10px);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 0 22px;
+  padding: 0 24px;
 }
 .topbarLeft {
   display: flex;
@@ -294,20 +277,20 @@ svg { width: 16px; height: 16px; flex: none; }
    win on source order alone. */
 .sidebar .mobileCloseBtn { display: none; }
 .topbarText { min-width: 0; }
-.topbarText h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; }
+.topbarText h1 { margin: 0; font-size: var(--fs-lead); font-weight: 600; letter-spacing: -0.01em; }
 .topbarText p { margin: 2px 0 0; color: var(--text-muted); font-size: 12px; }
 .topActions { display: flex; align-items: center; gap: 8px; }
 .refreshHint { display: inline-flex; color: var(--text-muted); }
 
 .identity { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.35; padding-right: 2px; }
 .identityName { font-size: 13px; font-weight: 700; }
-.identityRole { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
+.identityRole { font-size: var(--fs-caption); color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
 .identityMore {
   background: var(--surface-subtle);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 5px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 700;
 }
 
@@ -322,8 +305,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .iconBtn:hover { color: var(--text); border-color: var(--border-strong); }
 .iconBtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
-.page { max-width: 1560px; margin: 0 auto; padding: 24px 26px 64px; }
-.stack { display: flex; flex-direction: column; gap: 18px; }
+.page { max-width: 1680px; margin: 0 auto; padding: 24px 32px 48px; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
 
 /* --- buttons -------------------------------------------------------------- */
 
@@ -334,7 +317,7 @@ svg { width: 16px; height: 16px; flex: none; }
   gap: 6px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   padding: 0 12px;
   height: var(--control-h);
@@ -354,6 +337,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .btn.danger { background: var(--danger); color: var(--on-danger); }
 .btn.danger:hover:not(:disabled) { filter: brightness(0.93); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 .link {
@@ -385,7 +369,7 @@ svg { width: 16px; height: 16px; flex: none; }
   background: var(--surface-subtle);
   color: var(--text-muted);
   padding: 2px 8px;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   line-height: 1.5;
   margin: 1px 4px 1px 0;
@@ -409,7 +393,7 @@ svg { width: 16px; height: 16px; flex: none; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   overflow: hidden;
 }
 .panelHead {
@@ -431,27 +415,22 @@ svg { width: 16px; height: 16px; flex: none; }
 
 /* --- tables --------------------------------------------------------------- */
 
-/* A table wider than its container scrolls sideways, and nothing on screen says
-   so — the row simply stops mid-cell at the edge, which reads as a rendering
-   fault rather than as more data to the right. Two surface-coloured layers
-   attached to the content (local) mask a pair of shadow layers pinned to the
-   box (scroll), so the cue shows up only on the side that still has table
-   behind it and clears itself once that edge is reached. */
+/* Keep cell backgrounds solid for readable contrast; the focusable region and
+   visible scrollbar expose columns beyond the viewport to keyboard users. */
 .tableWrap {
   overflow-x: auto;
-  background:
-    linear-gradient(to right, var(--surface) 40%, rgb(255 255 255 / 0)) left center / 26px 100% no-repeat local,
-    linear-gradient(to left, var(--surface) 40%, rgb(255 255 255 / 0)) right center / 26px 100% no-repeat local,
-    radial-gradient(farthest-side at 0 50%, var(--scroll-hint), rgb(0 0 0 / 0)) left center / 12px 100% no-repeat scroll,
-    radial-gradient(farthest-side at 100% 50%, var(--scroll-hint), rgb(0 0 0 / 0)) right center / 12px 100% no-repeat scroll;
+  background: var(--surface);
+  scrollbar-color: var(--border-strong) var(--surface);
+  scrollbar-width: thin;
 }
+.tableWrap:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 table.data { width: 100%; border-collapse: collapse; }
 table.data th,
 table.data td {
-  padding: 11px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   text-align: left;
-  font-size: 13px;
+  font-size: 13.5px;
   vertical-align: middle;
 }
 table.data th {
@@ -486,6 +465,40 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 }
 .copyCell:hover { color: var(--primary); }
 .copyCell svg { width: 12px; height: 12px; opacity: 0.7; }
+
+/* Request detail: the full id with its copy action, and the attempt chain in
+   the server's order. The chain is a list rather than a chart because the only
+   fact that matters is which line was tried, in what order, and how it ended. */
+.requestIdRow { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.requestIdRow svg { width: 12px; height: 12px; }
+
+.attemptVerdict { margin: 0 0 12px; font-size: 13px; line-height: 1.6; }
+.attemptVerdict > b { display: block; font-size: 14px; }
+.attemptVerdict > span { color: var(--text-muted); font-size: 12.5px; }
+.attemptTimeline { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.attemptItem {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-subtle);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+}
+.attemptItem.ok { border-left-color: var(--success); }
+.attemptItem.down { border-left-color: var(--danger); }
+.attemptItem.unknown { border-left-color: var(--text-faint); }
+.attemptOrder { font-weight: 600; font-variant-numeric: tabular-nums; }
+.attemptOutcome { font-weight: 600; }
+.attemptItem.ok .attemptOutcome { color: var(--success); }
+.attemptItem.down .attemptOutcome { color: var(--danger); }
+.attemptWhere { color: var(--text-muted); font-family: var(--font-mono); overflow-wrap: anywhere; }
+/* On a phone the three columns become one line per fact. */
+@media (max-width: 720px) {
+  .attemptItem { grid-template-columns: 1fr; gap: 2px; }
+}
 
 /* --- empty / error / skeleton --------------------------------------------- */
 
@@ -564,7 +577,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .statusCard.down .statusIcon { color: var(--danger); }
 .statusText { min-width: 0; flex: 1; }
 .statusText b { display: block; font-size: 13px; }
-.statusText small { color: var(--text-faint); font-size: 11.5px; }
+.statusText small { color: var(--text-faint); font-size: var(--fs-caption); }
 .statusPill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .statusPill.ok { color: var(--success); }
 .statusPill.down { color: var(--danger); }
@@ -584,7 +597,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .providerCard.disabled { opacity: 0.66; }
 .providerHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .providerIdentity { min-width: 0; }
-.providerFriendly { display: block; font-size: 11.5px; color: var(--text-faint); }
+.providerFriendly { display: block; font-size: var(--fs-caption); color: var(--text-faint); }
 .providerName { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
 .providerRows { margin: 0; display: flex; flex-direction: column; gap: 7px; }
 .providerRow { display: grid; grid-template-columns: 88px 1fr; gap: 10px; align-items: baseline; }
@@ -626,7 +639,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .modelIdentity { min-width: 0; }
 .modelAliasRow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .modelAlias { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
-.modelKind { display: inline-block; margin-top: 4px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); }
+.modelKind { display: inline-block; margin-top: 4px; font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); }
 .modelHint { margin: 5px 0 0; font-size: 12.5px; color: var(--text-muted); }
 .modelHint code { font-family: var(--font-mono); font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 6px; }
 .modelActions { display: flex; gap: 8px; flex: none; }
@@ -638,7 +651,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   align-items: center;
   gap: 6px;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   padding: 5px 0 5px 14px;
 }
 .routeConnector svg { width: 14px; height: 14px; }
@@ -652,7 +665,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   margin-top: 2px;
 }
@@ -675,7 +688,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .routeBoxHead b { font-size: 13.5px; }
 .routeTags { display: inline-flex; align-items: center; gap: 2px; }
 .routeModel { display: block; margin: 8px 0 8px; font-size: 12.5px; color: var(--text); word-break: break-all; }
-.routeProvider { display: block; margin: 5px 0 -4px; font-size: 11.5px; color: var(--text-faint); }
+.routeProvider { display: block; margin: 5px 0 -4px; font-size: var(--fs-caption); color: var(--text-faint); }
 .routeMeta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-muted); }
 .routeMeta b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .routeActions { margin-top: 10px; display: flex; gap: 12px; }
@@ -733,11 +746,11 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .miniCard h3 { margin: 3px 0 0; font-size: 16px; }
 .miniCardRows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
 .miniCardRows > div { min-width: 0; }
-.miniCardRows span { display: block; font-size: 11.5px; color: var(--text-muted); }
+.miniCardRows span { display: block; font-size: var(--fs-caption); color: var(--text-muted); }
 .miniCardRows b { display: block; font-size: 13px; margin-top: 3px; font-variant-numeric: tabular-nums; }
 .cardActions { display: flex; gap: 8px; margin-top: 12px; }
 
-.eyebrow { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); }
+.eyebrow { display: block; font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); }
 
 .desktopOnly { display: block; }
 .mobileOnly { display: none; }
@@ -762,7 +775,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
    a placeholder vanishes once a value is typed, leaving a row of anonymous
    boxes, and a datetime-local input has no placeholder to show at all. */
 .filterField { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.filterField > span { font-size: 11.5px; color: var(--text-faint); padding-left: 2px; }
+.filterField > span { font-size: var(--fs-caption); color: var(--text-faint); padding-left: 2px; }
 /* A filter that silently became a different kind of control is worse than one
    that says why: the operator would be looking at a bare ID box with no idea
    that a picker was meant to be there. */
@@ -786,6 +799,18 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 }
 .pagerActions { display: flex; gap: 8px; }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-meta);
+}
+.paginationActions { display: flex; align-items: center; gap: 8px; }
+
 /* --- aggregate summary ---------------------------------------------------- */
 
 /* The summary strip sits directly above the table it summarises, so it uses the
@@ -805,7 +830,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   flex-direction: column;
   gap: 3px;
 }
-.summaryCell small { color: var(--text-faint); font-size: 11.5px; }
+.summaryCell small { color: var(--text-faint); font-size: var(--fs-caption); }
 .summaryCell b { font-size: 18px; font-variant-numeric: tabular-nums; }
 .summaryCell.warning b { color: var(--warning); }
 .summaryCell.danger b { color: var(--danger); }
@@ -841,9 +866,12 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   flex-direction: column;
   gap: 5px;
 }
-.quotaCell small { color: var(--text-faint); font-size: 11.5px; }
+.quotaCell small { color: var(--text-faint); font-size: var(--fs-caption); }
 .quotaCell .quotaValue { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.quotaCell .quotaMeta { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.quotaCell .quotaMeta { font-size: var(--fs-caption); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* The bar caps at 100%, so an over-limit band states the excess in words. */
+.modelAliasCell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.quotaCell .quotaOverage { font-size: var(--fs-caption); font-weight: 600; color: var(--danger); font-variant-numeric: tabular-nums; }
 .quotaCell.danger .quotaValue { color: var(--danger); }
 .quotaCell.warning .quotaValue { color: var(--warning); }
 /* The bar is carried over from the tenant drawer's progress rows rather than
@@ -859,7 +887,7 @@ table.data tbody tr:hover { background: var(--surface-hover); }
   padding: 13px 20px 6px;
 }
 .usageKeysHead h4 { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
-.usageKeysHead span { font-size: 11.5px; color: var(--text-faint); }
+.usageKeysHead span { font-size: var(--fs-caption); color: var(--text-faint); }
 .usageKeyCell { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .usageEmpty { margin: 0; padding: 6px 20px 16px; font-size: 12.5px; color: var(--text-muted); }
 /* The row a drill came from. Without it a filter change looks like the table
@@ -885,6 +913,9 @@ table.data tbody tr.drilledRow { background: var(--primary-soft); }
 }
 .chartReadout b { color: var(--text); font-variant-numeric: tabular-nums; }
 .chartReadout .chartReadoutWhen { min-width: 96px; color: var(--text); }
+/* The metric this chart draws leads the readout; the shared context follows. */
+.chartReadout .chartReadoutOwn { font-weight: 600; color: var(--text); }
+.chartReadout .chartReadoutOwn b { font-size: 13px; }
 .chartReadout .danger b { color: var(--danger); }
 
 .chartScroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
@@ -956,11 +987,11 @@ table.data tbody tr.drilledRow { background: var(--primary-soft); }
   justify-content: space-between;
   gap: 12px;
   margin-top: 8px;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
-.chartPeak { font-size: 11.5px; color: var(--text-faint); }
+.chartPeak { font-size: var(--fs-caption); color: var(--text-faint); }
 
 /* The trend panel stacks one chart per metric. Each keeps its own scale, which
    is the point: requests and tokens differ by orders of magnitude, and putting
@@ -975,7 +1006,7 @@ table.data tbody tr.drilledRow { background: var(--primary-soft); }
   font-size: 12.5px;
 }
 .chartBlockHead b { font-size: 13px; }
-.chartBlockHead small { color: var(--text-faint); font-size: 11.5px; }
+.chartBlockHead small { color: var(--text-faint); font-size: var(--fs-caption); }
 
 /* A segmented control: mutually exclusive choices that apply immediately, as
    opposed to tabs (which switch what is displayed) or a select (which hides the
@@ -1027,7 +1058,7 @@ input:focus, select:focus, textarea:focus {
 /* A label paired with a live length counter: the caption stays left and the
    counter is pinned right, so it does not shift while the operator types. */
 .fieldLabelWithCount { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.charCountHint { font-size: 11px; font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.charCountHint { font-size: var(--fs-caption); font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .fieldLabel { font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
 .fieldHint { font-size: 12px; line-height: 1.5; color: var(--text-faint); font-weight: 500; }
 .formGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1256,6 +1287,10 @@ input:focus, select:focus, textarea:focus {
 .progressFill.warning { background: var(--warning); }
 .progressFill.danger { background: var(--danger); }
 .progressFill.muted { background: var(--border-strong); }
+/* The bar stops at full width, so the note carries the facts it cannot: the
+   share, the overage, or the fact that there is no limit to measure against. */
+.progressNote { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.detailHint { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 
 /* --- secret reveal -------------------------------------------------------- */
 
@@ -1361,6 +1396,70 @@ input:focus, select:focus, textarea:focus {
 .authModeText { min-width: 0; }
 .authModeTitle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .authModeText p { margin: 8px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.65; }
+
+/* System settings: deployment facts grouped by responsibility. Everything is
+   read-only, so the layout is a definition list rather than a form. */
+.settingsGroups { display: flex; flex-direction: column; gap: 20px; }
+.settingsGroup { border-top: 1px solid var(--border); padding-top: 16px; }
+.settingsGroup:first-child { border-top: 0; padding-top: 0; }
+.settingsGroupTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.settingsGroupTitle svg { width: 16px; height: 16px; color: var(--primary); }
+.settingsFacts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 20px;
+}
+.settingFact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.settingFactLabel { font-size: 12px; color: var(--text-muted); }
+.settingFactValue { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.settingFactHint { font-size: 12px; color: var(--text-faint); line-height: 1.5; }
+.settingsNote { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+.settingsReadOnly {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.settingsReadOnly svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+
+/* Personal overview: the ordered next steps. Each row is a link plus the fact
+   that decides whether it is already done, so the state has a text label as
+   well as a colour. */
+.nextSteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.nextStep {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) 1fr auto;
+  gap: 10px 16px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.nextStepLink { font-weight: 700; color: var(--primary); text-decoration: none; }
+.nextStepLink:hover { text-decoration: underline; }
+.nextStepLink:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+.nextStepDetail { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; }
+.nextStepState { font-size: 12px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.nextStep.done { border-color: color-mix(in srgb, var(--success) 32%, var(--border)); }
+.nextStep.done .nextStepState { color: var(--success); }
+.nextStep.todo .nextStepState { color: var(--warning); }
+.nextStep.blocked { grid-template-columns: 1fr; }
+@media (max-width: 720px) {
+  .nextStep { grid-template-columns: 1fr; gap: 4px; }
+}
 
 /* --- utilities ------------------------------------------------------------ */
 
@@ -1469,12 +1568,15 @@ input:focus, select:focus, textarea:focus {
   }
   .sidebar {
     width: 260px;
+    max-width: calc(100vw - 32px);
+    visibility: hidden;
     transform: translateX(-100%);
-    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: transform 0.18s ease;
     z-index: 100;
     box-shadow: none;
   }
   .sidebar.mobileShown {
+    visibility: visible;
     transform: translateX(0);
     box-shadow: 0 10px 40px -10px rgb(0 0 0 / 0.6);
   }
@@ -1492,6 +1594,7 @@ input:focus, select:focus, textarea:focus {
     display: grid;
     margin-left: auto;
   }
+  .sidebar .brandCollapseBtn { display: none; }
   .workspace, .shell.isCollapsed .workspace {
     margin-left: 0 !important;
     width: 100%;
@@ -1607,13 +1710,13 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 24px 28px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 20px;
+  box-shadow: none;
+  margin-bottom: 0;
 }
 /* The banner's text column carries the title, subtitle and actions, so it is a
    column with one rhythm rather than a plain max-width box. The illustration
@@ -1623,19 +1726,21 @@ input:focus, select:focus, textarea:focus {
 .pageBannerContent {
   position: relative;
   z-index: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 680px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 24px;
+  width: 100%;
+  min-width: 0;
 }
 .pageBannerHead {
+  grid-column: 1;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
 }
 .pageBannerTitle {
-  font-size: 22px;
+  font-size: var(--fs-title);
   font-weight: 700;
   color: var(--text);
   margin: 0;
@@ -1646,12 +1751,16 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
 }
 .pageBannerSub {
-  font-size: 13.5px;
+  grid-column: 1;
+  font-size: var(--fs-body);
   color: var(--text-muted);
   line-height: 1.6;
   margin: 0;
 }
 .pageBannerActions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
   position: relative;
   z-index: 2;
   display: flex;
@@ -1678,15 +1787,16 @@ input:focus, select:focus, textarea:focus {
 /* Below this width the artwork would sit under the subtitle rather than
    beside it, so the banner keeps the text and loses the decoration. */
 @media (max-width: 760px) {
-  .pageBanner { padding: 18px 20px; }
+  .pageBanner { padding: 0; }
   .pageBannerIllustrationWrap { display: none; }
-  .pageBannerContent { max-width: none; }
+  .pageBannerContent { grid-template-columns: minmax(0, 1fr); }
+  .pageBannerActions { grid-column: 1; grid-row: auto; flex-wrap: wrap; margin-top: 8px; }
 }
 /* --- 2. Stat Grid & Standardized Stat Cards ------------------------------- */
 .statGrid {
   display: grid;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 0;
 }
 .statGrid.cols-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1697,9 +1807,7 @@ input:focus, select:focus, textarea:focus {
 .statGrid.cols-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-/* The card row is the page's first content block; four 26px values across a
-   laptop width would each wrap. Two columns keep the number and its label on
-   one line until the phone breakpoint, where they stack. */
+/* Keep the larger metrics legible when four columns no longer fit. */
 @media (max-width: 1100px) {
   .statGrid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -1712,17 +1820,16 @@ input:focus, select:focus, textarea:focus {
 .statCard {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 18px 20px;
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.16s ease;
 }
 .statCard:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
 }
 /* A card that opens a detail view must read as clickable before hover, so the
    cursor and focus ring carry the affordance the border alone does not. */
@@ -1759,30 +1866,30 @@ input:focus, select:focus, textarea:focus {
   flex: none;
 }
 .statCard.default .statCardIcon {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
 }
 .statCard.success .statCardIcon {
-  background: #ecfdf5;
-  color: #059669;
+  background: var(--success-soft);
+  color: var(--success);
 }
 .statCard.purple .statCardIcon {
-  background: #f5f3ff;
-  color: #7c3aed;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .statCard.info .statCardIcon {
-  background: #eff6ff;
-  color: #2563eb;
+  background: var(--primary-soft);
+  color: var(--primary);
 }
 .statCard.warning .statCardIcon {
-  background: #fffbeb;
-  color: #d97706;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 /* The tone union includes danger, so a caller marking an error count must not
    fall back to the default grey icon. */
 .statCard.danger .statCardIcon {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .statCardMain {
@@ -1797,7 +1904,7 @@ input:focus, select:focus, textarea:focus {
   gap: 12px;
 }
 .statCardValue {
-  font-size: 26px;
+  font-size: var(--fs-display);
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
@@ -1817,7 +1924,7 @@ input:focus, select:focus, textarea:focus {
   gap: 8px;
   font-size: 12px;
   color: var(--text-muted);
-  border-top: 1px dashed var(--border-subtle);
+  border-top: 1px solid var(--border);
   padding-top: 8px;
 }
 .statCardSub {
@@ -1842,7 +1949,7 @@ input:focus, select:focus, textarea:focus {
 .statCardBadge {
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1854,9 +1961,9 @@ input:focus, select:focus, textarea:focus {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 14px 18px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 16px;
+  padding: 12px 16px;
+  box-shadow: none;
+  margin-bottom: 0;
 }
 .filtersBar {
   display: flex;
@@ -1937,6 +2044,12 @@ input:focus, select:focus, textarea:focus {
   padding: 3px 8px;
   border-radius: 999px;
   line-height: 1;
+  /* A chip is one short status word, so it must never break. Without this an
+     auto-laid-out table column can hand it less width than the word needs, and
+     CJK text then wraps between every character: 已配置 rendered as three
+     stacked lines inside a 44px-tall pill. The column widens instead, which is
+     what the table's horizontal scroll is for. */
+  white-space: nowrap;
 }
 .statusChip.ok {
   background: var(--success-soft);
@@ -1991,7 +2104,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--danger);
 }
 .tableActionLink.dangerText:hover {
-  background: #fee2e2;
+  background: var(--danger-soft);
 }
 
 /* Section Header With Count */
@@ -2023,69 +2136,17 @@ input:focus, select:focus, textarea:focus {
   gap: 2px;
 }
 
-/* --- 7. Published models grid cards --------------------------------------- */
-.modelsCardGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-.modelCardNew {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 18px 20px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.modelCardNew:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-.modelCardHead {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.modelCardTitleBlock {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.modelCardAlias {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-}
-.modelCardDisplayName {
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-.modelCardDesc {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.5;
-  min-height: 36px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.modelCardTags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.modelCardActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 10px;
-}
+/* Published models: a relationship table, with full identifiers available. */
+.modelListSummary { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--text-muted); }
+.modelListSummary b { color: var(--text); font-variant-numeric: tabular-nums; margin-left: 4px; }
+.modelListIdentity { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 180px; max-width: 280px; overflow-wrap: anywhere; white-space: normal; }
+.modelListIdentity > strong { font-size: 14px; }
+.modelListIdentity > small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.modelListRelations { display: flex; flex-direction: column; gap: 6px; min-width: 180px; max-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+.modelListRelations > div { display: flex; flex-direction: column; gap: 2px; }
+.modelListConfig { display: flex; flex-direction: column; gap: 4px; min-width: 128px; }
+.modelListActions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 200px; max-width: 250px; }
+.modelListWarning { color: var(--warning); }
 
 /* --- 8. Routing policy and route editor ----------------------------------- */
 .routeStrategyPill {
@@ -2093,24 +2154,37 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   padding: 3px 8px;
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 700;
+  white-space: nowrap;
 }
-.routeStrategyPill.primary {
-  background: #eff6ff;
-  color: #1d4ed8;
-  border: 1px solid #bfdbfe;
+.routeStrategyPill.single {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+}
+.routeStrategyPill.failover {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: 1px solid var(--border-strong);
 }
 .routeStrategyPill.weighted {
-  background: #ecfdf5;
-  color: #047857;
-  border: 1px solid #a7f3d0;
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid var(--border-strong);
 }
-.routeStrategyPill.advanced {
-  background: #f5f3ff;
-  color: #6d28d9;
-  border: 1px solid #ddd6fe;
+.routeStrategyPill.mixed {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--border-strong);
 }
+
+/* An entity name that is also a link to that entity's page. It keeps the
+   table's own colour and weight until it is hovered or focused, so the column
+   still reads as data rather than as a row of buttons. */
+.tableEntityLink { color: inherit; text-decoration: none; }
+.tableEntityLink:hover { color: var(--primary); text-decoration: underline; }
+.tableEntityLink:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
 
 .routeModelCardsStack {
   display: flex;
@@ -2129,7 +2203,7 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  background: linear-gradient(to right, #fafbfc, #f1f5f9);
+  background: linear-gradient(to right, var(--surface-subtle), var(--surface-subtle));
   border-bottom: 1px solid var(--border);
   gap: 14px;
 }
@@ -2142,8 +2216,8 @@ input:focus, select:focus, textarea:focus {
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  background: #eff6ff;
-  color: #2563eb;
+  background: var(--primary-soft);
+  color: var(--primary);
   display: grid;
   place-items: center;
   flex: none;
@@ -2193,7 +2267,7 @@ input:focus, select:focus, textarea:focus {
   gap: 2px;
 }
 .routeStrategyDesc {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -2202,17 +2276,17 @@ input:focus, select:focus, textarea:focus {
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 4px;
-  background: #f1f5f9;
-  color: #334155;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
 }
 .weightTag {
   font-size: 12px;
   font-weight: 700;
-  color: #047857;
+  color: var(--success);
 }
 /* A configured credential is the positive state; it must not read like the
-   warning badge it replaces when the credential is missing. */
-.textSuccess { color: var(--success); font-weight: 600; }
+   warning badge it replaces when the credential is missing. The route page
+   renders it with the shared status chip, so only the chip rule remains. */
 
 /* Route Editor Rules */
 .routeEditorCards {
@@ -2255,7 +2329,7 @@ input:focus, select:focus, textarea:focus {
 .routeRuleModelTag {
   font-size: 12px;
   color: var(--text-muted);
-  background: #f1f5f9;
+  background: var(--surface-subtle);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -2307,11 +2381,19 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
 }
 .sharePct { color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Disabled lines are out of the denominator, so the band says how many it left
+   out rather than letting the percentages look like they cover every row. */
+.shareNote { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--text-muted); }
+
+/* Final save preview in the route editor. It replaces the editing form while
+   the operator reads it, so the card carries its own surface and the diff is
+   the only thing on screen. */
+.routeConfirm { display: flex; flex-direction: column; gap: 12px; }
+.routeConfirmList { max-height: 40vh; overflow-y: auto; }
 
 /* --- 9. Call management (calls, keys, tenants) ---------------------------- */
 .callsPageTabs {
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
+  background: var(--surface);
 }
 .keysSectionCard, .tenantsSectionCard {
   background: var(--surface);
@@ -2360,9 +2442,9 @@ input:focus, select:focus, textarea:focus {
   gap: 4px;
 }
 .keyPrefixCode {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
-  background: #f1f5f9;
+  background: var(--surface-subtle);
   padding: 1px 5px;
   border-radius: 3px;
 }
@@ -2385,7 +2467,7 @@ input:focus, select:focus, textarea:focus {
   height: 12px;
 }
 .copySuccessIcon {
-  color: #059669;
+  color: var(--success);
 }
 
 /* Tenant Cell */
@@ -2406,18 +2488,18 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
 }
 .modelTag {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-family: var(--font-mono);
   padding: 2px 6px;
   border-radius: 4px;
-  background: #f1f5f9;
-  color: #334155;
-  border: 1px solid #e2e8f0;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
 }
 .modelTag.wildcard {
-  background: #f5f3ff;
-  color: #6d28d9;
-  border-color: #ddd6fe;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--border-strong);
   font-family: inherit;
   font-weight: 600;
   display: inline-flex;
@@ -2429,9 +2511,9 @@ input:focus, select:focus, textarea:focus {
   height: 12px;
 }
 .modelTag.extraBadge {
-  background: #eff6ff;
-  color: #2563eb;
-  border-color: #bfdbfe;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-color: var(--border-strong);
   font-weight: 600;
 }
 
@@ -2440,13 +2522,13 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
 }
 .permanentTag {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 600;
-  color: #059669;
-  background: #ecfdf5;
+  color: var(--success);
+  background: var(--success-soft);
   padding: 2px 6px;
   border-radius: 4px;
-  border: 1px solid #a7f3d0;
+  border: 1px solid var(--border-strong);
 }
 .expireDate {
   font-size: 12px;
@@ -2464,7 +2546,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--text);
 }
 .usageSummary {
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 
 .tableFooterBar {
@@ -2498,7 +2580,7 @@ input:focus, select:focus, textarea:focus {
   border-radius: 999px;
   background: var(--primary);
   color: #fff;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   display: grid;
   place-items: center;
@@ -2537,6 +2619,9 @@ input:focus, select:focus, textarea:focus {
   height: 14px;
   color: var(--primary);
 }
+/* One sentence at the top of a section, where the operator is about to change
+   the thing it describes. */
+.formSectionNote { margin: 0 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 
 /* Multi-select Component */
 .multiSelectWrapper {
@@ -2560,7 +2645,7 @@ input:focus, select:focus, textarea:focus {
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #6d28d9;
+  color: var(--accent);
   cursor: pointer;
 }
 .wildcardActiveNotice {
@@ -2568,10 +2653,10 @@ input:focus, select:focus, textarea:focus {
   align-items: flex-start;
   gap: 10px;
   padding: 12px;
-  background: #f5f3ff;
-  border: 1px solid #ddd6fe;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  color: #5b21b6;
+  color: var(--accent);
 }
 .wildcardActiveNotice svg {
   width: 18px;
@@ -2606,23 +2691,23 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: var(--primary-soft);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   font-size: 12px;
-  color: #1e40af;
+  color: var(--primary);
 }
 .chipRemoveButton {
   border: none;
   background: none;
   cursor: pointer;
   padding: 0;
-  color: #3b82f6;
+  color: var(--primary);
   display: inline-flex;
   align-items: center;
 }
 .chipRemoveButton:hover {
-  color: #dc2626;
+  color: var(--danger);
 }
 .chipRemoveButton svg {
   width: 12px;
@@ -2666,7 +2751,7 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   padding: 4px 8px;
   border-radius: 4px;
   cursor: pointer;
@@ -2676,7 +2761,7 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--primary);
 }
 .presetBtn.textBtn {
-  color: #059669;
+  color: var(--success);
   font-weight: 600;
 }
 
@@ -2684,8 +2769,8 @@ input:focus, select:focus, textarea:focus {
    preview sits beside the tenant selector and shows the limits of the tenant
    that is currently selected. */
 .tenantQuotaPreviewCard {
-  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
-  border: 1px solid #bfdbfe;
+  background: linear-gradient(135deg, var(--surface-subtle) 0%, var(--primary-soft) 100%);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   padding: 14px 16px;
   display: flex;
@@ -2701,7 +2786,7 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #1e40af;
+  color: var(--primary);
   font-size: 13.5px;
 }
 .quotaPreviewTitle svg {
@@ -2710,7 +2795,7 @@ input:focus, select:focus, textarea:focus {
 }
 .quotaPreviewSub {
   font-size: 12px;
-  color: #3b82f6;
+  color: var(--primary);
 }
 .quotaPreviewGrid {
   display: grid;
@@ -2720,7 +2805,7 @@ input:focus, select:focus, textarea:focus {
 }
 .quotaPreviewMetric {
   background: var(--surface);
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--primary-soft);
   border-radius: 6px;
   padding: 8px 10px;
   display: flex;
@@ -2728,7 +2813,7 @@ input:focus, select:focus, textarea:focus {
   gap: 2px;
 }
 .quotaMetricLabel {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .quotaMetricValue {
@@ -2736,9 +2821,9 @@ input:focus, select:focus, textarea:focus {
   color: var(--text);
 }
 .quotaPreviewFooter {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
-  border-top: 1px dashed #bfdbfe;
+  border-top: 1px dashed var(--border-strong);
   padding-top: 6px;
 }
 
@@ -2753,15 +2838,15 @@ input:focus, select:focus, textarea:focus {
   align-items: flex-start;
   gap: 12px;
   padding: 14px;
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
+  background: var(--success-soft);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  color: #065f46;
+  color: var(--success);
 }
 .secretSuccessIcon {
   width: 20px;
   height: 20px;
-  color: #10b981;
+  color: var(--success);
   flex: none;
   margin-top: 1px;
 }
@@ -2777,7 +2862,7 @@ input:focus, select:focus, textarea:focus {
 
 .secretCodeBox {
   background: #0f172a;
-  border: 1px solid #334155;
+  border: 1px solid var(--text-muted);
   border-radius: var(--radius-md);
   padding: 14px 16px;
   display: flex;
@@ -2788,7 +2873,7 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: #94a3b8;
 }
 .secretKeyLabel {
@@ -2809,7 +2894,7 @@ input:focus, select:focus, textarea:focus {
   gap: 12px;
 }
 .secretValueText {
-  color: #f8fafc;
+  color: var(--surface-subtle);
   font-size: 14px;
   word-break: break-all;
   user-select: all;
@@ -2820,15 +2905,15 @@ input:focus, select:focus, textarea:focus {
   align-items: flex-start;
   gap: 10px;
   padding: 12px 14px;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: var(--warning-soft);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  color: #92400e;
+  color: var(--warning);
 }
 .secretAlertIcon {
   width: 18px;
   height: 18px;
-  color: #f59e0b;
+  color: var(--warning);
   flex: none;
   margin-top: 2px;
 }
@@ -2864,16 +2949,16 @@ input:focus, select:focus, textarea:focus {
 
 /* --- 12. Tenant Table Limit Tags ------------------------------------------ */
 .quotaUnlimitedTag {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 600;
-  color: #059669;
-  background: #ecfdf5;
+  color: var(--success);
+  background: var(--success-soft);
   padding: 2px 6px;
   border-radius: 4px;
-  border: 1px solid #a7f3d0;
+  border: 1px solid var(--border-strong);
 }
 .quotaUnsetTag {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .quotaNumericValue {
@@ -2882,7 +2967,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--text);
 }
 .quotaUnit {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   font-weight: normal;
 }
@@ -2907,9 +2992,9 @@ input:focus, select:focus, textarea:focus {
    quota tags nested in the value cell: left alone it turns the number muted
    and drops 无限制's colour. The card has to read the same three states as the
    table, so the nested tags keep their own presentation. */
-.miniCardRows .tenantQuotaValue span { display: inline-block; font-size: 11.5px; }
+.miniCardRows .tenantQuotaValue span { display: inline-block; font-size: var(--fs-caption); }
 .miniCardRows .tenantQuotaValue .quotaNumericValue { font-size: 13px; color: var(--text); }
-.miniCardRows .tenantQuotaValue .quotaUnlimitedTag { color: #059669; }
+.miniCardRows .tenantQuotaValue .quotaUnlimitedTag { color: var(--success); }
 
 /* --- shell chrome (ticket 02) --------------------------------------------- */
 
@@ -2969,7 +3054,7 @@ input:focus, select:focus, textarea:focus {
 .searchBarKbd {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-caption);
   line-height: 1;
   padding: 3px 5px;
   border: 1px solid var(--border);
@@ -3055,7 +3140,7 @@ input:focus, select:focus, textarea:focus {
   white-space: nowrap;
 }
 .userRole {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   max-width: 120px;
   overflow: hidden;
@@ -3101,7 +3186,7 @@ input:focus, select:focus, textarea:focus {
 .dropdownRoles {
   display: block;
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3233,7 +3318,12 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre;
+  /* A narrow viewport scrolls a long example sideways. A region that scrolls
+     must be reachable by keyboard, or its right-hand side can only be seen
+     with a pointer; the focus ring says which block is scrolled. */
+  tab-size: 2;
 }
+.helpCodeBlock:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .helpList {
   margin: 0;
   padding-left: 18px;
@@ -3243,7 +3333,7 @@ input:focus, select:focus, textarea:focus {
 }
 .helpList kbd {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   padding: 1px 5px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -3301,7 +3391,7 @@ input:focus, select:focus, textarea:focus {
   word-break: break-word;
 }
 .notificationTime {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-faint);
 }
 .notificationMore {
@@ -3355,7 +3445,7 @@ input:focus, select:focus, textarea:focus {
 .campusPromoSub {
   display: block;
   margin-top: 1px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3422,7 +3512,7 @@ input:focus, select:focus, textarea:focus {
 }
 .formStep.active .stepNumber {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--primary);
 }
 .formStep.active .stepLabel {
@@ -3445,15 +3535,15 @@ input:focus, select:focus, textarea:focus {
    the display name is supporting context. */
 .chipAlias {
   font-weight: 600;
-  color: #1d4ed8;
+  color: var(--primary);
 }
 .chipName {
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 /* Length hint beside the one-time secret; secondary to the value itself. */
 .secretLengthNotice {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -3601,7 +3691,7 @@ input:focus, select:focus, textarea:focus {
   padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .quickSearchItemSub {
@@ -3624,7 +3714,7 @@ input:focus, select:focus, textarea:focus {
   gap: 16px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .quickSearchFoot kbd {
@@ -3633,7 +3723,7 @@ input:focus, select:focus, textarea:focus {
   border-radius: 4px;
   background: var(--surface);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-caption);
 }
 
 
@@ -3663,11 +3753,10 @@ input:focus, select:focus, textarea:focus {
 
 /* Channel identity and dependency cells. */
 .channelMainName { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
-.channelFriendlyName { font-size: 11.5px; color: var(--text-muted); }
 .channelDescText {
   margin: 0;
   max-width: 260px;
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3680,7 +3769,7 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border);
   background: var(--surface-subtle);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   text-transform: capitalize;
 }
@@ -3691,10 +3780,10 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
   background: var(--primary-soft);
   color: var(--primary);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   font-weight: 600;
 }
-.baseUrlText { max-width: 200px; color: var(--text-faint); font-size: 11.5px; }
+.baseUrlText { max-width: 200px; color: var(--text-faint); font-size: var(--fs-caption); }
 
 /* Status and this instance's Provider Circuit. The circuit chip is deliberately
    not a green "healthy" badge: closed just means this process has not tripped
@@ -3709,7 +3798,7 @@ input:focus, select:focus, textarea:focus {
   border: 1px dashed var(--border-strong);
   background: var(--surface-subtle);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   line-height: 1.35;
   white-space: nowrap;
 }
@@ -3746,12 +3835,12 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
   font-weight: 700;
 }
-.channelRefCounts { display: flex; gap: 8px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.channelRefCounts { display: flex; gap: 8px; font-size: var(--fs-caption); color: var(--text-faint); white-space: nowrap; }
 
 /* Diagnostic column. */
 .lastTestCell { display: flex; flex-direction: column; gap: 2px; }
 .lastTestTime { font-size: 12px; color: var(--text); }
-.lastTestLatency { font-size: 11.5px; font-weight: 600; }
+.lastTestLatency { font-size: var(--fs-caption); font-weight: 600; }
 .lastTestLatency.success { color: var(--success); }
 .lastTestLatency.danger { color: var(--danger); }
 
@@ -3772,42 +3861,24 @@ input:focus, select:focus, textarea:focus {
 .batchSelectionCount b { color: var(--text); }
 .batchButtons { display: flex; gap: 8px; }
 
-.tablePaginationFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-.paginationInfo { font-size: 12px; color: var(--text-muted); }
-.paginationControls { display: flex; align-items: center; gap: 8px; }
-.paginationCurrentPage { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 700; }
 
 
 /* --- overview (ticket 04) -------------------------------------------------- */
-/* These names were rendered by the dashboard with no rule at all, so the
-   tiles, the banner greeting and the snapshot actions fell back to browser
-   defaults. They are scoped to this page's own names instead of restyling a
-   primitive another page relies on. */
-.bannerGreetingRow {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-}
-.bannerGreeting {
-  font-size: var(--fs-lead);
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.bannerTitleMain {
-  font-size: var(--fs-title);
-  font-weight: 700;
-  color: var(--text);
-}
+/* Operational summaries stay secondary to request metrics and actions. */
+.overviewPage .emptyState { min-height: 120px; padding: 16px 20px; }
+.overviewActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.overviewWindowNote { margin: 0 0 10px; color: var(--text-muted); font-size: var(--fs-caption); }
+.overviewKpis .statCardFoot { align-items: flex-start; flex-direction: column; }
+.overviewKpis .statCardTrend { max-width: 100%; white-space: normal; }
+.overviewTrendStatus { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; color: var(--text-muted); font-size: var(--fs-caption); }
+.overviewConfigPanel .configTilesGrid { padding: 12px 20px; gap: 16px; }
+.overviewConfigPanel .configTile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; gap: 6px; padding: 0; border: 0; background: transparent; }
+.overviewConfigPanel .configTileIcon { width: 24px; height: 24px; border-radius: 6px; }
+.overviewConfigPanel .configTileValue { margin: 0; }
+.overviewConfigPanel .configTileValue b { font-size: 24px; }
+.overviewConfigPanel .configTileSub { grid-column: 1 / -1; margin: 0; }
+.overviewHealthPanel .statusRow { padding: 12px 20px; gap: 12px 20px; }
+.overviewHealthPanel .statusText small { font-size: var(--fs-caption); }
 
 .configTilesGrid {
   display: grid;
@@ -3849,8 +3920,8 @@ input:focus, select:focus, textarea:focus {
   color: var(--success);
 }
 .configTileIcon.purple {
-  background: #f5f3ff;
-  color: #7c3aed;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .configTileIcon.amber {
   background: var(--warning-soft);
@@ -3957,127 +4028,6 @@ input:focus, select:focus, textarea:focus {
 }
 /* --- models (ticket 07) --- */
 
-/* The summary row holds the statistic cards and the publish action. The
-   action keeps its width when the tenant card is absent, so the cards do not
-   stretch across the space the action will need at a wider role. */
-.modelsSummarySection {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-.modelsSummaryGrid {
-  flex: 1 1 auto;
-  margin-bottom: 0;
-}
-.modelsSummaryAction {
-  flex: none;
-}
-
-/* Card header. The identity group keeps the icon beside the alias, and the
-   title block owns the alias row and the display name. */
-.modelCardIdentity {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-}
-.modelCardIconBadge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border-radius: 10px;
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-.modelCardIconBadge svg {
-  width: 18px;
-  height: 18px;
-}
-.modelCardAliasRow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.modelCardMetaRight {
-  flex: none;
-}
-.configVersionBadge {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  white-space: nowrap;
-}
-/* A disabled card stays readable; dimming the whole card would also dim the
-   status chip that explains why. */
-.modelCardNew.disabled {
-  opacity: 0.82;
-}
-.modelCardMetaDivider {
-  height: 1px;
-  background: var(--border-subtle);
-}
-
-/* Two facts per row: route counts and routing mode. The capability flags live
-   in the tag row above because each tag is a field the gateway maintains. */
-.modelCardInfoGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 16px;
-}
-.modelCardInfoItem {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.infoItemLabel {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.infoItemValue {
-  font-size: 12.5px;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.modelTagBadge {
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: var(--text-muted);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border);
-}
-.modelTagBadge.warn {
-  color: var(--warning);
-  background: var(--warning-soft);
-  border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
-}
-
-.modelCardActionsLeft {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.modelCardActionsRight {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
 /* Route list in the model detail drawer: one compact row per configured
    Route, in the priority order the route editor maintains. */
 .compactRouteList {
@@ -4090,7 +4040,7 @@ input:focus, select:focus, textarea:focus {
   gap: 12px;
   padding: 9px 0;
   font-size: 12.5px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 .compactRouteRow:first-child {
   border-top: 0;
@@ -4109,7 +4059,7 @@ input:focus, select:focus, textarea:focus {
 .compactRoutePriority,
 .compactRouteWeight {
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: var(--fs-caption);
   white-space: nowrap;
 }
 .compactRouteRow > .badge {

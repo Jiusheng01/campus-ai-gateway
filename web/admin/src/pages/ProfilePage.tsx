@@ -6,6 +6,20 @@ import {SkeletonRows} from '../components/ui/Skeleton'
 import {useResource} from '../lib/useResource'
 import {primaryRole, roleLabel, roleSummary} from '../lib/roles'
 
+/** How the account signed in, in the same words the settings page uses. */
+function authModeLabel(mode?: string): string {
+  switch ((mode || '').toLowerCase()) {
+    case 'session':
+      return '账号密码登录'
+    case 'trusted-header':
+      return '学校统一身份认证'
+    case 'token':
+      return '应急 Token 模式'
+    default:
+      return '未返回'
+  }
+}
+
 /**
  * Who the account is, and what it may reach.
  *
@@ -39,7 +53,7 @@ export function ProfilePage({who: initialWho}: {who: WhoAmI | null}) {
               <UserRound />
             </span>
             <div className="accountIdentity">
-              <b className="accountName">{name || '未知用户'}</b>
+              <b className="accountName">{name || '正在读取账号身份…'}</b>
               <span className="accountHandle">@{who?.username || who?.user || '—'}</span>
             </div>
             <dl className="accountFacts">
@@ -51,10 +65,11 @@ export function ProfilePage({who: initialWho}: {who: WhoAmI | null}) {
                 </dd>
               </div>
               <div>
-                <dt>账号状态</dt>
-                <dd>
-                  <span className="badge success">正常</span>
-                </dd>
+                {/* The identity endpoint reports how this account signed in,
+                    not whether it is healthy. 正常 would be a status verdict
+                    the response cannot support. */}
+                <dt>登录方式</dt>
+                <dd>{authModeLabel(who?.auth_mode)}</dd>
               </div>
               <div>
                 <dt>权限摘要</dt>

@@ -87,7 +87,6 @@ const VARIANT_VOCABULARY = new Set([
  * one still occurs in a component, so a rename cannot leave a stale entry.
  */
 const VARIABLE_HELD_CLASSES = new Set([
-  'advanced',
   'closed',
   'clickRow',
   'drilledRow',

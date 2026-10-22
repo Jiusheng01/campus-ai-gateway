@@ -8,6 +8,7 @@ import {
   Database,
   FlaskConical,
   Network,
+  Plus,
   RefreshCw,
   Route,
   ServerCog,
@@ -25,7 +26,6 @@ import {
   type RouteView,
   type Tenant,
   type TrendBucket,
-  type WhoAmI,
 } from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Button} from '../components/ui/Button'
@@ -34,21 +34,15 @@ import {EmptyState, ErrorState} from '../components/ui/EmptyState'
 import {SkeletonCards, SkeletonRows} from '../components/ui/Skeleton'
 import {useToast} from '../components/ui/Toast'
 import {ModelTestDrawer} from '../components/models/ModelTestDrawer'
+import {PublishModelWizard} from '../components/models/PublishModelWizard'
+import {ProviderForm, type ProviderDraft} from '../components/providers/ProviderForm'
+import {Drawer} from '../components/ui/Drawer'
 import {MiniSparkline} from '../components/ui/CampusIllustrations'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {useResource} from '../lib/useResource'
 import {ago, fmt, ms, num, ratio, when} from '../lib/format'
 import {type Page} from '../app/navigation'
-
-function getTimeGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 6) return '夜深了'
-  if (hour < 12) return '早上好'
-  if (hour < 14) return '中午好'
-  if (hour < 18) return '下午好'
-  return '晚上好'
-}
 
 /** The wall-clock day a trend bucket label belongs to ("YYYY-MM-DD HH:00"). */
 function localDayKey(at: Date): string {
@@ -88,12 +82,12 @@ function sumOf(buckets: TrendBucket[], key: 'requests' | 'tokens' | 'errors'): n
 function errorRateDelta(current: TrendBucket[], prior: TrendBucket[]): TrendDelta | null {
   const currentRequests = sumOf(current, 'requests')
   const priorRequests = sumOf(prior, 'requests')
-  if (priorRequests <= 0) return null
+  if (priorRequests <= 0 || currentRequests <= 0) return null
   const currentRate = currentRequests > 0 ? (sumOf(current, 'errors') / currentRequests) * 100 : 0
   const priorRate = (sumOf(prior, 'errors') / priorRequests) * 100
   const change = currentRate - priorRate
   return {
-    value: `较昨日同期 ${change > 0 ? '+' : ''}${change.toFixed(2)} 个百分点`,
+    value: `本地完整小时较昨日同期 ${change > 0 ? '+' : ''}${change.toFixed(2)} 个百分点`,
     isPositive: change > 0,
     neutral: change === 0,
   }
@@ -149,16 +143,19 @@ function sparklineData(
 
 export function DashboardPage({
   roles,
-  who,
   onNavigate,
 }: {
   roles: string[]
-  who?: WhoAmI | null
   onNavigate?: (p: Page) => void
 }) {
   const toast = useToast()
   const {data, loading, error, errorStatus, reload} = useResource(() => api<DashboardStatus>('/admin/status'))
   const [testing, setTesting] = useState<ModelTestOption[] | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createBusy, setCreateBusy] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   const canTestModel = roles.includes('super_admin') || roles.includes('gateway_admin') || roles.includes('operator')
   const canReadLogs = roles.includes('super_admin') || roles.includes('auditor')
@@ -217,18 +214,42 @@ export function DashboardPage({
   })
 
   const openTest = async () => {
+    if (testLoading) return
+    setTestLoading(true)
     try {
       setTesting(await listModelTestOptions())
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无法加载模型列表')
+    } finally {
+      setTestLoading(false)
+    }
+  }
+
+  const refreshConfig = () => {
+    reload()
+    routes.reload()
+    models.reload()
+  }
+
+  const saveProvider = async (value: ProviderDraft) => {
+    if (createBusy) return
+    setCreateBusy(true)
+    setCreateError('')
+    try {
+      await api('/admin/providers', {method: 'POST', body: JSON.stringify(value)})
+      setCreating(false)
+      refreshConfig()
+      toast.success('渠道已创建，可到渠道详情维护候选模型')
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : '创建渠道失败')
+    } finally {
+      setCreateBusy(false)
     }
   }
 
   const stats = data?.stats
-  const errorRate = stats && stats.today_requests > 0 ? ratio(stats.today_errors, stats.today_requests) : '0%'
-  const username = who?.username || who?.user || '管理员'
-  const greeting = `${getTimeGreeting()}，${username}`
-  const isHealthy = data?.gateway && data?.postgres && data?.redis
+  const hasRequests = !!stats && stats.today_requests > 0
+  const errorRate = hasRequests ? ratio(stats.today_errors, stats.today_requests) : '—'
 
   // Only facts /admin/status carries: reachability for the three probed
   // components, and the reported data-plane mode for the fourth. There is no
@@ -248,24 +269,24 @@ export function DashboardPage({
 
   // Absent counts are unknown, not zero: `0` would claim an empty inventory.
   const counts = data?.config_counts
-  // Sum the per-model counts rather than the page returned above. A model with
-  // no `route_count` contributes nothing; if no model reports the field at all
-  // the total is unknown, not zero.
+  // Every model must supply a count; a partial sum is not an inventory total.
   const routeCount =
-    models.data === null
+    models.error || models.data === null
       ? null
-      : models.data.length === 0 || models.data.some(m => typeof m.route_count === 'number')
+      : models.data.every(m => typeof m.route_count === 'number')
         ? models.data.reduce((total, m) => total + (m.route_count ?? 0), 0)
         : null
   const routeSample = routes.data ? routes.data.slice(0, 5) : []
-  const tenantCount = tenants.data ? tenants.data.length : null
+  const enabledRouteCount = !models.error && models.data?.every(m => typeof m.enabled_route_count === 'number')
+    ? models.data.reduce((total, m) => total + (m.enabled_route_count ?? 0), 0) : null
+  const tenantCount = !tenants.error && tenants.data ? tenants.data.length : null
 
   const trendPoints = trend.data?.data ?? []
   const windows = trend.data ? trendWindows(trendPoints) : null
-  const requestsDelta = windows ? percentDelta('较昨日同期', sumOf(windows.current, 'requests'), sumOf(windows.prior, 'requests')) : null
-  const tokensDelta = windows ? percentDelta('较昨日同期', sumOf(windows.current, 'tokens'), sumOf(windows.prior, 'tokens')) : null
+  const requestsDelta = windows ? percentDelta('本地完整小时较昨日同期', sumOf(windows.current, 'requests'), sumOf(windows.prior, 'requests')) : null
+  const tokensDelta = windows ? percentDelta('本地完整小时较昨日同期', sumOf(windows.current, 'tokens'), sumOf(windows.prior, 'tokens')) : null
   const errorsDelta = windows ? errorRateDelta(windows.current, windows.prior) : null
-  const latencyDelta = windows ? percentDelta('较昨日同期峰值', peakP95(windows.current), peakP95(windows.prior)) : null
+  const latencyDelta = windows && sumOf(windows.current, 'requests') > 0 ? percentDelta('本地完整小时较昨日同期峰值', peakP95(windows.current), peakP95(windows.prior)) : null
 
   const requestsSpark = sparklineData(trendPoints, 'requests')
   const tokensSpark = sparklineData(trendPoints, 'tokens')
@@ -273,34 +294,18 @@ export function DashboardPage({
   const latencySpark = sparklineData(trendPoints, 'p95_latency_ms')
 
   return (
-    <div className="stack">
-      {/* P1 Welcome Hero Banner with Campus Illustration */}
+    <div className="stack overviewPage">
       <PageBanner
-        title={
-          <span className="bannerGreetingRow">
-            <span className="bannerGreeting">{greeting}</span>
-            <span className="bannerTitleMain">
-              {isHealthy ? '校园模型网关运行正常' : '校园模型网关正在运行'}
-            </span>
-          </span>
-        }
-        subtitle="为全校师生提供安全、稳定、高效的大模型统一访问服务"
-        badge={
-          <span className={`statusPill ${isHealthy ? 'ok' : 'unknown'}`}>
-            <i className={`dot ${isHealthy ? 'on' : 'unknown'}`} aria-hidden />
-            {isHealthy ? '系统健康' : '运行中'}
-          </span>
-        }
+        title="服务概览"
+        subtitle="查看校园模型服务的请求、配置与依赖状态"
         actions={
-          canTestModel && (
-            <Button
-              variant="primary"
-              icon={<FlaskConical />}
-              onClick={() => void openTest()}
-            >
-              模型连通测试 →
-            </Button>
-          )
+          <div className="overviewActions">
+            {canReadRoutes && <>
+              <Button icon={<Plus />} onClick={() => {setCreateError(''); setCreating(true)}}>新增渠道</Button>
+              <Button variant="primary" icon={<Boxes />} onClick={() => setPublishing(true)}>发布模型</Button>
+            </>}
+            {canTestModel && <Button icon={<FlaskConical />} loading={testLoading} onClick={() => void openTest()}>模型连通测试</Button>}
+          </div>
         }
       />
 
@@ -311,7 +316,8 @@ export function DashboardPage({
       ) : (
         <>
           {/* Four Core Metric Cards; values from status, movement from trend */}
-          <section aria-label="核心业务指标">
+          <section aria-label="核心业务指标" className="overviewKpis">
+            <p className="overviewWindowNote">日统计按服务端日界；小图为本地小时序列，环比仅比较完整小时。</p>
             {loading && !data ? (
               <SkeletonCards count={4} />
             ) : (
@@ -322,7 +328,7 @@ export function DashboardPage({
                   icon={<Activity />}
                   subtext="业务 API 调用次数"
                   trend={requestsDelta ?? undefined}
-                  sparkline={requestsSpark ? <MiniSparkline data={requestsSpark} color="#2563eb" /> : undefined}
+                  sparkline={requestsSpark ? <MiniSparkline data={requestsSpark} color="var(--primary)" /> : undefined}
                   tone="default"
                 />
                 <StatCard
@@ -331,35 +337,39 @@ export function DashboardPage({
                   icon={<Zap />}
                   subtext="输入与输出合计"
                   trend={tokensDelta ?? undefined}
-                  sparkline={tokensSpark ? <MiniSparkline data={tokensSpark} color="#10b981" /> : undefined}
+                  sparkline={tokensSpark ? <MiniSparkline data={tokensSpark} color="var(--success)" /> : undefined}
                   tone="success"
                 />
                 <StatCard
                   label="错误率"
                   value={errorRate}
                   icon={<AlertTriangle />}
-                  subtext={`今日错误 ${num(stats?.today_errors ?? 0)} 次`}
+                  subtext={hasRequests ? `今日错误 ${num(stats.today_errors)} 次` : '暂无请求'}
                   trend={errorsDelta ?? undefined}
-                  sparkline={errorsSpark ? <MiniSparkline data={errorsSpark} color="#ef4444" /> : undefined}
+                  sparkline={errorsSpark ? <MiniSparkline data={errorsSpark} color="var(--danger)" /> : undefined}
                   tone={stats && stats.today_errors > 0 ? 'warning' : 'default'}
                 />
                 <StatCard
                   label="P95 延迟"
-                  value={ms(stats?.p95_latency_ms ?? 0)}
+                  value={hasRequests ? ms(stats.p95_latency_ms) : '—'}
                   icon={<CircleGauge />}
-                  subtext={`平均 ${ms(stats?.avg_latency_ms ?? 0)}`}
+                  subtext={hasRequests ? `平均 ${ms(stats.avg_latency_ms)}` : '暂无请求'}
                   trend={latencyDelta ?? undefined}
-                  sparkline={latencySpark ? <MiniSparkline data={latencySpark} color="#8b5cf6" /> : undefined}
+                  sparkline={latencySpark ? <MiniSparkline data={latencySpark} color="var(--accent)" /> : undefined}
                   tone="purple"
                 />
               </StatGrid>
             )}
+            {trend.error ? <p className="overviewTrendStatus" role="status">小时趋势读取失败：{trend.error} <Button size="sm" onClick={trend.reload}>重试趋势</Button></p>
+              : trend.loading ? <p className="overviewTrendStatus" role="status">正在加载小时趋势…</p>
+              : !trendPoints.some(point => point.requests > 0) ? <p className="overviewTrendStatus">暂无小时趋势。业务请求产生后将自动显示。</p> : null}
           </section>
 
           {/* 配置概况 4-Tile Grid Card */}
           <Panel
             title="配置概况"
-            sub="对外模型、上游渠道、模型线路与租户的配置数量；与实时健康无关。"
+            sub="配置数量与启用情况，健康状态见下方依赖探测。"
+            className="overviewConfigPanel"
           >
             <div className="configTilesGrid">
               <div className="configTile">
@@ -397,7 +407,7 @@ export function DashboardPage({
                   <b>{routeCount === null ? '—' : routeCount}</b> <small>条</small>
                 </div>
                 <div className="configTileSub">
-                  {canReadRoutes ? (models.error ? '线路总数读取失败' : '（按对外模型的线路计数汇总）') : '当前角色不可读取线路清单'}
+                  {canReadRoutes ? (models.error ? '线路总数读取失败' : routeCount === null ? '线路总数未知' : `启用 ${enabledRouteCount ?? '未知'}，按完整模型计数汇总`) : '当前角色不可读取线路清单'}
                 </div>
               </div>
 
@@ -421,7 +431,7 @@ export function DashboardPage({
           {/* 基础设施状态 Card */}
           <Panel
             title="基础设施状态"
-            sub="Gateway、存储与数据面的实时可达性。"
+            className="overviewHealthPanel"
             actions={
               <div className="panelActionGroup">
                 <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={reload}>
@@ -467,10 +477,10 @@ export function DashboardPage({
           <div className="sideBySidePanels">
             {/* Left: 路由配置快照 */}
             <Panel
-              title="路由配置快照"
-              sub="当前进程使用的路由表快照。下表仅为前 5 条样本，完整列表见「路由策略」。"
+              title="线路配置"
+              sub="展示配置清单前 5 条；运行时缓存状态单独列出。"
               actions={
-                onNavigate && (
+                canReadRoutes && onNavigate && (
                   <button
                     type="button"
                     className="linkActionBtn"
@@ -485,17 +495,20 @@ export function DashboardPage({
               {data?.route_cache?.stale && (
                 <p className="overviewCacheWarning" role="status">
                   <AlertTriangle aria-hidden />
-                  {`最近重建失败${data.route_cache.last_error_kind ? `（${data.route_cache.last_error_kind}）` : ''}，当前继续使用旧快照；这不代表配置已全局生效。`}
+                  {`最近重建失败${data.route_cache.last_error_kind ? `（${data.route_cache.last_error_kind}）` : ''}，当前继续使用旧快照；生成时间：${data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'}。`}
                 </p>
               )}
               {data?.route_cache && !data.route_cache.stale && (
                 <p className="hint">
-                  快照代次 {data.route_cache.generation} · 生成时间：
-                  {data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'} · 正常生效中
+                  本实例缓存代次 {data.route_cache.generation}，生成时间：
+                  {data.route_cache.built_at ? when(data.route_cache.built_at) : '尚未生成'}
                 </p>
               )}
-              {routes.error ? (
-                <p className="hint">路由快照读取失败：{routes.error}</p>
+              {!data?.route_cache && <p className="hint">本实例缓存状态未返回。</p>}
+              {!canReadRoutes ? (
+                <div className="cardNotice">当前角色不可读取线路配置。</div>
+              ) : routes.error ? (
+                <ErrorState message={routes.error} status={routes.errorStatus} onRetry={routes.reload} />
               ) : routes.loading && !routes.data ? (
                 <SkeletonRows rows={4} columns={5} />
               ) : routeSample.length ? (
@@ -509,7 +522,7 @@ export function DashboardPage({
                       <td>{r.provider_name}</td>
                       <td>
                         <span className="routeModeTag">
-                          {r.priority === 1 ? '默认策略' : `优先级 ${r.priority}`}
+                          故障转移层级 {r.priority}
                         </span>
                       </td>
                       <td>
@@ -524,9 +537,9 @@ export function DashboardPage({
               ) : (
                 <div className="cardNotice">
                   {data?.route_cache ? (
-                    <p className="hint">快照中没有可显示的线路，请在「路由策略」中配置。</p>
+                    <p className="hint">暂无线路配置，可先发布模型。</p>
                   ) : (
-                    <p className="hint">暂无活跃路由配置，请在「路由策略」中进行配置。</p>
+                    <p className="hint">暂无线路配置，可先发布模型。</p>
                   )}
                 </div>
               )}
@@ -536,7 +549,7 @@ export function DashboardPage({
             {canReadLogs ? (
               <Panel
                 title="最近请求"
-                sub="业务侧最新发生的调用，用来确认流量确实在进入网关。"
+                sub="最近 5 条 Request Record"
                 actions={
                   <div className="panelActionGroup">
                     <Button size="sm" icon={<RefreshCw />} loading={recent.loading} onClick={recent.reload}>
@@ -555,7 +568,9 @@ export function DashboardPage({
                 }
                 className="halfPanel"
               >
-                {recent.loading && !recent.data ? (
+                {recent.error ? (
+                  <ErrorState message={recent.error} status={recent.errorStatus} onRetry={recent.reload} />
+                ) : recent.loading && !recent.data ? (
                   <SkeletonRows rows={4} columns={5} />
                 ) : recent.data?.data?.length ? (
                   <Table heads={['时间', '对外模型', '渠道', '状态', '延迟']} minWidth={460}>
@@ -593,6 +608,10 @@ export function DashboardPage({
 
       {/* Model Test Drawer */}
       {testing && <ModelTestDrawer models={testing} onClose={() => setTesting(null)} />}
+      {publishing && <PublishModelWizard onClose={() => setPublishing(false)} onPublished={refreshConfig} />}
+      {creating && <Drawer title="新增渠道" subtitle="连接上游服务，之后在渠道详情中维护候选模型。" onClose={() => {if (!createBusy) setCreating(false)}} dismissable={!createBusy}>
+        <ProviderForm value={{name: '', base_url: '', protocol: 'openai-chat', provider_type: 'custom', status: 1}} saving={createBusy} error={createError} onSave={value => void saveProvider(value)} onCancel={() => setCreating(false)} />
+      </Drawer>}
     </div>
   )
 }

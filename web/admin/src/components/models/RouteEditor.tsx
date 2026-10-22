@@ -1,7 +1,8 @@
-import {useCallback, useMemo, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {AlertTriangle, ArrowDown, ArrowUp, Plus, Trash2} from 'lucide-react'
-import {api, type ModelDetail, type ModelRoute, type Provider} from '../../api'
+import {api, ApiError, type ModelDetail, type ModelRoute, type Provider} from '../../api'
 import {Button} from '../ui/Button'
+import {containTab} from '../ui/focus'
 import {Field, Notice} from '../ui/Field'
 import {EmptyState, ErrorState} from '../ui/EmptyState'
 import {SkeletonRows} from '../ui/Skeleton'
@@ -10,6 +11,7 @@ import {useResource} from '../../lib/useResource'
 import {
   diffRoutes,
   projectMode,
+  saveIntent,
   weightedShares,
   type RouteDraft,
   type RouteMode,
@@ -46,11 +48,36 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
   const [draft, setDraft] = useState<RouteDraft[] | null>(null)
   const [mode, setMode] = useState<RouteMode>('advanced')
   const [pending, setPending] = useState<{mode: RouteMode; projected: RouteDraft[]; diff: string[]} | null>(null)
+  const [confirming, setConfirming] = useState<{routes: RouteDraft[]; diff: string[]} | null>(null)
+  const confirmRef = useRef<HTMLDivElement>(null)
+  const confirmReturn = useRef<HTMLElement | null>(null)
   const [busy, setBusy] = useState(false)
-  const [conflict, setConflict] = useState<number | null>(null)
+  const [conflict, setConflict] = useState<{version: number | null} | null>(null)
   const [formError, setFormError] = useState('')
 
+  // The save preview behaves like the drawer it replaces: Escape cancels it,
+  // Tab stays inside it, and closing it returns focus to the save button that
+  // opened it. Without this the element is a dialog in name only.
+  useEffect(() => {
+    if (!confirming) return
+    confirmReturn.current = document.activeElement as HTMLElement | null
+    confirmRef.current?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setConfirming(null)
+        return
+      }
+      if (confirmRef.current) containTab(event, confirmRef.current)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      confirmReturn.current?.focus?.()
+    }
+  }, [confirming])
+
   const routes = useMemo(() => draft ?? (data ? toDraft(data.detail.routes) : []), [draft, data])
+  const savedRoutes = useMemo(() => (data ? toDraft(data.detail.routes) : []), [data])
   const version = data?.detail.version ?? 0
   const providers = data?.providers || []
   const shares = weightedShares(routes)
@@ -112,7 +139,12 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
     setPending(null)
   }
 
-  const save = async () => {
+  /**
+   * The write. It is only ever reached from the confirmation below: every edit
+   * the operator can make — a field, a status, an addition or a removal — is
+   * shown as one list first, and nothing is sent until they accept it.
+   */
+  const commit = async (toSave: RouteDraft[]) => {
     setBusy(true)
     setFormError('')
     setConflict(null)
@@ -121,24 +153,51 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
         `/admin/models/${modelID}/routes`,
         {
           method: 'PUT',
-          body: JSON.stringify({expected_version: version, routes}),
+          body: JSON.stringify({expected_version: version, routes: toSave}),
         },
       )
       toast.success(`线路已保存，配置版本 ${out.version}`)
       setDraft(null)
+      setConfirming(null)
       reload()
       onSaved?.()
     } catch (e) {
       const apiError = e as {status?: number; message?: string; code?: string}
       if (apiError.status === 409) {
-        const match = /current[_ ]version[^0-9]*(\d+)/i.exec(apiError.message || '')
-        setConflict(match ? Number(match[1]) : null)
+        // The conflict is shown whether or not the version can be read out of
+        // the response: "someone else changed this" is the fact that matters,
+        // and reporting it as a generic failure would invite a blind retry.
+        const fromBody = e instanceof ApiError ? (e.details as {current_version?: unknown}).current_version : undefined
+        const fromMessage = /current[_ ]version[^0-9]*(\d+)/i.exec(apiError.message || '')
+        const current = typeof fromBody === 'number' ? fromBody : fromMessage ? Number(fromMessage[1]) : null
+        setConflict({version: current})
+        setConfirming(null)
       } else {
         setFormError(apiError.message || '保存线路失败')
+        setConfirming(null)
       }
     } finally {
       setBusy(false)
     }
+  }
+
+  const requestSave = () => {
+    const diff = saveIntent(savedRoutes, routes)
+    if (!diff.length) {
+      void commit(routes)
+      return
+    }
+    setConfirming({routes: routes.map(r => ({...r})), diff})
+  }
+
+  /**
+   * Drop the draft and re-read the saved set. Only the operator can start this:
+   * the page must never replace a draft with a newer version behind their back.
+   */
+  const discardAndReload = () => {
+    setDraft(null)
+    setConflict(null)
+    reload()
   }
 
   if (loading && !data) return <SkeletonRows rows={4} columns={7} />
@@ -185,18 +244,47 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
         </div>
       )}
 
-      {conflict !== null && (
+      {conflict && (
         <div className="notice warning" role="alert">
           <AlertTriangle aria-hidden />
           <div>
-            <p>该模型的线路已被其他管理员修改。你的草稿仍保留；当前版本为 {conflict}。</p>
-            <Button size="sm" onClick={() => { setDraft(null); setConflict(null); reload() }}>
-              加载最新版本
+            <p>
+              该模型的线路已被其他管理员修改。你的草稿仍保留
+              {conflict.version !== null ? `；当前版本为 ${conflict.version}` : '，但服务器没有返回当前版本号'}。
+              加载最新版本会丢弃当前草稿。
+            </p>
+            <Button size="sm" onClick={discardAndReload}>
+              放弃草稿并加载最新版本
             </Button>
           </div>
         </div>
       )}
 
+      {/* Final save preview. It replaces the editor rather than sitting above
+          it, so the list being confirmed is the only thing in view and cannot
+          be edited while the operator decides. */}
+      {confirming ? (
+        <div className="routeConfirm" role="dialog" aria-modal="true" aria-label="确认保存线路" tabIndex={-1} ref={confirmRef}>
+          <div className="notice warning">
+            <AlertTriangle aria-hidden />
+            <div>
+              <b>保存后以下修改会立即生效（配置版本 {version}）：</b>
+              <ul className="drawerSectionList routeConfirmList">
+                {confirming.diff.map(line => (
+                  <li key={line}><code>{line}</code></li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="formActions">
+            <Button size="sm" onClick={() => setConfirming(null)}>返回修改</Button>
+            <Button size="sm" variant="primary" loading={busy} onClick={() => void commit(confirming.routes)}>
+              确认保存
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
       {formError && <div className="notice warning" role="alert">{formError}</div>}
 
       {/* Routes List */}
@@ -360,6 +448,9 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
                     </span>
                   ))}
                 </div>
+                {s.disabledCount > 0 && (
+                  <p className="shareNote">{s.disabledCount} 条停用线路不参与分配；停用不是零权重。</p>
+                )}
               </div>
             ))}
           </div>
@@ -379,12 +470,14 @@ export function RouteEditor({modelID, onSaved}: {modelID: string; onSaved?: () =
           variant="primary"
           loading={busy}
           disabled={busy || !routes.length || !!pending}
-          onClick={() => void save()}
+          onClick={requestSave}
         >
           保存整组线路
         </Button>
       </div>
       <p className="hint">保存会原子替换整组线路，并保留未修改线路的 route ID。当前配置版本 {version}。</p>
+        </>
+      )}
     </div>
   )
 }

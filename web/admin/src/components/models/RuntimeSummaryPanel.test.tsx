@@ -25,6 +25,14 @@ describe('RuntimeSummaryPanel', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
+  it('does not offer unfiltered raw logs while the summary is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({error: {message: 'summary unavailable'}}, 503)))
+    render(<RuntimeSummaryPanel kind="provider" id="p-1" canOpenRawLogs onOpenLogs={() => {}} />)
+    expect(screen.getByRole('button', {name: '打开原始调用日志'})).toBeDisabled()
+    expect(await screen.findByText('加载失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '打开原始调用日志'})).toBeDisabled()
+  })
+
   it('renders only the redacted summary fields and supports raw-log navigation', async () => {
     const openLogs = vi.fn()
     render(<RuntimeSummaryPanel kind="model" id="m-1" canOpenRawLogs onOpenLogs={openLogs} />)

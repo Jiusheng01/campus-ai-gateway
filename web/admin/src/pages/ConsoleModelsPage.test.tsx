@@ -38,6 +38,8 @@ describe('personal model catalog', () => {
     expect(await screen.findByText('校园 GPT')).toBeInTheDocument()
     const table = screen.getByRole('table')
     expect(within(table).getByText('campus-gpt')).toBeInTheDocument()
+    // The alias is copyable on its own, not only inside the whole example.
+    expect(within(table).getAllByRole('button', {name: '复制模型 ID'})).toHaveLength(2)
     expect(within(table).getByText('校园 Code')).toBeInTheDocument()
     expect(within(table).getByText('代码助手')).toBeInTheDocument()
 
@@ -110,5 +112,79 @@ describe('personal model catalog', () => {
 
     expect(await screen.findByText('加载失败')).toBeInTheDocument()
     expect(screen.queryByText('暂无可调用的模型')).not.toBeInTheDocument()
+  })
+})
+
+describe('personal model catalog honesty', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // The catalog is what the gateway would accept now, not a promise that a
+  // credential issued earlier covers a model added afterwards. An explicit
+  // allowlist does not grow on its own.
+  it('says an existing key does not automatically cover a newly listed model', async () => {
+    stubCatalog(catalog)
+    renderPage()
+    await screen.findByText('校园 GPT')
+    expect(screen.getByText(/已有的 API Key/)).toBeInTheDocument()
+    expect(screen.getByText(/不会.*自动/)).toBeInTheDocument()
+  })
+
+  it('names the catalog as the statically callable set, not live health', async () => {
+    stubCatalog(catalog)
+    renderPage()
+    await screen.findByText('校园 GPT')
+    expect(screen.getByText(/静态/)).toBeInTheDocument()
+    // The subtitle says what the set is not; that is the honest phrasing, and
+    // it must not read as a health claim elsewhere on the page.
+    expect(screen.queryByText(/状态：正常|健康状态：/)).not.toBeInTheDocument()
+  })
+
+  it('drops a selected model that disappears on reload and keeps the example valid', async () => {
+    let body = catalog
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(body)))
+    renderPage()
+    await screen.findByText('校园 GPT')
+    const picker = screen.getByLabelText('请求示例使用的模型')
+    fireEvent.change(picker, {target: {value: 'campus-code'}})
+    await waitFor(() => expect(picker).toHaveValue('campus-code'))
+
+    body = {models: [catalog.models[0]]}
+    fireEvent.click(screen.getByRole('button', {name: /刷新|重新读取/}))
+    await waitFor(() => expect(screen.getByLabelText('请求示例使用的模型')).toHaveValue('campus-gpt'))
+  })
+
+  it('shows no runnable example when there is no model', async () => {
+    stubCatalog({models: [], empty_reason: 'tenant_allows_none'})
+    renderPage()
+    expect(await screen.findByText(/未开放任何模型/)).toBeInTheDocument()
+    expect(screen.queryByText('请求示例')).not.toBeInTheDocument()
+    expect(screen.queryByText(/curl /)).not.toBeInTheDocument()
+  })
+
+  it('reports a refused clipboard instead of claiming success', async () => {
+    stubCatalog(catalog)
+    vi.stubGlobal('navigator', {...navigator, clipboard: {writeText: vi.fn(async () => { throw new Error('denied') })}})
+    renderPage()
+    await screen.findByText('校园 GPT')
+
+    fireEvent.click(screen.getAllByRole('button', {name: '复制'})[0])
+    expect(await screen.findByText(/复制失败/)).toBeInTheDocument()
+    expect(screen.queryByText(/已复制到剪贴板/)).not.toBeInTheDocument()
+  })
+})
+
+describe('personal model catalog accessibility', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // A long example scrolls sideways on a phone; a region that scrolls must be
+  // reachable by keyboard, and it needs a name so the focus target is known.
+  it('makes each scrollable example a named keyboard region', async () => {
+    stubCatalog(catalog)
+    renderPage()
+    await screen.findByText('校园 GPT')
+    const curl = screen.getByRole('region', {name: 'curl 请求示例'})
+    const sdk = screen.getByRole('region', {name: 'Python SDK 示例'})
+    expect(curl).toHaveAttribute('tabindex', '0')
+    expect(sdk).toHaveAttribute('tabindex', '0')
   })
 })

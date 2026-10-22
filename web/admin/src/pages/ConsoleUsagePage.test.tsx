@@ -129,3 +129,55 @@ describe('personal usage page', () => {
     expect(screen.queryByText('租户共享配额')).toBeInTheDocument()
   })
 })
+
+describe('personal usage quota honesty', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // The shared quota is enforced on UTC days and months while the personal
+  // window above it uses the reader's time zone. Saying which is which stops
+  // the two looking contradictory.
+  it('names the UTC boundary of the shared quota separately from the personal window', async () => {
+    stubUsage()
+    render(<ConsoleUsagePage />)
+    await screen.findByText('租户共享配额')
+    const panel = screen.getByText('租户共享配额').closest('.panel') as HTMLElement
+    expect(within(panel).getByText(/UTC/)).toBeInTheDocument()
+    expect(within(panel).getAllByText(/共享/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/本机时区/).length).toBeGreaterThan(0)
+  })
+
+  it('states the overage when a shared band is past its limit', async () => {
+    stubUsage({...usage, tenant_quota: {...usage.tenant_quota, daily_token: {used: 1250, limit: 1000, pct: 125}}})
+    render(<ConsoleUsagePage />)
+    await screen.findByText('租户共享配额')
+    const panel = screen.getByText('租户共享配额').closest('.panel') as HTMLElement
+    expect(within(panel).getByText(/已超出 250/)).toBeInTheDocument()
+    expect(within(panel).getByText(/125\.00%/)).toBeInTheDocument()
+  })
+
+  it('does not draw a quota band as 0% when there is no configured limit', async () => {
+    stubUsage({...usage, tenant_quota: {...usage.tenant_quota, daily_token: null}})
+    render(<ConsoleUsagePage />)
+    await screen.findByText('租户共享配额')
+    const panel = screen.getByText('租户共享配额').closest('.panel') as HTMLElement
+    expect(within(panel).getByText('未设')).toBeInTheDocument()
+    expect(within(panel).queryByText('0.00%')).not.toBeInTheDocument()
+  })
+
+  it('does not draw a trend from an empty series but still reports the window', async () => {
+    stubUsage({...usage, totals: {...usage.totals, requests: 0, successes: 0, failures: 0, total_tokens: 0, error_rate: 0}, series: [], by_model: []})
+    render(<ConsoleUsagePage />)
+    expect(await screen.findAllByText(/该时间范围内没有数据/)).toHaveLength(2)
+    expect(screen.getByText(/所选时间段内没有可归因的请求/)).toBeInTheDocument()
+    // Zero traffic is a measurement here, not an error: the cards stay.
+    expect(statCard('请求数')).toHaveTextContent('0')
+  })
+
+  it('reports a failed read instead of showing zero usage', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({error: {message: '用量服务不可用'}}, 500)))
+    render(<ConsoleUsagePage />)
+    expect(await screen.findByText('用量服务不可用')).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '重新加载'})).toBeInTheDocument()
+    expect(screen.queryByText('请求数', {selector: '.statCardLabel'})).not.toBeInTheDocument()
+  })
+})

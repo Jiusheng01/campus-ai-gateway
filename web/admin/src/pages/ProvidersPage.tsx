@@ -1,5 +1,5 @@
-import {useCallback, useMemo, useState} from 'react'
-import {AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Network, Plus} from 'lucide-react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
+import {AlertCircle, CheckCircle2, Network, Plus} from 'lucide-react'
 import {
   api,
   type CircuitView,
@@ -20,7 +20,8 @@ import {ProviderForm, type ProviderDraft} from '../components/providers/Provider
 import {ProviderTestPanel} from '../components/providers/ProviderTestPanel'
 import {ProviderModelsPanel} from '../components/providers/ProviderModelsPanel'
 import {RuntimeSummaryPanel, type LogSeed} from '../components/models/RuntimeSummaryPanel'
-import {friendlyProviderName, PROTOCOLS, protocolLabel} from '../components/providers/templates'
+import {providerTemplates, PROTOCOLS, protocolLabel} from '../components/providers/templates'
+import {Pagination} from '../components/ui/Pagination'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard} from '../components/ui/StatCard'
 import {Detail} from '../components/ui/Detail'
@@ -32,7 +33,7 @@ const PAGE_SIZE = 15
 type Filters = {name: string; provider_type: string; protocol: string; status: string}
 const emptyFilters: Filters = {name: '', provider_type: '', protocol: '', status: ''}
 
-type Tab = 'basic' | 'models' | 'test' | 'usage'
+type Tab = 'details' | 'basic' | 'models' | 'test' | 'usage'
 
 type Bundle = {
   providers: Provider[]
@@ -56,6 +57,11 @@ type Bundle = {
 
 async function deleteImpact(providerID: string): Promise<ProviderImpact> {
   return api<ProviderImpact>(`/admin/providers/${providerID}/impact`)
+}
+
+/** The channel id another page linked to, if the address names one. */
+function linkProviderID(): string {
+  return new URLSearchParams(window.location.search).get('provider') || ''
 }
 
 /**
@@ -107,14 +113,14 @@ function credentialText(p: Provider): string {
     return `环境变量 ${p.credential_env || '—'}${credential.configured ? '（已就绪）' : '（未读取到值）'}`
   }
   if (credential.source_type === 'inline') {
-    return `内联凭据${credential.last4 ? ` · 尾号 ${credential.last4}` : ''}`
+    return `${credential.configured ? '内联凭据已配置' : '内联凭据未就绪'}${credential.last4 ? ` · 尾号 ${credential.last4}` : ''}`
   }
   return credential.source_type || '—'
 }
 
 function lastTestText(p: Provider): string | null {
   const test = p.last_test
-  if (!test) return null
+  if (!test) return '尚未诊断'
   const upstream = test.upstream_model ? ` · ${test.upstream_model}` : ''
   const error = test.error_kind ? ` · ${test.error_kind}` : ''
   return `${test.ok ? '成功' : '失败'} · HTTP ${test.status_code} · ${ms(test.latency_ms)} · ${when(test.at)}${upstream}${error}`
@@ -139,6 +145,7 @@ function ChannelFacts({
     <Detail
       title="渠道事实"
       rows={[
+        ['配置状态', provider.status === 1 ? '已启用；不代表上游健康' : '已停用'],
         ['凭据', credentialText(provider)],
         ['候选模型', provider.candidate_model_count == null ? null : `${provider.candidate_model_count} 个`],
         ['引用线路', provider.referenced_route_count == null ? null : `${provider.referenced_route_count} 条`],
@@ -178,6 +185,9 @@ export function ProvidersPage({
   const [deleting, setDeleting] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batching, setBatching] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [changingStatus, setChangingStatus] = useState(false)
 
   const query = useMemo(() => {
     const q = new URLSearchParams()
@@ -206,7 +216,53 @@ export function ProvidersPage({
 
   const {data, loading, error, errorStatus, reload} = useResource(loader, [query])
 
+  // A line on the route page links here with ?provider=<id>, because channel
+  // names are not unique. The page's own list is paginated, so the id is
+  // resolved against the full collection: reporting a channel on page two as
+  // "deleted" would be a false claim. One lookup per visited address, so
+  // closing the drawer cannot reopen it.
+  const linkedProviderID = linkProviderID()
+  const [linkMissing, setLinkMissing] = useState(false)
+  const linkOpened = useRef('')
+  useEffect(() => {
+    if (!linkedProviderID || linkOpened.current === linkedProviderID) return
+    let live = true
+    void api<{data: Provider[]}>('/admin/providers')
+      .then(d => {
+        if (!live) return
+        linkOpened.current = linkedProviderID
+        const target = (d.data || []).find(p => p.id === linkedProviderID)
+        if (!target) {
+          setLinkMissing(true)
+          return
+        }
+        setSaveError('')
+        setTab('details')
+        setActiveProvider(target)
+        setDraft({
+          id: target.id,
+          name: target.name,
+          base_url: target.base_url,
+          protocol: target.protocol,
+          provider_type: target.provider_type,
+          description: target.description,
+          credential_env: target.credential_env,
+          credential: target.credential,
+          status: target.status,
+        })
+      })
+      .catch(() => {
+        if (live) setLinkMissing(true)
+      })
+    return () => {
+      live = false
+    }
+  }, [linkedProviderID])
+
   const save = async (v: ProviderDraft) => {
+    if (saving) return
+    setSaving(true)
+    setSaveError('')
     try {
       await api(v.id ? `/admin/providers/${v.id}` : '/admin/providers', {
         method: v.id ? 'PUT' : 'POST',
@@ -216,36 +272,40 @@ export function ProvidersPage({
       setDraft(null)
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '保存渠道失败')
+      setSaveError(e instanceof Error ? e.message : '保存渠道失败，请重试。')
+    } finally {
+      setSaving(false)
     }
   }
 
   const remove = async (p: Provider) => {
-    let impact: ProviderImpact
-    try {
-      impact = await deleteImpact(p.id)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '无法读取该渠道的删除影响')
-      return
-    }
-    const ok = await confirm({
-      title: `删除渠道「${p.name}」？`,
-      description: `将永久删除 1 个渠道、${impact.routes} 条线路、${impact.orphaned_models} 个对外模型（共影响 ${impact.affected_models.length} 个模型）。提交时会重新校验，实际结果以返回数量为准。此操作不可撤销。`,
-      confirmText: '永久删除',
-      danger: true,
-      requireText: p.name,
-      requireTextLabel: `输入渠道名「${p.name}」以确认`,
-    })
-    if (!ok) return
+    if (deleting) return
     setDeleting(p.id)
     try {
+      const impact = await deleteImpact(p.id)
+      const ok = await confirm({
+        title: `删除渠道 ${p.name}？`,
+        description: <>
+          <span>将永久删除该渠道、{impact.routes} 条线路和 {impact.provider_models} 个候选模型；其中 {impact.orphaned_models} 个对外模型会因失去全部线路被级联删除。</span>
+          <span> 共影响 {impact.affected_models.length} 个对外模型：{impact.affected_models.length ? impact.affected_models.slice(0, 5).map(m => `${m.alias}（${m.orphaned ? '删除' : `保留 ${m.remaining_routes} 条线路`}）`).join('、') : '无'}{impact.affected_models.length > 5 ? '等' : ''}。</span>
+          <span> API Key 中已有的模型授权不会自动改写。提交时重新校验，实际删除数量以返回结果为准。此操作不可撤销。</span>
+        </>,
+        confirmText: '永久删除',
+        danger: true,
+        requireText: p.name,
+        requireTextLabel: `输入渠道名 ${p.name} 以确认`,
+      })
+      if (!ok) return
       const result = await api<ProviderDeleteResult>(`/admin/providers/${encodeURIComponent(p.id)}`, {method: 'DELETE'})
       toast.success(
         `已删除渠道：${result.deleted_routes} 条线路、${result.deleted_virtual_models} 个对外模型、${result.deleted_provider_models} 条模型清单`,
       )
+      setSelected(previous => new Set([...previous].filter(id => id !== p.id)))
+      if (draft?.id === p.id) setDraft(null)
+      if (items.length === 1 && offset > 0) setOffset(Math.max(0, offset - PAGE_SIZE))
       reload()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '删除渠道失败')
+      toast.error(e instanceof Error ? e.message : '无法完成删除，请重试。')
     } finally {
       setDeleting(null)
     }
@@ -271,6 +331,7 @@ export function ProvidersPage({
 
   const batchStatus = async (status: 1 | 2) => {
     if (!selected.size) return
+    if (status === 2 && !await confirm({title: `停用选中的 ${selected.size} 个渠道？`, description: '停用后不再通过这些渠道发起新的模型请求，配置、候选模型和线路会保留。其他线路是否可用需另行检查。', confirmText: '确认停用', danger: true})) return
     setBatching(true)
     const results: {name: string; ok: boolean}[] = []
     for (const p of data?.providers || []) {
@@ -310,14 +371,26 @@ export function ProvidersPage({
   const onlinePct = channelTotal ? ratio(onlineCount ?? 0, channelTotal) : null
   const offlinePct = channelTotal ? ratio(offlineCount ?? 0, channelTotal) : null
 
+  // The list's own subtitle is a count of the filtered result, so it may only
+  // quote one the page has: while the first page is in flight there is no
+  // result yet, and after a failure `total` is still its initial zero. Saying
+  // "共 0 个渠道" in either case reports an empty list that was never returned.
+  const listSub = error
+    ? '渠道列表读取失败；上方统计为全部配置，不代表实时健康。'
+    : loading && !data
+      ? '正在读取渠道列表；上方统计为全部配置，不代表实时健康。'
+      : `当前筛选共 ${total} 个渠道；上方统计为全部配置，不代表实时健康。`
+
   const circuits = useMemo(
     () => new Map((data?.circuits ?? []).map(c => [c.provider, c])),
     [data?.circuits],
   )
 
-  const [activeProvider, setActiveProvider] = useState<Provider | null>(null)
+  const [openedProvider, setActiveProvider] = useState<Provider | null>(null)
+  const activeProvider = items.find(p => p.id === openedProvider?.id) ?? openedProvider
 
-  const openDrawer = (p: Provider, defaultTab: Tab = 'basic') => {
+  const openDrawer = (p: Provider, defaultTab: Tab = 'details') => {
+    setSaveError('')
     setTab(defaultTab)
     setActiveProvider(p)
     setDraft({
@@ -335,10 +408,12 @@ export function ProvidersPage({
 
   return (
     <div className="stack">
-      {/* Top Banner with Campus Illustration */}
+      {/* The banner repeats the page title the topbar and the navigation
+          already use. It used to say 渠道管理 here while both of those said
+          上游渠道, which read as two pages with one address. */}
       <PageBanner
-        title="连接全球优质模型服务"
-        subtitle="统一管理多种模型渠道的接入配置，支持快速切换与健康监控。"
+        title="上游渠道"
+        subtitle="维护模型服务的连接配置、凭据与候选模型。启用状态与最近诊断分别展示。"
       />
 
       <section aria-label="渠道概览统计" className="providersSummarySection">
@@ -352,7 +427,7 @@ export function ProvidersPage({
               className="compactStat"
             />
             <StatCard
-              label="在线"
+              label="已启用"
               value={onlineCount ?? '—'}
               subtext={onlinePct === null ? undefined : `(${onlinePct})`}
               icon={<CheckCircle2 />}
@@ -360,7 +435,7 @@ export function ProvidersPage({
               className="compactStat"
             />
             <StatCard
-              label="异常 / 停用"
+              label="已停用"
               value={offlineCount ?? '—'}
               subtext={offlinePct === null ? undefined : `(${offlinePct})`}
               icon={<AlertCircle />}
@@ -374,6 +449,7 @@ export function ProvidersPage({
               variant="primary"
               icon={<Plus />}
               onClick={() => {
+                setSaveError('')
                 setTab('basic')
                 setDraft({status: 1, protocol: 'openai-chat'})
               }}
@@ -393,22 +469,25 @@ export function ProvidersPage({
               placeholder="请输入渠道名称"
               value={draftFilters.name}
               onChange={e => setDraftFilters({...draftFilters, name: e.target.value})}
-              onKeyDown={e => e.key === 'Enter' && setFilters(draftFilters)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  setFilters(draftFilters)
+                  setOffset(0)
+                  setSelected(new Set())
+                }
+              }}
             />
           </label>
 
           <label className="filterFieldInline">
-            <span className="filterLabel">渠道类型</span>
+            <span className="filterLabel">供应商</span>
             <select
               className="filterSelect"
               value={draftFilters.provider_type}
               onChange={e => setDraftFilters({...draftFilters, provider_type: e.target.value})}
             >
               <option value="">全部</option>
-              <option value="qwen">Qwen / 通义千问</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="doubao">豆包 / 火山引擎</option>
-              <option value="openai">OpenAI</option>
+              {providerTemplates.filter(t => t.id !== 'custom').map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
               <option value="custom">自定义 / 实验室</option>
             </select>
           </label>
@@ -437,7 +516,7 @@ export function ProvidersPage({
               onChange={e => setDraftFilters({...draftFilters, status: e.target.value})}
             >
               <option value="">全部</option>
-              <option value="1">启用 / 在线</option>
+              <option value="1">已启用</option>
               <option value="2">停用</option>
             </select>
           </label>
@@ -448,6 +527,7 @@ export function ProvidersPage({
                 setFilters(emptyFilters)
                 setDraftFilters(emptyFilters)
                 setOffset(0)
+                setSelected(new Set())
               }}
             >
               重置
@@ -457,6 +537,7 @@ export function ProvidersPage({
               onClick={() => {
                 setFilters(draftFilters)
                 setOffset(0)
+                setSelected(new Set())
               }}
             >
               筛选
@@ -482,7 +563,16 @@ export function ProvidersPage({
         </div>
       )}
 
-      <Panel title="渠道列表" sub="管理当前网关接入的模型通道、鉴权信息及测试状态">
+      {/* A link from the route page names a channel by id. If that channel is
+          not in this page's result, say so rather than showing the whole list
+          as if the address had meant nothing. */}
+      {linkMissing && (
+        <div className="notice warning" role="alert">
+          找不到地址中指定的渠道。该 id 在网关的渠道集合中不存在，可能已被删除。下方为按当前筛选读取的列表。
+        </div>
+      )}
+
+      <Panel title="渠道列表" sub={listSub}>
         {loading && !data ? (
           <SkeletonRows rows={5} columns={9} />
         ) : error ? (
@@ -499,19 +589,18 @@ export function ProvidersPage({
                   onChange={toggleAll}
                 />,
                 '渠道名称',
-                '渠道类型',
-                '接口协议',
-                'Base URL',
+                '供应商',
+                '连接',
                 '状态',
                 '凭据状态',
-                '最后测试时间',
-                '候选 / 引用',
+                '最近诊断',
+                '候选模型 / 引用',
                 '操作',
               ]}
-              minWidth={1180}
+              minWidth={1080}
             >
               {items.map(p => {
-                const friendly = friendlyProviderName(p.name)
+                const vendor = providerTemplates.find(t => t.id !== 'custom' && (t.id === p.provider_type || t.aliases?.includes(p.provider_type)))
                 const isSelected = selected.has(p.id)
                 const isOnline = p.status === 1
                 const hasCred = p.credential?.configured
@@ -529,28 +618,25 @@ export function ProvidersPage({
                     <td>
                       <div className="channelNameCell">
                         <b className="channelMainName mono">{p.name}</b>
-                        {friendly && <span className="channelFriendlyName">({friendly})</span>}
                         {p.description && <p className="channelDescText">{p.description}</p>}
                       </div>
                     </td>
                     <td>
                       <span className="providerTypeBadge">
-                        {p.provider_type || '自定义'}
+                        {vendor?.label || p.provider_type || '未分类'}
                       </span>
                     </td>
                     <td>
                       <span className="protocolBadge">{protocolLabel(p.protocol)}</span>
-                    </td>
-                    <td>
-                      <span className="mono cut baseUrlText" title={p.base_url}>
+                      <div className="mono cut baseUrlText" title={p.base_url}>
                         {p.base_url || '—'}
-                      </span>
+                      </div>
                     </td>
                     <td>
                       <div className="channelStatusStack">
                         <span className={`statusChip ${isOnline ? 'ok' : 'down'}`}>
                           <i className={`dot ${isOnline ? 'on' : 'down'}`} aria-hidden />
-                          {isOnline ? '在线' : '已停用'}
+                          {isOnline ? '已启用' : '已停用'}
                         </span>
                         <CircuitChip
                           circuit={circuits.get(p.name)}
@@ -579,14 +665,14 @@ export function ProvidersPage({
                     </td>
                     <td>
                       {p.last_test ? (
-                        <div className="lastTestCell">
+                        <div className="lastTestCell" title={when(p.last_test.at)}>
                           <div className="lastTestTime">{ago(p.last_test.at)}</div>
                           <div className={`lastTestLatency ${p.last_test.ok ? 'success' : 'danger'}`}>
-                            {p.last_test.ok ? '✓' : '✗'} {ms(p.last_test.latency_ms)}
+                            {p.last_test.ok ? '成功' : '失败'} · {ms(p.last_test.latency_ms)}
                           </div>
                         </div>
                       ) : (
-                        <span className="muted">—</span>
+                        <span className="muted">尚未诊断</span>
                       )}
                     </td>
                     <td>
@@ -605,7 +691,7 @@ export function ProvidersPage({
                         <button
                           type="button"
                           className="tableActionLink"
-                          onClick={() => openDrawer(p, 'basic')}
+                          onClick={() => openDrawer(p, 'details')}
                         >
                           详情
                         </button>
@@ -626,7 +712,7 @@ export function ProvidersPage({
                         <button
                           type="button"
                           className="tableActionLink danger"
-                          disabled={deleting === p.id}
+                          disabled={!!deleting}
                           onClick={() => void remove(p)}
                         >
                           删除
@@ -638,33 +724,8 @@ export function ProvidersPage({
               })}
             </Table>
 
-            {/* Table Pagination Footer */}
-            <footer className="tablePaginationFooter">
-              <span className="paginationInfo">
-                第 {offset + 1}-{Math.min(offset + PAGE_SIZE, total)} 条，共 {total} 条
-              </span>
-              <div className="paginationControls">
-                <Button
-                  size="sm"
-                  icon={<ChevronLeft />}
-                  disabled={offset === 0}
-                  onClick={() => setOffset(prev => Math.max(0, prev - PAGE_SIZE))}
-                >
-                  上一页
-                </Button>
-                <span className="paginationCurrentPage">
-                  {Math.floor(offset / PAGE_SIZE) + 1}
-                </span>
-                <Button
-                  size="sm"
-                  icon={<ChevronRight />}
-                  disabled={offset + PAGE_SIZE >= total}
-                  onClick={() => setOffset(prev => prev + PAGE_SIZE)}
-                >
-                  下一页
-                </Button>
-              </div>
-            </footer>
+            <Pagination page={Math.floor(offset / PAGE_SIZE) + 1} pageSize={PAGE_SIZE} total={total} loading={loading}
+              onPageChange={page => {setOffset((page - 1) * PAGE_SIZE); setSelected(new Set())}} />
           </>
         ) : (
           <EmptyState
@@ -676,6 +737,7 @@ export function ProvidersPage({
                 variant="primary"
                 icon={<Plus />}
                 onClick={() => {
+                  setSaveError('')
                   setTab('basic')
                   setDraft({status: 1, protocol: 'openai-chat'})
                 }}
@@ -689,10 +751,10 @@ export function ProvidersPage({
 
       {draft && (
         <Drawer
-          title={draft.id ? `编辑渠道：${draft.name}` : '新增渠道'}
+          title={draft.id ? `${tab === 'basic' ? '编辑渠道' : '渠道详情'}：${activeProvider?.name || draft.name}` : '新增渠道'}
           subtitle="凭据加密保存，只写不读；也可以改为引用环境变量。"
           size="lg"
-          onClose={() => setDraft(null)}
+          onClose={() => {if (!saving) setDraft(null)}}
         >
           {draft.id ? (
             <div className="drawerStack">
@@ -706,6 +768,7 @@ export function ProvidersPage({
               )}
               {/* Tabs for editing existing channel */}
               <div className="segmented" role="group" aria-label="渠道配置视图">
+                <button type="button" className={`segmentedItem ${tab === 'details' ? 'on' : ''}`} onClick={() => setTab('details')}>详情</button>
                 <button
                   type="button"
                   className={`segmentedItem ${tab === 'basic' ? 'on' : ''}`}
@@ -736,9 +799,38 @@ export function ProvidersPage({
                 </button>
               </div>
 
+              {tab === 'details' && activeProvider && <>
+                <Detail title="连接配置" rows={[
+                  ['渠道名称', activeProvider.name], ['供应商分类', activeProvider.provider_type || '未分类'],
+                  ['接口协议', protocolLabel(activeProvider.protocol)], ['Base URL', activeProvider.base_url],
+                  ['说明', activeProvider.description || '未填写'],
+                ]} />
+                <p className="hint">停用会保留渠道和关联配置。删除会移除线路，并可能级联删除失去全部线路的对外模型。</p>
+                <div className="quickActions">
+                  <Button onClick={() => setTab('basic')}>编辑配置</Button>
+                  <Button loading={changingStatus} onClick={async () => {
+                    const p = activeProvider
+                    const status = p.status === 1 ? 2 : 1
+                    if (status === 2 && !await confirm({title: `停用渠道 ${p.name}？`, description: `停用后不再通过该渠道发起新的模型请求，配置和线路会保留。当前引用线路 ${p.referenced_route_count ?? '未知'} 条，关联对外模型 ${p.referenced_model_count ?? '未知'} 个；这些数量不等于将不可用的模型数量。`, confirmText: '确认停用', danger: true})) return
+                    setChangingStatus(true)
+                    try {
+                      const out = await api<Provider>(`/admin/providers/${encodeURIComponent(p.id)}`, {method: 'PATCH', body: JSON.stringify({status})})
+                      setActiveProvider(out)
+                      setDraft(previous => previous ? {...previous, status: out.status} : previous)
+                      toast.success(out.status === 1 ? '渠道已启用' : '渠道已停用')
+                      reload()
+                    } catch (e) {toast.error(e instanceof Error ? e.message : '更新渠道状态失败')}
+                    finally {setChangingStatus(false)}
+                  }}>{activeProvider.status === 1 ? '停用渠道' : '启用渠道'}</Button>
+                  <Button variant="danger" loading={deleting === activeProvider.id} onClick={() => void remove(activeProvider)}>删除渠道</Button>
+                </div>
+              </>}
+
               {tab === 'basic' && (
                 <ProviderForm
                   value={draft}
+                  saving={saving}
+                  error={saveError}
                   onSave={save}
                   onCancel={() => setDraft(null)}
                 />
@@ -774,6 +866,8 @@ export function ProvidersPage({
           ) : (
             <ProviderForm
               value={draft}
+              saving={saving}
+              error={saveError}
               onSave={save}
               onCancel={() => setDraft(null)}
             />

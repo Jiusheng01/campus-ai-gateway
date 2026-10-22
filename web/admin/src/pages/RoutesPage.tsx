@@ -1,5 +1,11 @@
-import {useCallback, useMemo, useState} from 'react'
-import {Layers, Pencil, Route, Shield, Sliders, Sparkles} from 'lucide-react'
+import {useCallback, useEffect, useMemo, useState} from 'react'
+import {ArrowLeftRight, Layers, Link2, Pencil, Route, Sparkles} from 'lucide-react'
+// The workspace is addressed by pathname, so an entity link is a real anchor:
+// the target page resolves the address on load, and the browser keeps its
+// own back behaviour. A router call would have to reproduce both.
+const Link = ({href, className, title, children}: {href: string; className?: string; title?: string; children: React.ReactNode}) => (
+  <a href={href} className={className} title={title}>{children}</a>
+)
 import {api, type RouteView} from '../api'
 import {Button} from '../components/ui/Button'
 import {Badge} from '../components/ui/Badge'
@@ -11,9 +17,12 @@ import {RouteEditor} from '../components/models/RouteEditor'
 import {PageBanner} from '../components/ui/PageBanner'
 import {StatCard, StatGrid} from '../components/ui/StatCard'
 import {useResource} from '../lib/useResource'
+import {pathFor} from '../app/routing'
 import {ms} from '../lib/format'
 
 type Filters = {model: string; provider: string; status: string}
+
+type LineShape = 'single' | 'failover' | 'weighted' | 'mixed'
 
 type ModelRouteGroup = {
   model_id: string
@@ -21,56 +30,94 @@ type ModelRouteGroup = {
   model_display_name: string
   config_version: number
   routes: RouteView[]
-  mode: 'primary' | 'weighted' | 'advanced'
-  modeLabel: string
-  modeDesc: string
-  isOnline: boolean
+  shape: LineShape
+  shapeLabel: string
+  shapeDesc: string
+  /** At least one line is enabled and points at an enabled channel. */
+  servesTraffic: boolean
+  /** Enabled lines whose channel is also enabled; what actually serves traffic. */
+  liveCount: number
 }
 
-function analyzeRouteMode(routes: RouteView[]): {
-  mode: 'primary' | 'weighted' | 'advanced'
-  modeLabel: string
-  modeDesc: string
-} {
-  if (routes.length <= 1) {
+/**
+ * The shape of a model's line set, described by what the router does with it.
+ *
+ * The classification is deliberately about configuration, not about a chosen
+ * "strategy": priority still dominates, and weight only orders lines inside one
+ * priority band. Equal priorities with weights are therefore a first-choice
+ * split; increasing priorities with equal weights are a failover chain; both at
+ * once is a chain where each layer can split.
+ */
+function analyzeShape(routes: RouteView[]): {shape: LineShape; shapeLabel: string; shapeDesc: string} {
+  const enabled = routes.filter(r => r.status === 1)
+  const priorities = new Set(enabled.map(r => r.priority))
+  const equalPriorities = enabled.length > 1 && priorities.size === 1
+  const allDistinct = priorities.size === enabled.length
+
+  if (enabled.length <= 1) {
     return {
-      mode: 'primary',
-      modeLabel: '主备',
-      modeDesc: '按优先级依次尝试，主线路不可用时自动切换到备线路',
+      shape: 'single',
+      shapeLabel: '单线路',
+      shapeDesc: enabled.length === 0 ? '没有启用线路，该模型不会接到请求。' : '只有一条启用线路，没有同层分流或备用层级。',
     }
   }
-
-  // If all active routes have same priority, it's weighted
-  const activeRoutes = routes.filter(r => r.status === 1)
-  const priorities = new Set(activeRoutes.map(r => r.priority))
-  if (priorities.size === 1 && activeRoutes.length > 1) {
+  if (equalPriorities) {
     return {
-      mode: 'weighted',
-      modeLabel: '加权',
-      modeDesc: '按权重比例分配请求流量，适用于多渠道负载均衡',
+      shape: 'weighted',
+      shapeLabel: '同层分流',
+      shapeDesc: '启用线路同一优先级，按权重决定由谁开始一次请求；其余线路按权重顺序接替。',
     }
   }
-
-  // If distinct priorities
-  const allDistinct = priorities.size === activeRoutes.length
   if (allDistinct) {
     return {
-      mode: 'primary',
-      modeLabel: '主备',
-      modeDesc: '按优先级依次尝试，主线路不可用时自动切换到备线路',
+      shape: 'failover',
+      shapeLabel: '主备层级',
+      shapeDesc: '启用线路各占一个优先级，前一层不可用时进入下一层。',
     }
   }
-
   return {
-    mode: 'advanced',
-    modeLabel: '高级',
-    modeDesc: '支持同层加权与跨优先级故障切换策略',
+    shape: 'mixed',
+    shapeLabel: '层级加同层分流',
+    shapeDesc: '优先级决定层级顺序，同层内按权重决定由谁开始；每一层都可能有多条线路。',
   }
+}
+
+/** Filters live in the address so a link back from a channel or model lands on the same view. */
+function filtersFromAddress(): Filters {
+  const q = new URLSearchParams(window.location.search)
+  return {model: q.get('model') || '', provider: q.get('provider') || '', status: q.get('status') || ''}
 }
 
 export function RoutesPage() {
-  const [draft, setDraft] = useState<Filters>({model: '', provider: '', status: ''})
-  const [filters, setFilters] = useState<Filters>({model: '', provider: '', status: ''})
+  const [draft, setDraft] = useState<Filters>(filtersFromAddress)
+  const [filters, setFilters] = useState<Filters>(filtersFromAddress)
+
+  // The applied filters are the address. A channel or model page links back
+  // with the filter already set, and a reload keeps the view the operator was
+  // reading instead of silently widening it to every model.
+  useEffect(() => {
+    const q = new URLSearchParams()
+    if (filters.model) q.set('model', filters.model)
+    if (filters.provider) q.set('provider', filters.provider)
+    if (filters.status) q.set('status', filters.status)
+    const search = q.toString()
+    const target = window.location.pathname + (search ? `?${search}` : '')
+    if (window.location.pathname !== '/admin-ui/routes' || window.location.search !== (search ? `?${search}` : '')) {
+      window.history.replaceState(window.history.state, '', target)
+    }
+  }, [filters])
+
+  // A link back from the channel page is a full page load, but an in-app
+  // navigation is a pushState: follow both so the form reflects the address.
+  useEffect(() => {
+    const onPop = () => {
+      const next = filtersFromAddress()
+      setDraft(next)
+      setFilters(next)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
 
   const loader = useCallback(async () => {
     const q = new URLSearchParams()
@@ -97,66 +144,66 @@ export function RoutesPage() {
     const result: ModelRouteGroup[] = []
     map.forEach((modelRoutes, modelId) => {
       const first = modelRoutes[0]
-      const {mode, modeLabel, modeDesc} = analyzeRouteMode(modelRoutes)
-      const isOnline = modelRoutes.some(r => r.status === 1 && r.provider_status === 1)
+      const {shape, shapeLabel, shapeDesc} = analyzeShape(modelRoutes)
+      const liveCount = modelRoutes.filter(r => r.status === 1 && r.provider_status === 1).length
       result.push({
         model_id: modelId,
         model_alias: first?.model_alias || modelId,
         model_display_name: first?.model_display_name || '',
         config_version: first?.config_version || 1,
         routes: modelRoutes.sort((a, b) => a.priority - b.priority),
-        mode,
-        modeLabel,
-        modeDesc,
-        isOnline,
+        shape,
+        shapeLabel,
+        shapeDesc,
+        servesTraffic: liveCount > 0,
+        liveCount,
       })
     })
 
     return result
   }, [routes])
 
-  // Count strategy modes
-  const primaryCount = groupedModels.filter(m => m.mode === 'primary').length
-  const weightedCount = groupedModels.filter(m => m.mode === 'weighted').length
-  const advancedCount = groupedModels.filter(m => m.mode === 'advanced').length
+  const singleCount = groupedModels.filter(m => m.shape === 'single').length
+  const failoverCount = groupedModels.filter(m => m.shape === 'failover').length
+  const splitCount = groupedModels.filter(m => m.shape === 'weighted' || m.shape === 'mixed').length
   const totalCount = routes.length
+  const filtersActive = Object.values(filters).some(v => v.trim() !== '')
 
   return (
     <div className="stack">
-      {/* Top Banner with Campus Illustration */}
       <PageBanner
         title="路由策略"
         subtitle="查看和编辑所有对外模型的线路。优先级数字越小越先尝试；同层权重只表示配置目标，不代表实际成功率。"
       />
 
-      <section aria-label="策略概览统计">
+      <section aria-label="线路概况">
         <StatGrid columns={4}>
           <StatCard
-            label="主备策略"
-            value={primaryCount}
-            icon={<Shield />}
-            subtext="优先级主备切换，稳定可靠"
+            label="单线路"
+            value={singleCount}
+            icon={<Route />}
+            subtext="只有一个启用层级，没有备用"
             tone="default"
           />
           <StatCard
-            label="加权策略"
-            value={weightedCount}
-            icon={<Layers />}
-            subtext="按权重分配流量，负载均衡"
+            label="主备层级"
+            value={failoverCount}
+            icon={<ArrowLeftRight />}
+            subtext="按优先级逐层接替"
             tone="success"
           />
           <StatCard
-            label="高级策略"
-            value={advancedCount}
-            icon={<Sliders />}
-            subtext="同层加权与多层回退策略"
+            label="同层分流"
+            value={splitCount}
+            icon={<Layers />}
+            subtext="同优先级内按权重分配，含多层混合"
             tone="purple"
           />
           <StatCard
-            label="生效线路总数"
+            label="线路总数"
             value={totalCount}
-            icon={<Route />}
-            subtext={`共覆盖 ${groupedModels.length} 个对外模型`}
+            icon={<Link2 />}
+            subtext={`${filtersActive ? '当前筛选：' : ''}共覆盖 ${groupedModels.length} 个对外模型`}
             tone="info"
           />
         </StatGrid>
@@ -238,29 +285,39 @@ export function RoutesPage() {
                     </div>
                     <div className="routeModelTitleBlock">
                       <div className="routeModelNameRow">
-                        <b className="routeModelAlias mono">{gm.model_alias}</b>
+                        <Link
+                          className="mono routeModelAlias"
+                          href={`${pathFor('admin', 'models')}?model=${encodeURIComponent(gm.model_id)}`}
+                          title={`在对外模型中查看 ${gm.model_alias}`}
+                        >
+                          {gm.model_alias}
+                        </Link>
                         {gm.model_display_name && (
                           <span className="routeModelDisplayName">{gm.model_display_name}</span>
                         )}
-                        <span className={`statusChip ${gm.isOnline ? 'ok' : 'down'}`}>
-                          <i className={`dot ${gm.isOnline ? 'on' : 'down'}`} aria-hidden />
-                          {gm.isOnline ? '已启用' : '已停用'}
+                        {/* A model serves traffic only when at least one of its
+                            lines is enabled and its channel is enabled too. */}
+                        <span className={`statusChip ${gm.servesTraffic ? 'ok' : 'down'}`}>
+                          <i className={`dot ${gm.servesTraffic ? 'on' : 'down'}`} aria-hidden />
+                          {gm.servesTraffic ? '已启用' : '无可用线路'}
                         </span>
                       </div>
                       <div className="routeModelSubInfo">
                         <span>版本 v{gm.config_version}</span>
                         <span className="routeModelDot">·</span>
-                        <span className="routeModelLinesCount">{gm.routes.length} 条线路</span>
+                        <span className="routeModelLinesCount">
+                          {gm.liveCount} / {gm.routes.length} 条线路可承载请求
+                        </span>
                       </div>
                     </div>
                   </div>
 
                   <div className="routeModelHeadRight">
                     <div className="routeModeBadgeBlock">
-                      <span className={`routeStrategyPill ${gm.mode}`}>
-                        {gm.modeLabel}策略
+                      <span className={`routeStrategyPill ${gm.shape}`}>
+                        {gm.shapeLabel}
                       </span>
-                      <span className="routeStrategyDesc">{gm.modeDesc}</span>
+                      <span className="routeStrategyDesc">{gm.shapeDesc}</span>
                     </div>
 
                     <Button
@@ -293,22 +350,26 @@ export function RoutesPage() {
                       <tr key={r.id}>
                         <td className="muted mono">#{idx + 1}</td>
                         <td>
-                          <b className="mono">{r.provider_name}</b>
+                          {/* Channel names are not unique, so the link carries
+                              the id; the channel page narrows its own list. */}
+                          <Link
+                            className="mono tableEntityLink"
+                            href={`${pathFor('admin', 'providers')}?provider=${encodeURIComponent(r.provider_id)}`}
+                            title={`在上游渠道中查看 ${r.provider_name}`}
+                          >
+                            {r.provider_name}
+                          </Link>
                         </td>
                         <td>
                           <span className="mono">{r.upstream_model}</span>
                         </td>
                         <td>
                           <span className="priorityTag">
-                            {r.priority === 1 ? '主 (1)' : `备 (${r.priority})`}
+                            {r.priority === 1 ? '第 1 层' : `第 ${r.priority} 层`}
                           </span>
                         </td>
                         <td className="numeric">
-                          {gm.mode === 'weighted' ? (
-                            <span className="weightTag">{r.weight}%</span>
-                          ) : (
-                            <span className="muted">{r.weight === 0 ? '默认' : r.weight}</span>
-                          )}
+                          <span className="weightTag">{r.weight === 0 ? '按 1 计' : r.weight}</span>
                         </td>
                         <td className="numeric">{ms(r.timeout_ms)}</td>
                         <td>
@@ -321,8 +382,13 @@ export function RoutesPage() {
                           )}
                         </td>
                         <td>
+                          {/* Configured is not healthy: the last diagnostic may
+                              have failed, and this column is not a probe. */}
                           {r.credential_configured ? (
-                            <span className="textSuccess">✓ 正常</span>
+                            <span className="statusChip ok">
+                              <i className="dot on" aria-hidden />
+                              已配置
+                            </span>
                           ) : (
                             <Badge tone="warning">未配置凭据</Badge>
                           )}

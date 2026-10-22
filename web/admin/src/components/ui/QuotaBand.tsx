@@ -32,6 +32,7 @@ export function QuotaBand({
     )
   }
   const tone = quotaTone(q.pct)
+  const over = q.used > q.limit
   return (
     <div className={`quotaCell ${tone}`.trim()}>
       <small>{label}</small>
@@ -42,6 +43,7 @@ export function QuotaBand({
       <span className="quotaMeta">
         {format(q.used)} / {format(q.limit)}
       </span>
+      {over && <span className="quotaOverage">已超出 {format(q.used - q.limit)}</span>}
     </div>
   )
 }

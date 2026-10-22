@@ -28,10 +28,13 @@ export function AccountSecurity({
   who,
   onSignedOut,
   showIdentity = true,
+  minPasswordLength = 10,
 }: {
   who: WhoAmI | null
   onSignedOut: () => void
   showIdentity?: boolean
+  /** The deployment's password floor; the gateway enforces it on write. */
+  minPasswordLength?: number
 }) {
   const toast = useToast()
   const confirm = useConfirm()
@@ -42,15 +45,22 @@ export function AccountSecurity({
   const [confirmNext, setConfirmNext] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [revoking, setRevoking] = useState('')
   const [sessions, setSessions] = useState<AdminSessionView[]>([])
+  const [sessionsError, setSessionsError] = useState('')
   const [loadingSessions, setLoadingSessions] = useState(sessionMode)
 
   const reloadSessions = useCallback(async () => {
     setLoadingSessions(true)
+    setSessionsError('')
     try {
       setSessions(await listSessions())
-    } catch {
-      /* the global 401 handler deals with an expired session */
+    } catch (e) {
+      // A failed read is not an empty device list: saying there are no other
+      // sessions is the one claim a security page must never invent. The
+      // global 401 handler still deals with an expired session.
+      setSessions([])
+      setSessionsError(e instanceof Error ? e.message : '无法读取登录设备')
     } finally {
       setLoadingSessions(false)
     }
@@ -85,17 +95,21 @@ export function AccountSecurity({
     }
   }
 
-  const revoke = async (id: string) => {
+  const revoke = async (session: AdminSessionView) => {
+    if (revoking) return
     const ok = await confirm({
-      title: '撤销该设备的登录状态？',
-      description: '该设备需要重新登录才能继续使用管理控制台。',
+      title: session.current ? '撤销当前设备的登录状态？' : '撤销该设备的登录状态？',
+      description: session.current
+        ? `撤销的是你正在使用的这个设备（${session.ip || '未知地址'}）。确认后本次登录立即结束，需要重新登录才能继续管理。`
+        : `该设备（${session.ip || '未知地址'}）需要重新登录才能继续使用管理控制台。其他设备和你当前的登录不受影响。`,
       confirmText: '撤销设备',
       danger: true,
     })
     if (!ok) return
+    setRevoking(session.id)
     try {
-      await revokeSession(id)
-      if (sessions.find(s => s.id === id)?.current) {
+      await revokeSession(session.id)
+      if (session.current) {
         toast.info('当前会话已撤销，请重新登录')
         onSignedOut()
         return
@@ -104,6 +118,8 @@ export function AccountSecurity({
       await reloadSessions()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '撤销失败')
+    } finally {
+      setRevoking('')
     }
   }
 
@@ -157,7 +173,7 @@ export function AccountSecurity({
             <Field label="当前密码">
               <PasswordInput autoComplete="current-password" value={current} onChange={setCurrent} />
             </Field>
-            <Field label="新密码" hint="至少 10 位，且需包含字母、数字、符号中的至少两类。">
+            <Field label="新密码" hint={`至少 ${minPasswordLength} 位，且需包含字母、数字、符号中的至少两类。`}>
               <PasswordInput autoComplete="new-password" value={next} onChange={setNext} />
             </Field>
             <Field label="确认新密码">
@@ -196,6 +212,16 @@ export function AccountSecurity({
         >
           {loadingSessions ? (
             <SkeletonRows rows={2} columns={4} />
+          ) : sessionsError ? (
+            <EmptyState
+              title="登录设备读取失败"
+              description={`${sessionsError}。无法确认还有哪些设备处于登录状态；这不等于没有其他设备。`}
+              action={
+                <Button size="sm" loading={loadingSessions} onClick={() => void reloadSessions()}>
+                  重新加载设备
+                </Button>
+              }
+            />
           ) : sessions.length ? (
             <Table heads={['设备 / 来源', '登录方式', '最近活动', '到期时间', '操作']} minWidth={720}>
               {sessions.map(s => (
@@ -214,8 +240,12 @@ export function AccountSecurity({
                   <td>{when(s.last_active_at)}</td>
                   <td>{when(s.expires_at)}</td>
                   <td>
-                    <button className="link dangerText" onClick={() => void revoke(s.id)}>
-                      撤销
+                    <button
+                      className="link dangerText"
+                      disabled={revoking === s.id}
+                      onClick={() => void revoke(s)}
+                    >
+                      {revoking === s.id ? '撤销中…' : '撤销'}
                     </button>
                   </td>
                 </tr>
@@ -223,6 +253,11 @@ export function AccountSecurity({
             </Table>
           ) : (
             <EmptyState title="没有其他有效登录会话" description="当前只有本设备的登录记录。" />
+          )}
+          {/* The current device is named explicitly: "there are no other
+              sessions" still leaves the question of which one this is. */}
+          {!loadingSessions && !sessionsError && sessions.some(s => s.current) && (
+            <p className="hint">标有「当前设备」的一行就是你正在使用的这次登录。</p>
           )}
         </Panel>
       )}
