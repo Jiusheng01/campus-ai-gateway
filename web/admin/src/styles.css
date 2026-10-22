@@ -466,6 +466,40 @@ table.data tbody tr:hover { background: var(--surface-hover); }
 .copyCell:hover { color: var(--primary); }
 .copyCell svg { width: 12px; height: 12px; opacity: 0.7; }
 
+/* Request detail: the full id with its copy action, and the attempt chain in
+   the server's order. The chain is a list rather than a chart because the only
+   fact that matters is which line was tried, in what order, and how it ended. */
+.requestIdRow { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.requestIdRow svg { width: 12px; height: 12px; }
+
+.attemptVerdict { margin: 0 0 12px; font-size: 13px; line-height: 1.6; }
+.attemptVerdict > b { display: block; font-size: 14px; }
+.attemptVerdict > span { color: var(--text-muted); font-size: 12.5px; }
+.attemptTimeline { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.attemptItem {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-subtle);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+}
+.attemptItem.ok { border-left-color: var(--success); }
+.attemptItem.down { border-left-color: var(--danger); }
+.attemptItem.unknown { border-left-color: var(--text-faint); }
+.attemptOrder { font-weight: 600; font-variant-numeric: tabular-nums; }
+.attemptOutcome { font-weight: 600; }
+.attemptItem.ok .attemptOutcome { color: var(--success); }
+.attemptItem.down .attemptOutcome { color: var(--danger); }
+.attemptWhere { color: var(--text-muted); font-family: var(--font-mono); overflow-wrap: anywhere; }
+/* On a phone the three columns become one line per fact. */
+@media (max-width: 720px) {
+  .attemptItem { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* --- empty / error / skeleton --------------------------------------------- */
 
 .emptyState {
