@@ -69,15 +69,6 @@
   --shadow-md: 0 4px 14px -3px rgb(15 23 42 / 0.08), 0 2px 6px -2px rgb(15 23 42 / 0.04);
   --shadow-lg: 0 12px 32px -6px rgb(15 23 42 / 0.12), 0 4px 12px -2px rgb(15 23 42 / 0.06);
 
-  /* Colour of the shadow that marks a sideways-scrollable table. It has to be
-     a variable because a shadow that reads on a white surface disappears on a
-     dark one. It also has to stay light: the shadow is painted behind the
-     cells, and a cell has no background of its own, so the text in the edge
-     column sits directly on it. At 18% the blend measured #d4d5d9, which put
-     the primary-coloured row actions at 3.5:1 — the cue was costing the
-     contrast of the content it was pointing at. */
-  --scroll-hint: rgb(15 23 42 / 0.05);
-
   --control-h: 36px;
   --control-h-sm: 32px;
 
@@ -115,7 +106,6 @@
   --shadow-md: 0 6px 18px -4px rgb(0 0 0 / 0.6), 0 2px 6px -2px rgb(0 0 0 / 0.4);
   --shadow-lg: 0 16px 38px -6px rgb(0 0 0 / 0.75), 0 4px 14px -2px rgb(0 0 0 / 0.5);
 
-  --scroll-hint: rgb(0 0 0 / 0.55);
 }
 
 /* --- reset ---------------------------------------------------------------- */
@@ -425,20 +415,15 @@ svg { width: 16px; height: 16px; flex: none; }
 
 /* --- tables --------------------------------------------------------------- */
 
-/* A table wider than its container scrolls sideways, and nothing on screen says
-   so — the row simply stops mid-cell at the edge, which reads as a rendering
-   fault rather than as more data to the right. Two surface-coloured layers
-   attached to the content (local) mask a pair of shadow layers pinned to the
-   box (scroll), so the cue shows up only on the side that still has table
-   behind it and clears itself once that edge is reached. */
+/* Keep cell backgrounds solid for readable contrast; the focusable region and
+   visible scrollbar expose columns beyond the viewport to keyboard users. */
 .tableWrap {
   overflow-x: auto;
-  background:
-    linear-gradient(to right, var(--surface) 40%, rgb(255 255 255 / 0)) left center / 26px 100% no-repeat local,
-    linear-gradient(to left, var(--surface) 40%, rgb(255 255 255 / 0)) right center / 26px 100% no-repeat local,
-    radial-gradient(farthest-side at 0 50%, var(--scroll-hint), rgb(0 0 0 / 0)) left center / 12px 100% no-repeat scroll,
-    radial-gradient(farthest-side at 100% 50%, var(--scroll-hint), rgb(0 0 0 / 0)) right center / 12px 100% no-repeat scroll;
+  background: var(--surface);
+  scrollbar-color: var(--border-strong) var(--surface);
+  scrollbar-width: thin;
 }
+.tableWrap:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 table.data { width: 100%; border-collapse: collapse; }
 table.data th,
 table.data td {
@@ -3786,26 +3771,21 @@ input:focus, select:focus, textarea:focus {
 
 
 /* --- overview (ticket 04) -------------------------------------------------- */
-/* These names were rendered by the dashboard with no rule at all, so the
-   tiles, the banner greeting and the snapshot actions fell back to browser
-   defaults. They are scoped to this page's own names instead of restyling a
-   primitive another page relies on. */
-.bannerGreetingRow {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-}
-.bannerGreeting {
-  font-size: var(--fs-lead);
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.bannerTitleMain {
-  font-size: var(--fs-title);
-  font-weight: 700;
-  color: var(--text);
-}
+/* Operational summaries stay secondary to request metrics and actions. */
+.overviewPage .emptyState { min-height: 120px; padding: 16px 20px; }
+.overviewActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.overviewWindowNote { margin: 0 0 10px; color: var(--text-muted); font-size: var(--fs-caption); }
+.overviewKpis .statCardFoot { align-items: flex-start; flex-direction: column; }
+.overviewKpis .statCardTrend { max-width: 100%; white-space: normal; }
+.overviewTrendStatus { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; color: var(--text-muted); font-size: var(--fs-caption); }
+.overviewConfigPanel .configTilesGrid { padding: 12px 20px; gap: 16px; }
+.overviewConfigPanel .configTile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; gap: 6px; padding: 0; border: 0; background: transparent; }
+.overviewConfigPanel .configTileIcon { width: 24px; height: 24px; border-radius: 6px; }
+.overviewConfigPanel .configTileValue { margin: 0; }
+.overviewConfigPanel .configTileValue b { font-size: 24px; }
+.overviewConfigPanel .configTileSub { grid-column: 1 / -1; margin: 0; }
+.overviewHealthPanel .statusRow { padding: 12px 20px; gap: 12px 20px; }
+.overviewHealthPanel .statusText small { font-size: var(--fs-caption); }
 
 .configTilesGrid {
   display: grid;
