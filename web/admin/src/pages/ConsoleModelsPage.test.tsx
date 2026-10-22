@@ -170,3 +170,19 @@ describe('personal model catalog honesty', () => {
     expect(screen.queryByText(/已复制到剪贴板/)).not.toBeInTheDocument()
   })
 })
+
+describe('personal model catalog accessibility', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // A long example scrolls sideways on a phone; a region that scrolls must be
+  // reachable by keyboard, and it needs a name so the focus target is known.
+  it('makes each scrollable example a named keyboard region', async () => {
+    stubCatalog(catalog)
+    renderPage()
+    await screen.findByText('校园 GPT')
+    const curl = screen.getByRole('region', {name: 'curl 请求示例'})
+    const sdk = screen.getByRole('region', {name: 'Python SDK 示例'})
+    expect(curl).toHaveAttribute('tabindex', '0')
+    expect(sdk).toHaveAttribute('tabindex', '0')
+  })
+})

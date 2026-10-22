@@ -3317,7 +3317,12 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre;
+  /* A narrow viewport scrolls a long example sideways. A region that scrolls
+     must be reachable by keyboard, or its right-hand side can only be seen
+     with a pointer; the focus ring says which block is scrolled. */
+  tab-size: 2;
 }
+.helpCodeBlock:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .helpList {
   margin: 0;
   padding-left: 18px;

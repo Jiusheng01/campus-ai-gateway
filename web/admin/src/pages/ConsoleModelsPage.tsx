@@ -180,7 +180,7 @@ print(resp.choices[0].message.content)`
                       </Button>
                     </div>
                   </div>
-                  <pre className="helpCodeBlock">
+                  <pre className="helpCodeBlock" tabIndex={0} role="region" aria-label="curl 请求示例">
                     <code>{curlExample}</code>
                   </pre>
                 </div>
@@ -196,7 +196,7 @@ print(resp.choices[0].message.content)`
                       {copied === 'sdk' ? '已复制' : '复制配置'}
                     </Button>
                   </div>
-                  <pre className="helpCodeBlock">
+                  <pre className="helpCodeBlock" tabIndex={0} role="region" aria-label="Python SDK 示例">
                     <code>{sdkExample}</code>
                   </pre>
                   <p className="hint">

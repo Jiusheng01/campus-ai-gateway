@@ -537,7 +537,7 @@ export function Shell({
             <section className="helpSection">
               <h3>快速接入指南</h3>
               <p>业务系统通过标准 OpenAI 兼容接口调用网关：</p>
-              <pre className="helpCodeBlock">
+              <pre className="helpCodeBlock" tabIndex={0} role="region" aria-label="调用示例">
                 <code>
                   {`POST /v1/chat/completions\nAuthorization: Bearer <API_KEY>\nContent-Type: application/json\n\n{\n  "model": "campus-gpt",\n  "messages": [{"role": "user", "content": "你好"}]\n}`}
                 </code>
