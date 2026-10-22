@@ -171,31 +171,100 @@ type RouteView struct {
 }
 
 type Tenant struct {
-	ID                  string `json:"id"`
-	Code                string `json:"code"`
-	Name                string `json:"name"`
-	Status              int    `json:"status"`
-	DailyTokenLimit     int64  `json:"daily_token_limit"`
-	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
-	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
-	// The minute-level rate limits live on the Tenant, not on the Key: the
-	// Tenant is the rate-limit boundary (see GLOSSARY.md and ADR-0015), so every
-	// key it owns shares one budget. Zero means unlimited.
-	RPMLimit       int64 `json:"rpm_limit"`
-	TPMLimit       int64 `json:"tpm_limit"`
-	MaxConcurrency int64 `json:"max_concurrency"`
+	ID     string `json:"id"`
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Status int    `json:"status"`
+
+	// Hierarchy (0019). ParentID is nil for a root; Path is the materialized
+	// path "/<root>/.../<self>/" that makes a subtree a prefix compare.
+	ParentID *string `json:"parent_id"`
+	Path     string  `json:"path"`
+	Depth    int     `json:"depth"`
+	Kind     string  `json:"kind"`
+
+	// The six enforced limits are three-state since 0019:
+	//
+	//	nil -> this level adds no cap; caps above it still apply
+	//	  0 -> explicitly unlimited at this level
+	//	 >0 -> this tenant's own cap
+	//
+	// They are pointers rather than int64 because "inherit" has no numeric
+	// representation. A plain int64 would force the console to choose between
+	// freezing a child at its parent's current value and writing 0, which
+	// reads as unlimited and lets the child exceed the parent.
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	MonthlyRequestLimit *int64 `json:"monthly_request_limit"`
+	RPMLimit            *int64 `json:"rpm_limit"`
+	TPMLimit            *int64 `json:"tpm_limit"`
+	MaxConcurrency      *int64 `json:"max_concurrency"`
+
 	// MonthlyBudgetMicros is stored but not enforced: no price data exists, so
 	// there is nothing to charge against it. It is no longer offered in the
 	// console — a quota field an operator can set and nothing reads is worse
 	// than an absent one, because it reads as a guarantee. Kept so the column
-	// and any historical value survive until real metering lands.
+	// and any historical value survive until real metering lands, and stays
+	// two-state because a third state on a column nothing reads would only add
+	// a distinction to explain.
 	MonthlyBudgetMicros int64 `json:"monthly_budget_micros"`
 	// AllowedModels bounds what a member may write to a personal API Key. The
 	// wildcard means every enabled Virtual Model and is the default; an empty
 	// list denies every model. It is deliberately not read by the data plane:
 	// the key's own list stays the only admission authority (see the personal
 	// console spec), so changing a Tenant never silently changes live traffic.
+	// 0019 does not make it hierarchical for the same reason.
 	AllowedModels []string `json:"allowed_models"`
+}
+
+// Tenant kinds. The hierarchy is school -> dept -> teacher -> student, but the
+// column is free text so a deployment can add its own levels. TenantKindTenant
+// is the neutral default, and is what legacy flat rows were backfilled to.
+const (
+	TenantKindSchool  = "school"
+	TenantKindDept    = "dept"
+	TenantKindTeacher = "teacher"
+	TenantKindStudent = "student"
+	TenantKindTenant  = "tenant"
+)
+
+// TenantAllocation is the set of limits a tenant hands down to its subtree. It
+// is a full replacement, not a patch: an omitted field means "inherit", which is
+// the same thing as explicitly sending null.
+//
+// It deliberately carries no identity fields and no allowed_models: allocating a
+// budget cannot reparent a tenant, rename it, or change what its members may
+// write to their personal keys.
+type TenantAllocation struct {
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	MonthlyRequestLimit *int64 `json:"monthly_request_limit"`
+	MonthlyBudgetMicros *int64 `json:"monthly_budget_micros"`
+	RPMLimit            *int64 `json:"rpm_limit"`
+	TPMLimit            *int64 `json:"tpm_limit"`
+	MaxConcurrency      *int64 `json:"max_concurrency"`
+}
+
+// EffectiveLimits is the resolved view of a tenant: what it actually gets once
+// inheritance has been applied, rather than what it explicitly sets. Reporting
+// both is what makes a hierarchy debuggable — "I set 5,000,000 but it stops at
+// 1,000,000" has to be answerable without reading the database.
+//
+// The numbers here are concrete, with 0 meaning "no cap", which is the opposite
+// convention from Tenant (where nil means inherit). That is intentional: this
+// type only exists to answer "what applies", and by the time a value reaches it
+// the inheritance question has already been settled.
+type EffectiveLimits struct {
+	TenantID            string `json:"tenant_id"`
+	DailyTokenLimit     int64  `json:"daily_token_limit"`
+	MonthlyTokenLimit   int64  `json:"monthly_token_limit"`
+	MonthlyRequestLimit int64  `json:"monthly_request_limit"`
+	RPMLimit            int64  `json:"rpm_limit"`
+	TPMLimit            int64  `json:"tpm_limit"`
+	MaxConcurrency      int64  `json:"max_concurrency"`
+	MonthlyBudgetMicros int64  `json:"monthly_budget_micros"`
+	Depth               int    `json:"depth"`
+	Path                string `json:"path"`
 }
 
 type TenantUsageStats struct {
@@ -204,6 +273,11 @@ type TenantUsageStats struct {
 	MonthlyRequests int64  `json:"monthly_requests"`
 	DailyTokens     int64  `json:"daily_tokens"`
 	MonthlyTokens   int64  `json:"monthly_tokens"`
+	// Effective carries the limits that actually apply once inheritance has
+	// been resolved, so the console can draw a bar instead of dividing by a
+	// number the tenant never declared. It is nil when the caller did not ask
+	// for it, which keeps the plain usage query cheap.
+	Effective *EffectiveLimits `json:"effective,omitempty"`
 }
 
 type APIKeyAdmin struct {

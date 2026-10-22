@@ -34,8 +34,35 @@ export type CatalogModel={upstream_model:string;opened:boolean;providers:Catalog
  * the idempotent repeat — the model and Route already covered this binding.
  */
 export type CatalogOpenResult={model:ModelConfig;route:ModelRoute;created:boolean;route_created:boolean}
-export type Tenant={id:string;code:string;name:string;status:number;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;monthly_budget_micros:number;rpm_limit:number;tpm_limit:number;max_concurrency:number;allowed_models:string[]}
-export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number}
+/**
+ * Tenant is one node of the hierarchy.
+ *
+ * The six enforced limits are three-state: null means this level adds no cap
+ * (it inherits whatever its ancestors set), 0 means explicitly unlimited here,
+ * and a positive number is this tenant's own cap. A plain number could not
+ * express "inherit", which is why the console must not coerce null to 0.
+ */
+export type Tenant={id:string;code:string;name:string;status:number;parent_id:string|null;path:string;depth:number;kind:string;daily_token_limit:number|null;monthly_token_limit:number|null;monthly_request_limit:number|null;monthly_budget_micros:number;rpm_limit:number|null;tpm_limit:number|null;max_concurrency:number|null;allowed_models:string[]}
+export type TenantKind='school'|'dept'|'teacher'|'student'|'tenant'
+export type TenantUsage={tenant_id:string;daily_requests:number;monthly_requests:number;daily_tokens:number;monthly_tokens:number;effective?:EffectiveLimits}
+/** TenantAllocation is a full replacement: an omitted limit means inherit, exactly like an explicit null. */
+export type TenantAllocation={daily_token_limit:number|null;monthly_token_limit:number|null;monthly_request_limit:number|null;monthly_budget_micros:number|null;rpm_limit:number|null;tpm_limit:number|null;max_concurrency:number|null}
+/**
+ * EffectiveLimits is what a tenant actually gets after inheritance. Numbers are
+ * concrete and 0 means "no cap", the opposite convention from Tenant itself.
+ */
+export type EffectiveLimits={tenant_id:string;daily_token_limit:number;monthly_token_limit:number;monthly_request_limit:number;rpm_limit:number;tpm_limit:number;max_concurrency:number;monthly_budget_micros:number;depth:number;path:string}
+/** ModelQuota is one (subject, model) pair; a null tenant_id is the campus-wide pool. */
+export type ModelQuota={tenant_id:string|null;tenant_code?:string;tenant_name?:string;model_alias:string;daily_token_limit:number|null;monthly_token_limit:number|null}
+/** ModelQuotaAllocation is the write payload; omitted means inherit, same as explicit null. */
+export type ModelQuotaAllocation={tenant_id:string|null;model_alias:string;daily_token_limit:number|null;monthly_token_limit:number|null}
+/**
+ * EffectiveModelQuota resolves one model for one tenant. `set_by` names the level
+ * the effective value came from (全校 for the pool), and `own` distinguishes a
+ * value this tenant declared from one inherited above it.
+ */
+export type EffectiveModelQuota={model_alias:string;daily_token_limit:number;monthly_token_limit:number;set_by:string;own:boolean}
+export type ModelQuotaView=ModelQuota&{effective?:EffectiveModelQuota}
 export type ApiKey={id:string;tenant_id:string;tenant_code:string;tenant_name:string;name:string;key_prefix:string;status:number;expire_at?:string;last_used_at?:string;allowed_models:string[];allowed_ips:string[];route_group:string;usage_requests:number;usage_tokens:number}
 export type RequestAttempt={attempt_no:number;provider:string;upstream_model:string;outcome:string;status_code:number;latency_ms:number;error_kind:string}
 export type RequestLog={request_id:string;tenant_id:string;api_key_id:string;client_ip:string;requested_model:string;actual_model:string;provider:string;upstream_model:string;route_priority:number;attempts:number;failover:boolean;stream:boolean;input_tokens:number;output_tokens:number;total_tokens:number;latency_ms:number;status_code:number;error_code:string;created_at:string}
@@ -55,7 +82,7 @@ export type DataPlane='direct'
 export type CircuitView={provider:string;state:'closed'|'open'|'half-open';failures:number;retry_in_ms:number}
 export type RouteCacheStatus={built_at:string|null;stale:boolean;last_error_kind?:string;generation:number}
 export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[];circuits?:CircuitView[];route_cache?:RouteCacheStatus;config_counts?:{models:number;enabled_models:number;providers:number;enabled_providers:number}}
-export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
+export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string;/** Empty unless this is a scoped tenant_admin; always present so the console can tell "global" from an older server. */scope_tenant_id?:string}
 
 /**
  * RequestLogSummary aggregates the whole filtered set, not the page on screen.
@@ -152,6 +179,9 @@ export type AccountUser={
   /** The Account's Tenant Membership. Empty means unassigned, not a Tenant named "". */
   tenant_id:string
   tenant_name:string
+  /** The subtree a tenant_admin may administer; empty for a global account. */
+  scope_tenant_id:string
+  scope_tenant_name:string
   last_login_at:string|null
   created_at:string
 }
@@ -619,6 +649,12 @@ export type UserPatch={
   display_name?:string
   roles?:string[]
   status?:number
+  /**
+   * Tri-state on the wire: omitted leaves the scope alone, null clears it, a
+   * string sets it. The server needs that distinction to tell a role-only edit
+   * from a deliberate scope removal.
+   */
+  scope_tenant_id?:string|null
 }
 
 /**
@@ -632,6 +668,7 @@ export type AccountChangeSet={
   roles:boolean
   status:boolean
   display_name:boolean
+  scope:boolean
   authentication:boolean
 }
 
@@ -764,6 +801,48 @@ export async function deleteApiKey(id:string){
  */
 export async function deleteTenant(id:string){
   return api<{ok:boolean;id:string;deleted_keys:number}>(`/admin/tenants/${encodeURIComponent(id)}`,{method:'DELETE'})
+}
+
+/**
+ * allocateTenant replaces a tenant's six enforced limits.
+ *
+ * It is separate from the identity edit because a rename must never be able to
+ * wipe a budget. It is a full replacement: a null field means inherit, so the
+ * form sends every limit it holds rather than only the ones that changed.
+ */
+export async function allocateTenant(id:string,allocation:TenantAllocation){
+  return api<{tenant:Tenant;effective:EffectiveLimits}>(`/admin/tenants/${encodeURIComponent(id)}/allocation`,{
+    method:'POST',
+    body:JSON.stringify(allocation),
+  })
+}
+
+/** moveTenant re-parents a node; null makes it a root. */
+export async function moveTenant(id:string,parentId:string|null){
+  return api<Tenant>(`/admin/tenants/${encodeURIComponent(id)}/move`,{
+    method:'POST',
+    body:JSON.stringify({parent_id:parentId}),
+  })
+}
+
+/** listModelQuotas reads the configured (subject, model) rows, each with its resolved value. */
+export async function listModelQuotas(){
+  const d=await api<{data:ModelQuotaView[]}>('/admin/model-quotas')
+  return d.data||[]
+}
+
+export async function upsertModelQuota(input:ModelQuotaAllocation){
+  return api<ModelQuota>('/admin/model-quotas',{
+    method:'PUT',
+    body:JSON.stringify(input),
+  })
+}
+
+/** deleteModelQuota restores inheritance for one cell; there is no sentinel value for "inherit". */
+export async function deleteModelQuota(tenantId:string|null,modelAlias:string){
+  const q=new URLSearchParams({model_alias:modelAlias})
+  if(tenantId)q.set('tenant_id',tenantId)
+  return api<{ok:boolean;deleted:boolean}>(`/admin/model-quotas?${q.toString()}`,{method:'DELETE'})
 }
 
 export type TenantFacet={id:string;code:string;name:string}

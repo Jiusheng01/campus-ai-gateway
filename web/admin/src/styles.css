@@ -2309,11 +2309,7 @@ input:focus, select:focus, textarea:focus {
 .sharePct { color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* --- 9. Call management (calls, keys, tenants) ---------------------------- */
-.callsPageTabs {
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
-}
-.keysSectionCard, .tenantsSectionCard {
+.keysSectionCard {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2881,12 +2877,6 @@ input:focus, select:focus, textarea:focus {
   font-weight: 600;
   color: var(--text);
 }
-.quotaUnit {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: normal;
-}
-
 /* --- tenants (ticket 09) --- */
 
 /* The tenant page renders the table and the card list together and lets the
@@ -4116,3 +4106,37 @@ input:focus, select:focus, textarea:focus {
   margin-left: auto;
 }
 
+
+/* --- Tenant hierarchy and three-state limits ------------------------------- */
+/* Indentation is the only hierarchy signal in the table: the API already
+   returns depth-first order, so a row's depth is its position in the chain. */
+.treeCell { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.treeToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.treeToggle:hover { background: var(--surface-subtle); color: var(--text); }
+.treeSpacer { display: inline-block; width: 20px; flex: none; }
+.kindTag { margin-left: 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Three distinct states, three distinct colours: an inherited limit is not a
+   decision and must not read like one; zero is a deliberate "no cap". */
+.limitInherit { color: var(--text-faint); font-style: italic; }
+.limitUnlimited { color: var(--text-muted); }
+.limitSet { color: var(--text); font-weight: 600; }
+
+/* A model-quota cell shows the declared value first and the resolved one
+   underneath only when they differ, so the common case stays one line. */
+.quotaEffectiveCell { display: flex; flex-direction: column; gap: 2px; line-height: 1.35; }
+.quotaEffective { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.quotaSource { margin-left: 6px; color: var(--text-muted); }

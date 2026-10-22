@@ -207,8 +207,16 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleTenants(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/usage"):
 		s.handleTenantUsage(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/allocation"):
+		s.handleTenantAllocation(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/move"):
+		s.handleTenantMove(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/model-quotas"):
+		s.handleTenantModelQuotas(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/tenants/"):
 		s.handleTenantByID(w, r)
+	case r.URL.Path == "/admin/model-quotas":
+		s.handleModelQuotas(w, r)
 	case r.URL.Path == "/admin/api-keys":
 		s.handleAPIKeys(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
@@ -260,6 +268,10 @@ func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
 		"session_id": p.SessionID,
 		"roles":      roles,
 		"auth_mode":  p.AuthMode,
+		// Empty for every caller that is not a scoped tenant_admin. The field is
+		// always present so the console can distinguish "no scope" from an
+		// older server that did not know about scopes.
+		"scope_tenant_id": p.ScopeTenantID,
 	})
 }
 
@@ -634,9 +646,18 @@ func (s *Server) getModelDetail(w http.ResponseWriter, r *http.Request, id, reqI
 
 func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
+	p, _ := adminPrincipalFrom(r.Context())
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListTenants(r.Context())
+		// A scoped administrator lists its own subtree, not the whole campus:
+		// the hierarchy view must not become a way to see beside the scope.
+		var items []model.Tenant
+		var err error
+		if p.ScopeTenantID != "" {
+			items, err = s.pg.ListTenantsInSubtree(r.Context(), p.ScopeTenantID)
+		} else {
+			items, err = s.pg.ListTenants(r.Context())
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list tenants", reqID)
 			return
@@ -655,9 +676,33 @@ func (s *Server) handleTenants(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_tenant", err, reqID)
 			return
 		}
+		if v.ParentID != nil {
+			parentID := strings.TrimSpace(*v.ParentID)
+			if parentID == "" {
+				v.ParentID = nil
+			} else {
+				if _, err := uuid.Parse(parentID); err != nil {
+					httpx.Error(w, http.StatusBadRequest, "invalid_parent", "parent_id must be a tenant id", reqID)
+					return
+				}
+				v.ParentID = &parentID
+			}
+		}
+		// A scoped administrator may only add nodes under a parent it
+		// administers, and may not create a root: a new root would sit outside
+		// every scope, including the creator's own.
+		if p.ScopeTenantID != "" {
+			if v.ParentID == nil {
+				writeAdminError(w, reqID, ErrAdminForbidden)
+				return
+			}
+			if !s.requireTenantScope(w, r, p, *v.ParentID, true, reqID) {
+				return
+			}
+		}
 		out, err := s.pg.CreateTenant(r.Context(), v)
 		if err != nil {
-			httpx.Error(w, http.StatusConflict, "tenant_create_failed", "Tenant could not be created", reqID)
+			writeTenantWriteError(w, reqID, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, out)
@@ -678,10 +723,21 @@ func (s *Server) handleTenantUsage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	p, _ := adminPrincipalFrom(r.Context())
+	if !s.requireTenantScope(w, r, p, id, true, reqID) {
+		return
+	}
 	stats, err := s.pg.TenantUsageStats(r.Context(), id)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant usage could not be loaded", reqID)
 		return
+	}
+	// The drawer draws a bar per limit, and under a hierarchy most tenants
+	// declare nothing and inherit. Dividing by the declared column would leave
+	// the bar empty for a tenant that is in fact capped, so the resolution is
+	// carried with the usage. A failure here must not hide the counters.
+	if limits, err := s.pg.EffectiveTenantLimits(r.Context(), id); err == nil {
+		stats.Effective = &limits
 	}
 	writeJSON(w, http.StatusOK, stats)
 }
@@ -693,8 +749,15 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	p, _ := adminPrincipalFrom(r.Context())
 	switch r.Method {
 	case http.MethodPut:
+		// Identity edits follow the same exclude-self rule as allocation: the
+		// level a scoped administrator is confined to belongs to whoever set
+		// the scope.
+		if !s.requireTenantScope(w, r, p, id, false, reqID) {
+			return
+		}
 		var in tenantWriteRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON", reqID)
@@ -719,11 +782,14 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 		// to v for validation, and UpdateTenant does not read that copy.
 		out, err := s.pg.UpdateTenant(r.Context(), id, storage.TenantUpdate{Tenant: v, AllowedModels: in.AllowedModels})
 		if err != nil {
-			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found or could not be updated", reqID)
+			writeTenantWriteError(w, reqID, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodDelete:
+		if !s.requireTenantScope(w, r, p, id, false, reqID) {
+			return
+		}
 		s.deleteTenant(w, r, id, reqID)
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")
@@ -748,7 +814,9 @@ func (s *Server) deleteTenant(w http.ResponseWriter, r *http.Request, id, reqID 
 			httpx.Error(w, http.StatusNotFound, "tenant_not_found", "Tenant was not found", reqID)
 			return
 		}
-		httpx.Error(w, http.StatusInternalServerError, "database_error", "Tenant could not be deleted", reqID)
+		// A subtree or a scoped administrator still points at this row; the
+		// database refuses and the operator is told which one it is.
+		writeTenantWriteError(w, reqID, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted_keys": deletedKeys})
@@ -756,9 +824,16 @@ func (s *Server) deleteTenant(w http.ResponseWriter, r *http.Request, id, reqID 
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
+	p, _ := adminPrincipalFrom(r.Context())
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.pg.ListAPIKeys(r.Context())
+		var items []model.APIKeyAdmin
+		var err error
+		if p.ScopeTenantID != "" {
+			items, err = s.pg.ListAPIKeysInSubtree(r.Context(), p.ScopeTenantID)
+		} else {
+			items, err = s.pg.ListAPIKeys(r.Context())
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list API keys", reqID)
 			return
@@ -772,6 +847,12 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateAPIKey(&in); err != "" {
 			httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", err, reqID)
+			return
+		}
+		// A scoped administrator issues credentials inside its own subtree. The
+		// scope node itself counts: issuing keys for your own department is the
+		// ordinary case, unlike editing its budget.
+		if !s.requireTenantScope(w, r, p, in.TenantID, true, reqID) {
 			return
 		}
 		plain, prefix, digest, err := security.NewAPIKey(s.cfg.KeyHMACSecret)
@@ -798,6 +879,24 @@ func (s *Server) handleAPIKeyByID(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		http.NotFound(w, r)
 		return
+	}
+	p, _ := adminPrincipalFrom(r.Context())
+	// One scope check covers update, revoke and purge: all three act on a key
+	// the caller must already be able to see, and the key's tenant is the only
+	// thing that decides that.
+	if p.ScopeTenantID != "" {
+		if _, err := uuid.Parse(id); err != nil {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		key, err := s.pg.APIKeyByID(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, "api_key_not_found", "API key was not found", reqID)
+			return
+		}
+		if !s.requireTenantScope(w, r, p, key.TenantID, true, reqID) {
+			return
+		}
 	}
 	switch r.Method {
 	case http.MethodPut:
@@ -826,6 +925,14 @@ func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request, id, reqID 
 	if err := validateAPIKey(&in); err != "" {
 		httpx.Error(w, http.StatusBadRequest, "invalid_api_key_config", err, reqID)
 		return
+	}
+	// The update can move the key to another tenant, so the destination is
+	// checked as well as the current owner. Without this a scoped administrator
+	// could hand a credential to a department it does not administer.
+	if p, ok := adminPrincipalFrom(r.Context()); ok {
+		if !s.requireTenantScope(w, r, p, in.TenantID, true, reqID) {
+			return
+		}
 	}
 	out, err := s.pg.UpdateAPIKey(r.Context(), id, in)
 	if err != nil {
@@ -992,6 +1099,10 @@ func requestLogFilterFrom(r *http.Request, defaultLimit int) (storage.RequestLog
 		APIKeyID:  strings.TrimSpace(q.Get("api_key_id")),
 		From:      from,
 		To:        to,
+		// The scope comes from the authenticated principal, never from a query
+		// parameter: a scoped tenant_admin must not be able to widen its view by
+		// asking for a different tenant.
+		ScopeTenantID: callerScope(r),
 	}, nil
 }
 
@@ -1054,6 +1165,26 @@ func (s *Server) handleRequestLogAttempts(w http.ResponseWriter, r *http.Request
 	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
+	}
+	// Attempts are addressed by request id, which carries no tenant. A scoped
+	// administrator therefore proves the request is visible before the chain is
+	// returned, rather than being able to read beside its subtree by guessing
+	// an id.
+	if scope := callerScope(r); scope != "" {
+		visible, err := s.pg.SearchRequestLogs(r.Context(), storage.RequestLogFilter{
+			RequestID:     id,
+			Limit:         1,
+			Failover:      -1,
+			ScopeTenantID: scope,
+		})
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load request attempts", reqID)
+			return
+		}
+		if len(visible) == 0 {
+			httpx.Error(w, http.StatusNotFound, "request_not_found", "Request was not found", reqID)
+			return
+		}
 	}
 	items, err := s.pg.RequestAttempts(r.Context(), id)
 	if err != nil {
@@ -1145,22 +1276,26 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if tenantID != "" {
-		tenant, err := s.pg.TenantByID(r.Context(), tenantID)
-		if err != nil {
-			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
-			return
-		}
 		stats, err := s.pg.TenantUsageStats(r.Context(), tenantID)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
 			return
 		}
-		out.Totals.Quota = model.RequestLogQuota{
-			DailyToken:     quotaUsage(stats.DailyTokens, tenant.DailyTokenLimit),
-			MonthlyToken:   quotaUsage(stats.MonthlyTokens, tenant.MonthlyTokenLimit),
-			MonthlyRequest: quotaUsage(stats.MonthlyRequests, tenant.MonthlyRequestLimit),
+		// The quota a tenant actually stops at, not the number it declared: with
+		// inheritance a tenant can have no limit of its own and still be capped
+		// by an ancestor, and quoting its own nil would render "not set" for a
+		// tenant that is in fact bounded.
+		effective, err := s.pg.EffectiveTenantLimits(r.Context(), tenantID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
+			return
 		}
-		fillQuotaShares(out.ByKey, tenant.MonthlyTokenLimit)
+		out.Totals.Quota = model.RequestLogQuota{
+			DailyToken:     quotaUsage(stats.DailyTokens, effective.DailyTokenLimit),
+			MonthlyToken:   quotaUsage(stats.MonthlyTokens, effective.MonthlyTokenLimit),
+			MonthlyRequest: quotaUsage(stats.MonthlyRequests, effective.MonthlyRequestLimit),
+		}
+		fillQuotaShares(out.ByKey, effective.MonthlyTokenLimit)
 	}
 
 	writeJSON(w, http.StatusOK, out)
@@ -1620,6 +1755,11 @@ func validateTenant(v *model.Tenant) string {
 // validateTenantFields checks everything except the model allowlist. Update
 // calls this directly when the field was omitted, so validation cannot smuggle
 // the create-time wildcard default back into an edit.
+//
+// The quotas are validated on create only; an edit does not carry them, because
+// they are allocated through their own endpoint (see UpdateTenant). A nil value
+// is "inherit" and is always valid — it is the state of every tenant that has
+// never been allocated anything.
 func validateTenantFields(v *model.Tenant) string {
 	v.Code = strings.TrimSpace(v.Code)
 	v.Name = strings.TrimSpace(v.Name)
@@ -1632,14 +1772,17 @@ func validateTenantFields(v *model.Tenant) string {
 	if v.Status != 1 && v.Status != 2 {
 		return "status must be 1 (enabled) or 2 (disabled)"
 	}
-	if v.DailyTokenLimit < 0 || v.MonthlyTokenLimit < 0 || v.MonthlyRequestLimit < 0 || v.MonthlyBudgetMicros < 0 {
+	if negativeLimit(v.DailyTokenLimit) || negativeLimit(v.MonthlyTokenLimit) ||
+		negativeLimit(v.MonthlyRequestLimit) || v.MonthlyBudgetMicros < 0 {
 		return "tenant quota values cannot be negative"
 	}
-	if v.RPMLimit < 0 || v.TPMLimit < 0 || v.MaxConcurrency < 0 {
+	if negativeLimit(v.RPMLimit) || negativeLimit(v.TPMLimit) || negativeLimit(v.MaxConcurrency) {
 		return "tenant rate limit values cannot be negative"
 	}
 	return ""
 }
+
+func negativeLimit(v *int64) bool { return v != nil && *v < 0 }
 
 // normalizeTenantAllowedModels applies the Tenant default before sharing the
 // key path's rules.
@@ -1709,6 +1852,13 @@ func validateAPIKey(v *model.APIKeyAdmin) string {
 	}
 	if reason := normalizeAllowedModels(&v.AllowedModels); reason != "" {
 		return reason
+	}
+	// A malformed id would reach the insert as a failed uuid cast, which is a
+	// 500 with a database message. It is a client error and is answered as one.
+	// Checked after the allowlist so an ambiguous model list is still reported
+	// as what it is rather than masked by the id.
+	if _, err := uuid.Parse(v.TenantID); err != nil {
+		return "tenant_id must be a tenant id"
 	}
 	if v.Status == 0 {
 		v.Status = 1

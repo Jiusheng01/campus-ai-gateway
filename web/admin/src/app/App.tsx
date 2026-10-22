@@ -29,6 +29,8 @@ import {ProvidersPage} from '../pages/ProvidersPage'
 import {PublishedModelsPage} from '../pages/PublishedModelsPage'
 import {RoutesPage} from '../pages/RoutesPage'
 import {CallsPage} from '../pages/CallsPage'
+import {TenantsPage} from '../pages/TenantsPage'
+import {ModelQuotasPage} from '../pages/ModelQuotasPage'
 import {RequestLogsPage} from '../pages/RequestLogsPage'
 import {AuditPage} from '../pages/AuditPage'
 import {SecurityPage} from '../pages/SecurityPage'
@@ -362,8 +364,11 @@ function Console() {
             />
           )}
           {route.page === 'routes' && <RoutesPage />}
-          {(route.page === 'calls' || route.page === 'keys') && <CallsPage key="calls-keys" initialTab="keys" />}
-          {route.page === 'tenants' && <CallsPage key="calls-tenants" initialTab="tenants" />}
+          {(route.page === 'calls' || route.page === 'keys') && (
+            <CallsPage scopeTenantID={who.scope_tenant_id || ''} />
+          )}
+          {route.page === 'tenants' && <TenantsPage scopeTenantID={who.scope_tenant_id || ''} />}
+          {route.page === 'model-quotas' && <ModelQuotasPage scopeTenantID={who.scope_tenant_id || ''} />}
           {route.page === 'logs' && <RequestLogsPage key={JSON.stringify(logSeed)} initialFilters={logSeed} />}
           {route.page === 'audit' && <AuditPage />}
           {route.page === 'security' && <SecurityPage />}

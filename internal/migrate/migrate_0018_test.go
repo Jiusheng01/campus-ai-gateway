@@ -90,8 +90,10 @@ func TestMigration0018UpgradesSeededDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(result.Applied) != 1 || !strings.HasSuffix(result.Applied[0], "0018_ownership_and_snapshot.sql") {
-		t.Fatalf("applied = %v, want only 0018", result.Applied)
+	if len(result.Applied) != 2 ||
+		!strings.HasSuffix(result.Applied[0], "0018_ownership_and_snapshot.sql") ||
+		!strings.HasSuffix(result.Applied[1], "0019_tenant_hierarchy_and_model_quota.sql") {
+		t.Fatalf("applied = %v, want 0018 then 0019", result.Applied)
 	}
 
 	second, err := Apply(context.Background(), url, repoMigrations)
@@ -171,7 +173,8 @@ func TestMigration0018UpgradesSeededDatabase(t *testing.T) {
 		t.Fatalf("existing tenant allowed_models = %s, want [\"*\"]", allowed)
 	}
 	if _, err := conn.Exec(ctx,
-		`INSERT INTO gateway_tenant(code,name) VALUES ('fresh-tenant','Fresh Tenant')`); err != nil {
+		`INSERT INTO gateway_tenant(id,code,name,path)
+		 VALUES ('11111111-1111-1111-1111-111111111111','fresh-tenant','Fresh Tenant','/11111111-1111-1111-1111-111111111111/')`); err != nil {
 		t.Fatalf("insert tenant after 0018: %v", err)
 	}
 	if err := conn.QueryRow(ctx,
@@ -233,7 +236,10 @@ func TestMigration0018KeyOwnerIsSetNullWhenTheAccountIsDeleted(t *testing.T) {
 
 	var tenantID, userID, keyID string
 	if err := conn.QueryRow(ctx,
-		`INSERT INTO gateway_tenant(code,name) VALUES ('fk-tenant','FK Tenant') RETURNING id::text`).Scan(&tenantID); err != nil {
+		`WITH t AS (SELECT gen_random_uuid() AS id)
+		 INSERT INTO gateway_tenant(id,code,name,path)
+		 SELECT id,'fk-tenant','FK Tenant','/'||id::text||'/' FROM t
+		 RETURNING id::text`).Scan(&tenantID); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx,

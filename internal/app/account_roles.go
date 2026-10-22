@@ -29,16 +29,14 @@ const (
 // them makes the account an administrator, which is what removes the need for
 // "member".
 //
-// tenant_admin is deliberately absent. Its global form reached every tenant and
-// every API key with no resource scope at all, which contradicts the confirmed
-// design where tenant_admin is a role *inside* a tenant. Phase 1 withdraws the
-// global grant instead of inventing a scope the data model cannot express yet.
-// The name stays in the vocabulary so an existing stored value can still be
-// read, displayed and explicitly replaced — it simply carries no authority, and
-// IsManagementRole says so.
+// tenant_admin is a management role only together with a scope. The role and
+// the scope are validated as one grant by ValidateAccountScope, and the
+// authorisation check refuses a tenant_admin whose scope is empty, so the name
+// is listed here without that ever meaning "global reach".
 var managementRoles = []string{
 	RoleAuditor,
 	RoleOperator,
+	RoleTenantAdmin,
 	RoleGatewayAdmin,
 	RoleSuperAdmin,
 }
@@ -54,12 +52,10 @@ var managementRoleSet = func() map[string]bool {
 }()
 
 // unassignableRoles are recognised but may not be handed out through the user
-// management API. A super administrator must not be able to grant a role that
-// reads like authority while granting none: the account would look privileged
-// in the console and behave as a member everywhere else.
-var unassignableRoles = map[string]bool{
-	RoleTenantAdmin: true,
-}
+// management API. It is empty today: tenant_admin became assignable once a
+// scope existed to make it meaningful. The map is kept so a future withdrawal
+// has one place to live.
+var unassignableRoles = map[string]bool{}
 
 // rolePrecedence fixes the order roles are listed in, most privileged first.
 // Sorting by it keeps API responses and the UI stable instead of leaking Go's
@@ -141,9 +137,8 @@ func NormalizeAccountRoles(roles []string) []string {
 // input was accepted when part of it was discarded, and it hides a typo or a
 // client bug behind an apparent success. The API refuses it instead.
 //
-// The same reasoning applies to a recognised role that Phase 1 has withdrawn.
-// Returning 400 rather than quietly writing it keeps the operator informed and
-// keeps the console from showing a grant that does nothing.
+// The same reasoning applies to any role listed in unassignableRoles: returning
+// 400 rather than quietly dropping it keeps the operator informed.
 func ValidateAccountRoles(roles []string) error {
 	for _, raw := range roles {
 		role := strings.TrimSpace(raw)
@@ -155,6 +150,31 @@ func ValidateAccountRoles(roles []string) error {
 		}
 	}
 	return nil
+}
+
+// ValidateAccountScope enforces the pairing of tenant_admin with a scope.
+//
+// The two are one grant: the role says what an account may do, the scope says
+// where. Either alone is refused, because a tenant_admin without a scope would
+// have to mean "every tenant" (the old, withdrawn behaviour) and a scope
+// without the role would describe a restriction that grants nothing.
+//
+// scopeTenantID is "" for "no scope". The caller passes the state the account
+// will hold after the change, not merely the fields in the request, so a patch
+// that changes only one half is judged on the outcome.
+func ValidateAccountScope(roles []string, scopeTenantID string) error {
+	scoped := strings.TrimSpace(scopeTenantID) != ""
+	isTenantAdmin := false
+	for _, raw := range roles {
+		if strings.TrimSpace(raw) == RoleTenantAdmin {
+			isTenantAdmin = true
+			break
+		}
+	}
+	if isTenantAdmin == scoped {
+		return nil
+	}
+	return ErrAdminBadRequest
 }
 
 // roleSet converts a role list into the membership set used for authorisation

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
+	"github.com/google/uuid"
 )
 
 // adminUserView is the safe projection of an account for the user management
@@ -31,10 +33,14 @@ type adminUserView struct {
 	// TenantID and TenantName are the Account's Tenant Membership. Empty
 	// strings mean "unassigned", not a Tenant named "". The name is projected
 	// for display; the id is the identifier.
-	TenantID    string  `json:"tenant_id"`
-	TenantName  string  `json:"tenant_name"`
-	LastLoginAt *string `json:"last_login_at"`
-	CreatedAt   string  `json:"created_at"`
+	TenantID   string `json:"tenant_id"`
+	TenantName string `json:"tenant_name"`
+	// ScopeTenantID confines a tenant_admin to one subtree. It is empty for a
+	// global account, and always empty unless the roles include tenant_admin.
+	ScopeTenantID   string `json:"scope_tenant_id"`
+	ScopeTenantName string `json:"scope_tenant_name"`
+	LastLoginAt     *string `json:"last_login_at"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 func adminUserViewFrom(u model.AdminUser) adminUserView {
@@ -42,6 +48,10 @@ func adminUserViewFrom(u model.AdminUser) adminUserView {
 	if u.LastLoginAt != nil {
 		formatted := u.LastLoginAt.UTC().Format(time.RFC3339)
 		lastLogin = &formatted
+	}
+	var scopeTenantID string
+	if u.ScopeTenantID != nil {
+		scopeTenantID = *u.ScopeTenantID
 	}
 	return adminUserView{
 		ID:          u.ID,
@@ -51,8 +61,11 @@ func adminUserViewFrom(u model.AdminUser) adminUserView {
 		Status:      u.Status,
 		TenantID:    u.TenantID,
 		TenantName:  u.TenantName,
-		LastLoginAt: lastLogin,
-		CreatedAt:   u.CreatedAt.UTC().Format(time.RFC3339),
+
+		ScopeTenantID:   scopeTenantID,
+		ScopeTenantName: u.ScopeTenantName,
+		LastLoginAt:     lastLogin,
+		CreatedAt:       u.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -64,6 +77,10 @@ type userUpdate struct {
 	DisplayName *string
 	Roles       *[]string
 	Status      *int
+	// Scope is present only when the request carried scope_tenant_id. Its own
+	// pointer distinguishes "clear the scope" (non-nil, TenantID nil) from
+	// "leave it alone" (outer nil).
+	Scope *storage.ScopeUpdate
 }
 
 // listUsers returns every account plus the summary counts.
@@ -128,6 +145,23 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 		mutation.DisplayName = &name
 	}
 
+	if in.Scope != nil {
+		scope := storage.ScopeUpdate{}
+		if in.Scope.TenantID != nil {
+			tenantID := strings.TrimSpace(*in.Scope.TenantID)
+			if tenantID != "" {
+				// A malformed id would reach the storage layer as a failed uuid
+				// cast, which is a 500 and a leaked constraint name. It is a
+				// client error and is answered as one.
+				if _, err := uuid.Parse(tenantID); err != nil {
+					return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminBadRequest
+				}
+				scope.TenantID = &tenantID
+			}
+		}
+		mutation.Scope = &scope
+	}
+
 	updated, changes, err := a.store.UpdateAdminUserAccount(ctx, targetID, mutation)
 	if err != nil {
 		switch {
@@ -135,6 +169,12 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminLastSuperAdmin
 		case errors.Is(err, storage.ErrAdminUserNotFound):
 			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminUserNotFound
+		case errors.Is(err, storage.ErrAdminTenantNotFound):
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminTenantNotFound
+		case errors.Is(err, storage.ErrAdminScopeRequired), errors.Is(err, storage.ErrAdminScopeUnexpected):
+			// The pairing is a request problem, not a storage failure: the
+			// client sent a role and a scope that cannot both be true.
+			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminBadRequest
 		default:
 			return model.AdminUser{}, storage.AdminUserChangeSet{}, ErrAdminInternal
 		}
@@ -261,6 +301,45 @@ type adminUserUpdateRequest struct {
 	DisplayName *string   `json:"display_name"`
 	Roles       *[]string `json:"roles"`
 	Status      *int      `json:"status"`
+	// ScopeTenantID is tri-state: absent leaves the scope alone, null clears it,
+	// a string sets it. The outer pointer is what distinguishes absent from
+	// null; see the UnmarshalJSON on the inner type.
+	ScopeTenantID *optionalScopeField `json:"scope_tenant_id"`
+}
+
+// optionalScopeField remembers whether the key was present at all. A plain
+// *string cannot: both an omitted key and an explicit null decode to nil, and
+// on a partial patch those mean opposite things.
+type optionalScopeField struct {
+	set   bool
+	value *string
+}
+
+func (f *optionalScopeField) UnmarshalJSON(data []byte) error {
+	f.set = true
+	if string(data) == "null" {
+		f.value = nil
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	f.value = &s
+	return nil
+}
+
+// scopeUpdateFrom maps the decoded request field onto the storage mutation.
+// An absent key (nil field) produces no update; a present key produces one,
+// with a nil TenantID when the client explicitly cleared the scope.
+func scopeUpdateFrom(field *optionalScopeField) *storage.ScopeUpdate {
+	if field == nil || !field.set {
+		return nil
+	}
+	if field.value == nil {
+		return &storage.ScopeUpdate{}
+	}
+	return &storage.ScopeUpdate{TenantID: field.value}
 }
 
 // handleAdminUserByID serves PATCH /admin/users/{id} and routes
@@ -313,6 +392,7 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 		DisplayName: in.DisplayName,
 		Roles:       in.Roles,
 		Status:      in.Status,
+		Scope:       scopeUpdateFrom(in.ScopeTenantID),
 	})
 	if err != nil {
 		s.auditAdminAuth(r, "user.update_failed", statusForAdminError(err), principal.Username)
@@ -336,6 +416,7 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 			"roles":          changes.RolesChanged,
 			"status":         changes.StatusChanged,
 			"display_name":   changes.DisplayNameChanged,
+			"scope":          changes.ScopeChanged,
 			"authentication": changes.AuthenticationChanged(),
 		},
 	})
@@ -410,9 +491,16 @@ func (s *Server) handleAdminUserTenant(w http.ResponseWriter, r *http.Request, t
 // happened to contain a roles field would put events in the trail that never
 // took place.
 func accountAuditActions(changes storage.AdminUserChangeSet) []string {
-	actions := make([]string, 0, 3)
+	actions := make([]string, 0, 4)
 	if changes.RolesChanged {
 		actions = append(actions, "user.role.update")
+	}
+	// A scope change is its own event: it changes where an administrator may
+	// act without changing what they may do, and an operator investigating a
+	// cross-department edit needs to find the narrowing separately from the
+	// original grant.
+	if changes.ScopeChanged {
+		actions = append(actions, "user.scope.update")
 	}
 	if changes.StatusChanged {
 		if changes.NewStatus == model.AdminStatusDisabled {

@@ -17,21 +17,22 @@ export const roleLabel = (role: string) => ROLE_LABELS[role] || role
  * in the list because it is what an account is when it holds nothing else: a
  * checkbox row for it would be two ways of saying the same thing.
  *
- * "tenant_admin" is deliberately absent too. Its global form reached every
- * tenant and every API key with no resource scope, so Phase 1 withdrew it: the
- * name survives as a stored, displayed, inert value that a super administrator
- * can replace, but the console must not offer to hand it out.
+ * "tenant_admin" is scoped: the drawer asks for the subtree alongside the role,
+ * and the gateway refuses the grant without it. A tenant_admin stored without a
+ * scope (the old global form) is inert until one is assigned.
  */
-export const ASSIGNABLE_ROLES = ['auditor', 'operator', 'gateway_admin', 'super_admin']
+export const ASSIGNABLE_ROLES = ['auditor', 'operator', 'tenant_admin', 'gateway_admin', 'super_admin']
 
 /**
  * isManagement reports whether a role grants control-plane access. "member" is
- * the account that holds nothing else, and the withdrawn global form of
- * "tenant_admin" is the role that grants nothing — both are therefore not
- * management, matching the gateway's own definition.
+ * the account that holds nothing else. A scoped tenant_admin reaches the tenant,
+ * key and model-quota surfaces, so it counts as management; the workspace still
+ * narrows its pages, and the gateway narrows every row.
  */
-export const isManagementRole = (role: string) =>
-  role !== 'member' && role !== 'tenant_admin' && role in ROLE_LABELS
+export const isManagementRole = (role: string) => role !== 'member' && role in ROLE_LABELS
+
+/** The roles whose authority is bounded to one subtree rather than the deployment. */
+export const isScopedAdminRole = (role: string) => role === 'tenant_admin'
 
 /** All six roles, most privileged first, for the identity tooltip. */
 export const ALL_ROLES = ['super_admin', 'gateway_admin', 'tenant_admin', 'operator', 'auditor', 'member']
