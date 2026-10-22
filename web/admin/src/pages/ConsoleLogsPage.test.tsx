@@ -222,3 +222,70 @@ describe('personal console request records', () => {
     expect(screen.queryByText('还没有调用记录')).not.toBeInTheDocument()
   })
 })
+
+describe('personal console record detail', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // The personal projection carries the alias, the tokens, the status and the
+  // attempt chain; it does not carry a provider or upstream model at the
+  // record level. Those must read as unknown rather than be filled in from
+  // somewhere else, and the chain is where the channel actually appears.
+  it('shows the fields the personal projection carries and no invented ones', async () => {
+    stubConsole()
+    renderPage()
+    await screen.findByText('campus-embed')
+    fireEvent.click(screen.getByText('campus-embed').closest('tr') as HTMLElement)
+
+    const drawer = await screen.findByRole('dialog', {name: '请求详情'})
+    // The drawer's subtitle and the detail row both carry the full id.
+    expect(within(drawer).getAllByText('req-bbbbbbbbbbbbbbbbbbbb-2').length).toBeGreaterThanOrEqual(1)
+    // The failed request recorded no tokens: 未知, not 0.
+    expect(within(drawer).getAllByText('未知').length).toBeGreaterThanOrEqual(3)
+    // The chain names the channels in the order the gateway tried them.
+    expect(within(drawer).getByText('primary')).toBeInTheDocument()
+    expect(within(drawer).getByText('upstream-b')).toBeInTheDocument()
+  })
+
+  it('gives the full request id a copy action with real feedback', async () => {
+    stubConsole()
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', {...navigator, clipboard: {writeText}})
+    renderPage()
+    await screen.findByText('campus-embed')
+    fireEvent.click(screen.getByText('campus-embed').closest('tr') as HTMLElement)
+
+    const drawer = await screen.findByRole('dialog', {name: '请求详情'})
+    fireEvent.click(within(drawer).getByRole('button', {name: '复制 Request ID'}))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('req-bbbbbbbbbbbbbbbbbbbb-2'))
+  })
+
+  it('says a refused copy instead of claiming success', async () => {
+    stubConsole()
+    vi.stubGlobal('navigator', {...navigator, clipboard: {writeText: vi.fn(async () => { throw new Error('denied') })}})
+    renderPage()
+    await screen.findByText('campus-embed')
+    fireEvent.click(screen.getByText('campus-embed').closest('tr') as HTMLElement)
+
+    const drawer = await screen.findByRole('dialog', {name: '请求详情'})
+    fireEvent.click(within(drawer).getByRole('button', {name: '复制 Request ID'}))
+    expect(await screen.findByText(/复制失败/)).toBeInTheDocument()
+  })
+
+  // A record whose key has since been deleted is still the account's: the
+  // owner snapshot is what keeps it, so the drawer names the id rather than
+  // dropping the row or showing a blank.
+  it('keeps a record whose API key has been deleted and names the id', async () => {
+    stubConsole({
+      rows: [{...rows[0], api_key_id: 'k-deleted'}],
+      detail: {...rows[0], api_key_id: 'k-deleted', attempt_chain: []},
+    })
+    renderPage()
+    await screen.findByText('campus-chat')
+    fireEvent.click(screen.getByText('campus-chat').closest('tr') as HTMLElement)
+
+    const drawer = await screen.findByRole('dialog', {name: '请求详情'})
+    expect(within(drawer).getByText(/已删除的 Key/)).toBeInTheDocument()
+    // An empty chain is a real state for a request refused before upstream.
+    expect(within(drawer).getByText('暂无尝试记录')).toBeInTheDocument()
+  })
+})

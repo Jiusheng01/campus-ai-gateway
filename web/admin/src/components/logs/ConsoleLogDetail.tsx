@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react'
+import {Copy} from 'lucide-react'
 import {getConsoleRequestLog, type ConsoleRequestLogDetail} from '../../api'
 import {Drawer} from '../ui/Drawer'
 import {Panel} from '../ui/Panel'
@@ -6,7 +7,8 @@ import {EmptyState, ErrorState} from '../ui/EmptyState'
 import {Table} from '../ui/Table'
 import {Detail} from '../ui/Detail'
 import {HttpStatusBadge} from '../ui/Badge'
-import {ms, num, shortId, when} from '../../lib/format'
+import {useToast} from '../ui/Toast'
+import {copyText, ms, num, shortId, when} from '../../lib/format'
 
 type KeyLabel = {id: string; name: string; key_prefix: string}
 
@@ -84,17 +86,38 @@ function keyName(keys: KeyLabel[], id: string): string {
  * which channel was tried and why the gateway moved on.
  */
 function ConsoleLogDetail({v, keyName}: {v: ConsoleRequestLogDetail; keyName: string}) {
+  const toast = useToast()
   const input = v.input_tokens > 0
   const output = v.output_tokens > 0
   const total = v.total_tokens > 0
   const attempts = v.attempt_chain || []
+
+  const copyRequestID = async () => {
+    if (await copyText(v.request_id)) toast.success('Request ID 已复制')
+    else toast.error('复制失败，请手动选择并复制 Request ID')
+  }
 
   return (
     <div className="detailStack">
       <Detail
         title="请求"
         rows={[
-          ['Request ID', <span key="rid" className="mono wrap">{v.request_id}</span>],
+          [
+            'Request ID',
+            <span key="rid" className="requestIdRow">
+              <span className="mono wrap">{v.request_id}</span>
+              <button
+                type="button"
+                className="tableActionLink"
+                title={`复制 ${v.request_id}`}
+                aria-label="复制 Request ID"
+                onClick={() => void copyRequestID()}
+              >
+                <Copy aria-hidden />
+                复制
+              </button>
+            </span>,
+          ],
           ['时间', when(v.created_at)],
           ['请求模型', <span key="requested" className="mono">{v.requested_model || '未知'}</span>],
           ['响应模型', <span key="actual" className="mono">{v.actual_model || '未知'}</span>],
