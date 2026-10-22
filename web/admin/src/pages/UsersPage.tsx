@@ -1,5 +1,5 @@
-import {useState} from 'react'
-import {Pencil, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
+import {useMemo, useState} from 'react'
+import {Pencil, Search, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
 import {
   ApiError,
   api,
@@ -45,10 +45,32 @@ export function UsersPage() {
     return {users: users.data, stats: users.stats, tenants}
   })
   const [editing, setEditing] = useState<AccountUser | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
 
   const users = data?.users || []
   const stats = data?.stats
   const tenants = data?.tenants || []
+
+  // The counts are the server's, over the whole table. They are not recomputed
+  // from the filtered rows: a card that changed when a search box did would be
+  // two different quantities under one label.
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return users.filter(u => {
+      if (statusFilter && String(u.status) !== statusFilter) return false
+      if (roleFilter) {
+        const roles = displayRoles(u.roles)
+        if (!roles.includes(roleFilter)) return false
+      }
+      if (!q) return true
+      return [u.username, u.display_name, u.tenant_name, u.tenant_id]
+        .some(v => (v || '').toLowerCase().includes(q))
+    })
+  }, [users, searchQuery, roleFilter, statusFilter])
+  const narrowed = searchQuery.trim() !== '' || roleFilter !== '' || statusFilter !== ''
+  const loaded = data !== null
 
   return (
     <>
@@ -57,27 +79,79 @@ export function UsersPage() {
         sub="管理注册用户和管理员角色。管理员角色只能由超级管理员授予。"
       >
         <div className="kpiGrid">
-          <Stat label="总用户" value={stats?.total ?? 0} icon={<UsersIcon />} />
-          <Stat label="普通用户" value={stats?.members ?? 0} icon={<UserRound />} />
-          <Stat label="管理员" value={stats?.admins ?? 0} icon={<UserCheck />} />
-          <Stat label="停用账号" value={stats?.disabled ?? 0} icon={<UserX />} tone={stats?.disabled ? 'danger' : undefined} />
+          {/* A count is a fact about the account table. Before it is read, or
+              after the read failed, there is no count — 0 would state an empty
+              table that was never observed. */}
+          <Stat label="总用户" value={stats?.total ?? null} icon={<UsersIcon />} loading={!loaded} />
+          <Stat label="普通用户" value={stats?.members ?? null} icon={<UserRound />} loading={!loaded} />
+          <Stat label="管理员" value={stats?.admins ?? null} icon={<UserCheck />} loading={!loaded} />
+          <Stat label="停用账号" value={stats?.disabled ?? null} icon={<UserX />} loading={!loaded} tone={stats?.disabled ? 'danger' : undefined} />
         </div>
       </Panel>
 
-      <Panel title="账号列表" sub="点击「管理」可调整角色或停用账号。">
+      <Panel title="账号列表" sub="点击「管理」可调整角色或停用账号。上方统计始终描述全部账号。">
+        <div className="filterCard">
+          <div className="filtersBar">
+            <div className="searchFieldGroup">
+              <Search className="searchFieldIcon" aria-hidden />
+              <input
+                className="filterSearchInput"
+                placeholder="搜索用户名、显示名称或租户..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+            </div>
+            <label className="filterFieldInline">
+              <span className="filterLabel">角色</span>
+              <select className="filterSelect" value={roleFilter} onChange={e => setRoleFilter(e.target.value)}>
+                <option value="">全部角色</option>
+                {ASSIGNABLE_ROLES.map(role => (
+                  <option key={role} value={role}>{roleLabel(role)}</option>
+                ))}
+                <option value="member">{roleLabel('member')}</option>
+              </select>
+            </label>
+            <label className="filterFieldInline">
+              <span className="filterLabel">状态</span>
+              <select className="filterSelect" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                <option value="">全部状态</option>
+                <option value="1">正常</option>
+                <option value="2">已停用</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
         {loading && !data ? (
           <SkeletonRows rows={6} columns={8} />
         ) : error ? (
           <ErrorState message={error} onRetry={reload} />
-        ) : users.length ? (
+        ) : users.length && !filtered.length ? (
+          <EmptyState
+            icon={<Search />}
+            title="没有符合条件的账号"
+            description="调整搜索词、角色或状态后重试。"
+          />
+        ) : filtered.length ? (
           <Table heads={['用户', '显示名称', '租户', '角色', '状态', '最后登录', '注册时间', '操作']} minWidth={1240}>
-            {users.map(u => (
+            {filtered.map(u => (
               <tr key={u.id}>
                 <td>
                   <b className="mono">{u.username}</b>
                 </td>
                 <td>{u.display_name || <span className="muted">—</span>}</td>
-                <td>{u.tenant_name || <span className="muted">未分配</span>}</td>
+                <td>
+                  {/* A membership the response only half-reports is not an
+                      absence of membership: 未分配 is a fact, and claiming it
+                      from a missing name would be the wrong one. */}
+                  {u.tenant_name ? (
+                    u.tenant_name
+                  ) : u.tenant_id ? (
+                    <span className="unknown">租户名称未返回</span>
+                  ) : (
+                    <span className="muted">未分配</span>
+                  )}
+                </td>
                 <td>
                   {(u.roles || []).length ? (
                     u.roles.map(r => (
@@ -108,6 +182,14 @@ export function UsersPage() {
           </Table>
         ) : (
           <EmptyState icon={<UsersIcon />} title="暂无账号" description="开放注册后，注册的账号会出现在这里。" />
+        )}
+
+        {/* The count is the filtered set; the cards above stay on the whole
+            table. Saying which is which is the point of the line. */}
+        {!error && data && filtered.length > 0 && (
+          <p className="filterNote">
+            {narrowed ? `筛选后 ${filtered.length} 个账号（共 ${users.length} 个）` : `${users.length} 个账号`}
+          </p>
         )}
       </Panel>
 
@@ -149,16 +231,25 @@ function changeSummary(changes: AccountChangeSet, status: number): string {
   return status === 1 ? '账号已启用，用户可以重新登录。' : '账号已停用，该用户现有登录会话已失效。'
 }
 
-function Stat({label, value, icon, tone}: {label: string; value: number; icon: React.ReactNode; tone?: 'danger'}) {
+function Stat({label, value, icon, tone, loading = false}: {label: string; value: number | null; icon: React.ReactNode; tone?: 'danger'; loading?: boolean}) {
   return (
     <div className={`kpi ${tone || ''}`.trim()}>
       <span className="kpiLabel">
         {icon}
         {label}
       </span>
-      <strong className="kpiValue">{num(value)}</strong>
+      <strong className="kpiValue">{loading || value === null ? '—' : num(value)}</strong>
     </div>
   )
+}
+
+/**
+ * The roles a row shows. An empty list is how the API says "member": the
+ * account holds no management role, and the server normalises that itself
+ * rather than storing the word alongside one.
+ */
+function displayRoles(roles: string[] | undefined): string[] {
+  return roles && roles.length ? roles : ['member']
 }
 
 /**
