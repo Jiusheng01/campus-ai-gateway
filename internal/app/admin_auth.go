@@ -19,6 +19,12 @@ type adminPrincipal struct {
 	Roles     map[string]bool
 	SessionID string
 	AuthMode  string
+	// ScopeTenantID confines tenant_admin to one subtree. Empty means global
+	// reach: token and trusted-header callers never carry a scope, and an
+	// account signed in without one keeps its pre-0019 behaviour. The value is
+	// re-read from the account row on every request, so revoking or narrowing a
+	// grant applies immediately rather than at the next token refresh.
+	ScopeTenantID string
 }
 
 type adminPrincipalKey struct{}
@@ -110,6 +116,11 @@ func (s *Server) authenticateAdminTrustedHeader(r *http.Request) (adminPrincipal
 	// unmapped user was therefore handed visibility nobody granted. A missing or
 	// unrecognised group is a mapping gap, and a mapping gap must resolve to the
 	// least privilege, not to read access over the whole control plane.
+	//
+	// tenant_admin is stripped here even though the proxy may send it: this mode
+	// has no way to carry a scope, so the grant it would create is the global
+	// one that was withdrawn. A campus proxy that needs scoped administration
+	// must use session mode, where the scope lives on the account row.
 	roles := parseAdminRoles(r.Header.Get(s.cfg.AdminRolesHeader))
 	return adminPrincipal{
 		Username: user,
@@ -145,6 +156,13 @@ func parseAdminRoles(raw string) map[string]bool {
 	parts := make([]string, 0, 4)
 	for _, item := range strings.Split(raw, ",") {
 		role := strings.TrimSpace(item)
+		// tenant_admin is skipped here because this path has no way to carry a
+		// scope: the grant it would create is the global one that was withdrawn.
+		// Scoped administration is configured on the account row in session
+		// mode, where the scope and the role are validated together.
+		if role == RoleTenantAdmin {
+			continue
+		}
 		if role == RoleMember || IsManagementRole(role) {
 			parts = append(parts, role)
 		}
@@ -223,13 +241,31 @@ func (p adminPrincipal) can(r *http.Request) bool {
 			return true
 		}
 	}
-	// There is deliberately no tenant_admin branch. Its global form granted
-	// every tenant and every API key with no resource scope, so a holder could
-	// read and rewrite any tenant's credentials. The confirmed design puts
-	// tenant_admin *inside* a tenant, and until that membership model exists
-	// there is no correct scope to grant — so the role grants nothing rather
-	// than everything. An account still carrying the value is administratively
-	// inert and can be reassigned by a super administrator.
+	// tenant_admin is confined to one subtree, and the confinement is two-part:
+	// this branch says which endpoint families the role may reach, and every
+	// handler that takes a tenant or key id re-checks that the target lies
+	// inside ScopeTenantID. An empty scope grants nothing here — there is no
+	// subtree to be confined to, and treating that as "global" is exactly the
+	// behaviour that was withdrawn.
+	if p.Roles[RoleTenantAdmin] && p.ScopeTenantID != "" {
+		switch {
+		case path == "/admin/tenants",
+			strings.HasPrefix(path, "/admin/tenants/"),
+			path == "/admin/model-quotas",
+			// The model quota form and the key form both need the list of
+			// aliases. Only the collection is granted, and only for reading:
+			// the detail endpoint carries route and channel facts that a
+			// subtree administrator has no business seeing.
+			path == "/admin/models" && method == http.MethodGet,
+			path == "/admin/api-keys",
+			strings.HasPrefix(path, "/admin/api-keys/"),
+			strings.HasPrefix(path, "/admin/request-logs"):
+			return true
+		}
+	}
+	// There is deliberately no global tenant_admin branch. The scoped branch
+	// above is the whole of what the role grants; an account carrying the value
+	// without a scope is administratively inert until a scope is assigned.
 	return false
 }
 

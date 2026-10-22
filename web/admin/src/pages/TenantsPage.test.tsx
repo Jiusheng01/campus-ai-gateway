@@ -19,13 +19,17 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 // Three states of one quota field, side by side: a configured number, a zero
-// that means unlimited, and a field the response omits entirely.
+// that means unlimited, and a field the response omits entirely (inherit).
 const tenants = [
   {
     id: 't-1',
     code: 'cs-dept',
     name: '计算机学院',
     status: 1,
+    parent_id: null,
+    path: '/t-1/',
+    depth: 0,
+    kind: 'dept',
     daily_token_limit: 1500,
     monthly_token_limit: 0,
     // monthly_request_limit intentionally missing
@@ -37,29 +41,42 @@ const tenants = [
   },
 ] as Tenant[]
 
+const keys = [
+  {id: 'k-1', tenant_id: 't-1', name: 'a'},
+  {id: 'k-2', tenant_id: 't-1', name: 'b'},
+]
+
+function stubGateway(overrides: (url: string, init?: RequestInit) => Response | undefined = () => undefined) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const handled = overrides(url, init)
+    if (handled) return handled
+    if (url === '/admin/tenants') return jsonResponse({data: tenants})
+    if (url === '/admin/models') return jsonResponse({data: []})
+    if (url === '/admin/api-keys') return jsonResponse({data: keys})
+    if (url === '/admin/tenants/t-1/usage') {
+      return jsonResponse({
+        tenant_id: 't-1',
+        daily_requests: 12,
+        monthly_requests: 240,
+        daily_tokens: 800,
+        monthly_tokens: 12000,
+      })
+    }
+    return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+  })
+}
+
 describe('TenantsPage on a narrow screen', () => {
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url === '/admin/tenants') return jsonResponse({data: tenants})
-      if (url === '/admin/tenants/t-1/usage') {
-        return jsonResponse({
-          tenant_id: 't-1',
-          daily_requests: 12,
-          monthly_requests: 240,
-          daily_tokens: 800,
-          monthly_tokens: 12000,
-        })
-      }
-      return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
-    }))
+    vi.stubGlobal('fetch', stubGateway())
   })
   afterEach(() => vi.unstubAllGlobals())
 
   it('renders a card per tenant with its identity, quota dimensions and actions', async () => {
     render(
       <ToastProvider>
-        <TenantsPage tenants={tenants} onReload={() => {}} />
+        <TenantsPage />
       </ToastProvider>,
     )
 
@@ -75,14 +92,14 @@ describe('TenantsPage on a narrow screen', () => {
     for (const label of ['日 Token', '月 Token', '月请求', 'RPM', 'TPM', '并发']) {
       expect(within(card).getByText(label)).toBeInTheDocument()
     }
-    expect(within(card).getByRole('button', {name: /查看用量/})).toBeInTheDocument()
+    expect(within(card).getByRole('button', {name: /用量/})).toBeInTheDocument()
     expect(within(card).getByRole('button', {name: /编辑/})).toBeInTheDocument()
   })
 
-  it('renders a card limit as its number, zero as 无限制 and an absent field as 未设置', async () => {
+  it('renders a card limit as its number, zero as 不限 and an absent field as 继承', async () => {
     render(
       <ToastProvider>
-        <TenantsPage tenants={tenants} onReload={() => {}} />
+        <TenantsPage />
       </ToastProvider>,
     )
 
@@ -91,52 +108,108 @@ describe('TenantsPage on a narrow screen', () => {
     const cardRow = (label: string) => within(card).getByText(label).parentElement as HTMLElement
 
     expect(cardRow('日 Token')).toHaveTextContent('1,500')
-    expect(cardRow('月 Token')).toHaveTextContent('无限制')
-    expect(cardRow('月请求')).toHaveTextContent('未设置')
+    expect(cardRow('月 Token')).toHaveTextContent('不限')
+    expect(cardRow('月请求')).toHaveTextContent('继承')
 
     // The row keeps the same three states: both branches share one renderer.
     const table = screen.getByRole('table')
     const tableRow = within(table).getByText('计算机学院').closest('tr') as HTMLElement
     expect(tableRow).toHaveTextContent('1,500')
-    expect(tableRow).toHaveTextContent('无限制')
-    expect(tableRow).toHaveTextContent('未设置')
+    expect(tableRow).toHaveTextContent('不限')
+    expect(tableRow).toHaveTextContent('继承')
   })
 
   it('opens the usage drawer from a card, like the row action does', async () => {
     const user = userEvent.setup()
     render(
       <ToastProvider>
-        <TenantsPage tenants={tenants} onReload={() => {}} />
+        <TenantsPage />
       </ToastProvider>,
     )
 
     const list = await screen.findByRole('region', {name: '租户卡片列表'})
     const card = within(list).getAllByRole('article')[0]
-    await user.click(within(card).getByRole('button', {name: /查看用量/}))
+    await user.click(within(card).getByRole('button', {name: /用量/}))
 
     expect(await screen.findByRole('dialog', {name: '租户用量'})).toBeInTheDocument()
     expect(fetch).toHaveBeenCalledWith('/admin/tenants/t-1/usage', expect.anything())
+  })
+
+  it('sends the typed code and name when creating a tenant', async () => {
+    const calls: {url: string; method: string; body?: string}[] = []
+    vi.stubGlobal(
+      'fetch',
+      stubGateway((url, init) => {
+        calls.push({url, method: init?.method || 'GET', body: init?.body as string | undefined})
+        if (url === '/admin/tenants' && init?.method === 'POST') {
+          return jsonResponse({...tenants[0], id: 't-new', code: 'cs-ai', name: '人工智能学院'}, 201)
+        }
+        return undefined
+      }),
+    )
+    const user = userEvent.setup()
+    render(
+      <ToastProvider>
+        <TenantsPage />
+      </ToastProvider>,
+    )
+
+    await user.click((await screen.findAllByRole('button', {name: '新增租户'}))[0])
+    const drawer = await screen.findByRole('dialog', {name: '新增租户'})
+    fireEvent.change(within(drawer).getByLabelText(/租户编码/), {target: {value: 'cs-ai'}})
+    fireEvent.change(within(drawer).getByLabelText(/租户名称/), {target: {value: '人工智能学院'}})
+    await user.click(within(drawer).getByRole('button', {name: '创建租户'}))
+
+    await waitFor(() => expect(calls.some(c => c.method === 'POST' && c.url === '/admin/tenants')).toBe(true))
+    const post = calls.find(c => c.method === 'POST')!
+    const body = JSON.parse(post.body || '{}')
+    expect(body.code).toBe('cs-ai')
+    expect(body.name).toBe('人工智能学院')
+  })
+
+  it('refuses to create a tenant without a code or name, in Chinese', async () => {
+    const calls: {url: string; method: string}[] = []
+    vi.stubGlobal(
+      'fetch',
+      stubGateway((url, init) => {
+        calls.push({url, method: init?.method || 'GET'})
+        return undefined
+      }),
+    )
+    const user = userEvent.setup()
+    render(
+      <ToastProvider>
+        <TenantsPage />
+      </ToastProvider>,
+    )
+
+    await user.click((await screen.findAllByRole('button', {name: '新增租户'}))[0])
+    const drawer = await screen.findByRole('dialog', {name: '新增租户'})
+    await user.click(within(drawer).getByRole('button', {name: '创建租户'}))
+
+    expect(await screen.findByText('请填写租户编码和租户名称')).toBeInTheDocument()
+    expect(calls.some(c => c.method === 'POST')).toBe(false)
+    // The drawer stays open so the typing is not thrown away.
+    expect(screen.getByRole('dialog', {name: '新增租户'})).toBeInTheDocument()
   })
 
   it('deletes a tenant only after its name is typed, and names the keys that go with it', async () => {
     const calls: {url: string; method: string}[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input)
+      stubGateway((url, init) => {
         calls.push({url, method: init?.method || 'GET'})
-        if (url === '/admin/tenants') return jsonResponse({data: tenants})
         if (url === '/admin/tenants/t-1' && init?.method === 'DELETE') {
           return jsonResponse({ok: true, id: 't-1', deleted_keys: 2})
         }
-        return jsonResponse({error: {message: `unexpected ${url}`}}, 404)
+        return undefined
       }),
     )
     const user = userEvent.setup()
     render(
       <ToastProvider>
         <ConfirmProvider>
-          <TenantsPage tenants={tenants} keyCounts={{'t-1': 2}} onReload={() => {}} />
+          <TenantsPage />
         </ConfirmProvider>
       </ToastProvider>,
     )

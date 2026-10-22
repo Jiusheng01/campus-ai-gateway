@@ -86,10 +86,11 @@ func TestMigration0017UpgradesSeededPreMS1Database(t *testing.T) {
 	// The runner advances the database to the end of the migration set. Once
 	// 0018 exists this legacy database crosses both files, in order; the 0017
 	// assertions below still pin the schema 0017 is responsible for.
-	if len(result.Applied) != 2 ||
+	if len(result.Applied) != 3 ||
 		!strings.HasSuffix(result.Applied[0], "0017_model_service_management.sql") ||
-		!strings.HasSuffix(result.Applied[1], "0018_ownership_and_snapshot.sql") {
-		t.Fatalf("applied = %v, want 0017 then 0018", result.Applied)
+		!strings.HasSuffix(result.Applied[1], "0018_ownership_and_snapshot.sql") ||
+		!strings.HasSuffix(result.Applied[2], "0019_tenant_hierarchy_and_model_quota.sql") {
+		t.Fatalf("applied = %v, want 0017, 0018 then 0019", result.Applied)
 	}
 
 	cfg, _ := pgx.ParseConfig(url)

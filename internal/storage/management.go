@@ -11,6 +11,7 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // providerColumns is the provider projection every read and write shares. The
@@ -745,11 +746,15 @@ RETURNING `+modelReturningColumns+`
 }
 
 // tenantColumns is the projection every tenant read shares — the list, the
-// single-row read the usage endpoint needs for its quota denominator, and the
-// two writes' RETURNING clauses. Spelling it once means a column added to the
-// tenant cannot be selected by three queries and forgotten by the fourth, which
-// is exactly how a quota dimension silently reads as zero.
-const tenantColumns = `id::text, code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models::text`
+// single-row read the usage endpoint needs for its quota denominator, the
+// ancestor-chain lookup, and the writes' RETURNING clauses. Spelling it once
+// means a column added to the tenant cannot be selected by one query and
+// forgotten by another, which is exactly how a quota dimension silently reads as
+// zero.
+const tenantColumns = `id::text, code, name, status,
+       daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros,
+       rpm_limit, tpm_limit, max_concurrency,
+       parent_id::text, path, depth, kind, allowed_models::text`
 
 // tenantRow is the one place a tenant projection is decoded. JSONB arrives as
 // text because pgx has no built-in decoder for []string; reading it here keeps
@@ -758,10 +763,20 @@ type tenantRow interface {
 	Scan(dest ...any) error
 }
 
+// scanTenant reads one tenant row in the order of tenantColumns.
+//
+// The six enforced limit columns are nullable and scan into *int64 so that NULL
+// survives as nil (= inherit). parent_id is nullable for the same reason: a root
+// has no parent.
 func scanTenant(row tenantRow) (model.Tenant, error) {
 	var v model.Tenant
 	var modelsJSON string
-	err := row.Scan(&v.ID, &v.Code, &v.Name, &v.Status, &v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros, &v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency, &modelsJSON)
+	err := row.Scan(
+		&v.ID, &v.Code, &v.Name, &v.Status,
+		&v.DailyTokenLimit, &v.MonthlyTokenLimit, &v.MonthlyRequestLimit, &v.MonthlyBudgetMicros,
+		&v.RPMLimit, &v.TPMLimit, &v.MaxConcurrency,
+		&v.ParentID, &v.Path, &v.Depth, &v.Kind, &modelsJSON,
+	)
 	if err != nil {
 		return v, err
 	}
@@ -788,11 +803,14 @@ func allowedModelsJSON(list []string) []byte {
 	return raw
 }
 
+// ListTenants returns the whole forest in materialized-path order, which is a
+// depth-first walk: a parent always precedes its children and siblings stay
+// grouped, so the console can render the hierarchy without re-sorting.
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 	rows, err := p.Pool.Query(ctx, `
 SELECT `+tenantColumns+`
 FROM gateway_tenant
-ORDER BY name
+ORDER BY path
 `)
 	if err != nil {
 		return nil, err
@@ -810,45 +828,6 @@ ORDER BY name
 	return out, rows.Err()
 }
 
-func (p *Postgres) CreateTenant(ctx context.Context, v model.Tenant) (model.Tenant, error) {
-	row := p.Pool.QueryRow(ctx, `
-INSERT INTO gateway_tenant(code, name, status, daily_token_limit, monthly_token_limit, monthly_request_limit, monthly_budget_micros, rpm_limit, tpm_limit, max_concurrency, allowed_models)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-RETURNING `+tenantColumns+`
-`, v.Code, v.Name, v.Status, v.DailyTokenLimit, v.MonthlyTokenLimit, v.MonthlyRequestLimit, v.MonthlyBudgetMicros, v.RPMLimit, v.TPMLimit, v.MaxConcurrency, allowedModelsJSON(v.AllowedModels))
-	return scanTenant(row)
-}
-
-// TenantUpdate is the input to UpdateTenant. It folds the allowlist pointer in
-// with the editable fields so there is one source of truth: AllowedModels is
-// read, and the embedded Tenant's own same-named field is not.
-//
-// The pointer distinguishes an omitted field (nil: leave the column alone) from
-// an explicit [] (a non-nil empty slice: deny every model).
-type TenantUpdate struct {
-	model.Tenant
-	AllowedModels *[]string
-}
-
-// UpdateTenant writes the editable fields and returns the stored row.
-//
-// COALESCE keeps the stored allowlist in the omitted case, and doing it in the
-// statement rather than a read-then-write means a concurrent allowlist edit
-// cannot be reverted by a rename.
-func (p *Postgres) UpdateTenant(ctx context.Context, id string, in TenantUpdate) (model.Tenant, error) {
-	var modelsArg any
-	if in.AllowedModels != nil {
-		modelsArg = string(allowedModelsJSON(*in.AllowedModels))
-	}
-	row := p.Pool.QueryRow(ctx, `
-UPDATE gateway_tenant
-SET code=$2, name=$3, status=$4, daily_token_limit=$5, monthly_token_limit=$6, monthly_request_limit=$7, monthly_budget_micros=$8, rpm_limit=$9, tpm_limit=$10, max_concurrency=$11, allowed_models=COALESCE($12::jsonb, allowed_models), updated_at=NOW()
-WHERE id=$1::uuid
-RETURNING `+tenantColumns+`
-`, id, in.Code, in.Name, in.Status, in.DailyTokenLimit, in.MonthlyTokenLimit, in.MonthlyRequestLimit, in.MonthlyBudgetMicros, in.RPMLimit, in.TPMLimit, in.MaxConcurrency, modelsArg)
-	return scanTenant(row)
-}
-
 // DeleteTenant removes a tenant and every API Key issued under it.
 //
 // Both statements run in one transaction because the foreign key on
@@ -857,6 +836,10 @@ RETURNING `+tenantColumns+`
 // credentials pointing at a tenant that no longer exists. The returned count is
 // what the console reports as deleted, so the operator sees the keys that went
 // with the tenant rather than only the tenant row.
+//
+// A tenant with children is refused rather than cascaded: deleting a department
+// must not silently take every class under it. The parent foreign key expresses
+// that, and ErrTenantHasChildren makes it legible.
 func (p *Postgres) DeleteTenant(ctx context.Context, id string) (int64, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
@@ -872,6 +855,14 @@ func (p *Postgres) DeleteTenant(ctx context.Context, id string) (int64, error) {
 		return 0, pgx.ErrNoRows
 	}
 
+	var children int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM gateway_tenant WHERE parent_id=$1::uuid`, id).Scan(&children); err != nil {
+		return 0, err
+	}
+	if children > 0 {
+		return 0, ErrTenantHasChildren
+	}
+
 	tag, err := tx.Exec(ctx, `DELETE FROM gateway_api_key WHERE tenant_id=$1::uuid`, id)
 	if err != nil {
 		return 0, err
@@ -879,12 +870,24 @@ func (p *Postgres) DeleteTenant(ctx context.Context, id string) (int64, error) {
 	deletedKeys := tag.RowsAffected()
 
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway_tenant WHERE id=$1::uuid`, id); err != nil {
+		if isForeignKeyViolation(err) {
+			// A scoped administrator still references this tenant. Nulling the
+			// scope would silently promote that account to global reach, so the
+			// database refuses and the handler explains.
+			return 0, ErrTenantInUse
+		}
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return deletedKeys, nil
+}
+
+// isForeignKeyViolation reports whether err is a foreign-key violation.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 // TenantUsageStats reports a tenant's usage for the current day and month. It is
@@ -991,6 +994,42 @@ ORDER BY k.created_at DESC
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// ListAPIKeysInSubtree is the scoped counterpart of ListAPIKeys. A scoped
+// tenant_admin sees the credentials issued under its own subtree and nothing
+// else; the predicate is the same materialized-path comparison the tenant list
+// uses, so the two views always agree about what "inside my department" means.
+func (p *Postgres) ListAPIKeysInSubtree(ctx context.Context, scopeTenantID string) ([]model.APIKeyAdmin, error) {
+	rows, err := p.Pool.Query(ctx, `SELECT `+apiKeyAdminProjection+`
+WHERE k.tenant_id IN (
+    SELECT id FROM gateway_tenant
+    WHERE path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id=$1::uuid)
+)
+ORDER BY k.created_at DESC
+`, scopeTenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.APIKeyAdmin
+	for rows.Next() {
+		v, err := scanAPIKeyAdmin(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// APIKeyByID loads one credential. It backs the scope check on the single-key
+// endpoints: the handler has to know which tenant a key belongs to before it
+// may update, revoke or purge it.
+func (p *Postgres) APIKeyByID(ctx context.Context, id string) (model.APIKeyAdmin, error) {
+	row := p.Pool.QueryRow(ctx, `SELECT `+apiKeyAdminProjection+` WHERE k.id=$1::uuid`, id)
+	return scanAPIKeyAdmin(row)
 }
 
 func (p *Postgres) CreateAPIKey(ctx context.Context, v model.APIKeyAdmin, digest string) (model.APIKeyAdmin, error) {

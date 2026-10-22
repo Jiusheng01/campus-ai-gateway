@@ -34,11 +34,22 @@ type AdminUser struct {
 	// TenantID is the Account's single Tenant Membership, or "" when the
 	// account has not been assigned one. TenantName is projected beside it for
 	// display; it is never used as an identifier, because names are not unique.
-	TenantID    string
-	TenantName  string
-	LastLoginAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	TenantID   string
+	TenantName string
+	// ScopeTenantID confines a tenant_admin to one subtree. nil means global
+	// reach, which is the default and what every account predating 0019 keeps.
+	// It is separate from TenantID: membership says which tenant an account
+	// belongs to, scope says which subtree it may administer. A scoped
+	// administrator is not necessarily a member of the tenant it administers.
+	//
+	// ScopeTenantName is projected beside it for display only. A scope without
+	// the tenant_admin role is refused by the storage layer, so the pair can
+	// never describe an inert grant.
+	ScopeTenantID   *string
+	ScopeTenantName string
+	LastLoginAt   *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // AdminUserStats backs the summary strip on the user management page. It is

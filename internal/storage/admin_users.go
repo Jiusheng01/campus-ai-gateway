@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -31,6 +32,17 @@ var ErrLastSuperAdmin = errors.New("the last enabled super administrator cannot 
 // answer "unknown tenant" without leaking a constraint name.
 var ErrAdminTenantNotFound = errors.New("tenant not found")
 
+// ErrAdminScopeRequired refuses a tenant_admin grant without a subtree. The
+// role reaches every tenant inside a scope and nothing outside it; without a
+// scope there is no subtree, so the grant has no meaning and must not be stored.
+var ErrAdminScopeRequired = errors.New("tenant_admin requires a scope tenant")
+
+// ErrAdminScopeUnexpected refuses a scope on an account that does not hold the
+// tenant_admin role. A stored scope would look like a restriction while
+// granting nothing, and clearing the role would leave the column behind as a
+// permission that no check reads.
+var ErrAdminScopeUnexpected = errors.New("a scope tenant requires the tenant_admin role")
+
 // AdminUserOwnsKeysError refuses a Tenant change while the Account still owns
 // API Keys.
 //
@@ -50,9 +62,9 @@ const adminUserColumns = `id::text, username, password_hash, display_name, roles
 // user management page renders. It needs a join, so it lives beside the plain
 // list instead of replacing it: INSERT ... RETURNING cannot join the tenant
 // table, and a newly created account never has a Tenant anyway.
-const adminUserTenantColumns = `u.id::text, u.username, u.password_hash, u.display_name, u.roles, u.status, u.auth_version, u.last_login_at, u.created_at, u.updated_at, COALESCE(u.tenant_id::text,''), COALESCE(t.name,'')`
+const adminUserTenantColumns = `u.id::text, u.username, u.password_hash, u.display_name, u.roles, u.status, u.auth_version, u.last_login_at, u.created_at, u.updated_at, COALESCE(u.tenant_id::text,''), COALESCE(t.name,''), COALESCE(u.scope_tenant_id::text,''), COALESCE(st.name,'')`
 
-const adminUserTenantFrom = ` FROM gateway_admin_user u LEFT JOIN gateway_tenant t ON t.id = u.tenant_id`
+const adminUserTenantFrom = ` FROM gateway_admin_user u LEFT JOIN gateway_tenant t ON t.id = u.tenant_id LEFT JOIN gateway_tenant st ON st.id = u.scope_tenant_id`
 
 func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 	var u model.AdminUser
@@ -73,10 +85,11 @@ func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 func scanAdminUserWithTenant(row pgx.Row) (model.AdminUser, error) {
 	var u model.AdminUser
 	var roles []byte
+	var scopeTenantID string
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
 		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
-		&u.TenantID, &u.TenantName,
+		&u.TenantID, &u.TenantName, &scopeTenantID, &u.ScopeTenantName,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AdminUser{}, ErrAdminUserNotFound
@@ -84,6 +97,9 @@ func scanAdminUserWithTenant(row pgx.Row) (model.AdminUser, error) {
 		return model.AdminUser{}, err
 	}
 	_ = json.Unmarshal(roles, &u.Roles)
+	if scopeTenantID != "" {
+		u.ScopeTenantID = &scopeTenantID
+	}
 	return u, nil
 }
 
@@ -111,12 +127,13 @@ func (p *Postgres) CountSuperAdmins(ctx context.Context) (int64, error) {
 // which is the source of truth the gateway's allow-list is built from. It is
 // duplicated here because storage cannot import app (the dependency runs the
 // other way), so the comment is the contract: a change to the role semantics
-// must change both. tenant_admin is deliberately absent — Phase 1 withdrew its
-// global grant, so an account holding only that role grants nothing and is
-// counted as a member, exactly as the gateway treats it.
+// must change both. tenant_admin counts only when a scope is set: with one it
+// administers a subtree, without one it grants nothing and the account is a
+// member, exactly as the authorisation check treats it.
 const managementRolePredicate = `EXISTS (
     SELECT 1 FROM jsonb_array_elements_text(roles) AS r
     WHERE r IN ('auditor','operator','gateway_admin','super_admin')
+       OR (r = 'tenant_admin' AND scope_tenant_id IS NOT NULL)
   )`
 
 // AdminUserStats returns the counts shown on the user management page. They are
@@ -275,6 +292,18 @@ type AdminUserMutation struct {
 	DisplayName *string
 	Roles       *[]string
 	Status      *int
+	// Scope is a statement about the account's administrative reach, not about
+	// its membership. A non-nil Scope with a nil TenantID means "make this a
+	// global account"; a nil Scope leaves the current reach untouched, which is
+	// how an ordinary role or status patch must behave.
+	Scope *ScopeUpdate
+}
+
+// ScopeUpdate carries a scope change. TenantID nil clears the scope, widening
+// the account back to global reach; the pointer inside the pointer is what
+// distinguishes "clear" from "leave alone".
+type ScopeUpdate struct {
+	TenantID *string
 }
 
 // AdminUserChangeSet reports what a mutation actually changed.
@@ -288,6 +317,7 @@ type AdminUserChangeSet struct {
 	RolesChanged       bool
 	StatusChanged      bool
 	DisplayNameChanged bool
+	ScopeChanged       bool
 
 	OldRoles []string
 	NewRoles []string
@@ -297,6 +327,9 @@ type AdminUserChangeSet struct {
 
 	OldDisplayName string
 	NewDisplayName string
+
+	OldScopeTenantID *string
+	NewScopeTenantID *string
 }
 
 // AuthenticationChanged reports whether the change invalidates credentials.
@@ -310,7 +343,7 @@ func (c AdminUserChangeSet) AuthenticationChanged() bool {
 
 // AnythingChanged reports whether the row needs writing at all.
 func (c AdminUserChangeSet) AnythingChanged() bool {
-	return c.AuthenticationChanged() || c.DisplayNameChanged
+	return c.AuthenticationChanged() || c.DisplayNameChanged || c.ScopeChanged
 }
 
 // UpdateAdminUserAccount applies a partial account change in one transaction
@@ -363,18 +396,64 @@ func (p *Postgres) UpdateAdminUserAccount(ctx context.Context, id string, mutati
 	if mutation.DisplayName != nil {
 		next.DisplayName = *mutation.DisplayName
 	}
+	// The returned row is built from RETURNING, which cannot join the scope
+	// tenant, so the name is carried across alongside the before-state.
+	scopeName := current.ScopeTenantName
+	if mutation.Scope != nil {
+		if mutation.Scope.TenantID == nil {
+			next.ScopeTenantID = nil
+			scopeName = ""
+		} else {
+			tenantID := strings.TrimSpace(*mutation.Scope.TenantID)
+			if tenantID == "" {
+				next.ScopeTenantID = nil
+				scopeName = ""
+			} else {
+				// The scope is a foreign key, so a bad id would fail as a
+				// constraint violation halfway through the write — or, for a
+				// malformed string, as a failed uuid cast. Checking it here
+				// turns both into the same "tenant not found" answer the
+				// membership endpoint gives.
+				if _, err := uuid.Parse(tenantID); err != nil {
+					return model.AdminUser{}, AdminUserChangeSet{}, ErrAdminTenantNotFound
+				}
+				err := tx.QueryRow(ctx,
+					`SELECT name FROM gateway_tenant WHERE id=$1::uuid`, tenantID).Scan(&scopeName)
+				if errors.Is(err, pgx.ErrNoRows) {
+					return model.AdminUser{}, AdminUserChangeSet{}, ErrAdminTenantNotFound
+				}
+				if err != nil {
+					return model.AdminUser{}, AdminUserChangeSet{}, err
+				}
+				next.ScopeTenantID = &tenantID
+			}
+		}
+	}
 
 	changes := AdminUserChangeSet{
-		OldRoles:       current.Roles,
-		NewRoles:       next.Roles,
-		OldStatus:      current.Status,
-		NewStatus:      next.Status,
-		OldDisplayName: current.DisplayName,
-		NewDisplayName: next.DisplayName,
+		OldRoles:         current.Roles,
+		NewRoles:         next.Roles,
+		OldStatus:        current.Status,
+		NewStatus:        next.Status,
+		OldDisplayName:   current.DisplayName,
+		NewDisplayName:   next.DisplayName,
+		OldScopeTenantID: current.ScopeTenantID,
+		NewScopeTenantID: next.ScopeTenantID,
 	}
 	changes.RolesChanged = !sameRoleSet(current.Roles, next.Roles)
 	changes.StatusChanged = current.Status != next.Status
 	changes.DisplayNameChanged = current.DisplayName != next.DisplayName
+	changes.ScopeChanged = !sameOptionalString(current.ScopeTenantID, next.ScopeTenantID)
+
+	// The role and the scope are one grant, so they are judged together on the
+	// final state. A patch that sets both is valid; one that sets either alone
+	// is refused rather than stored as a half-permission.
+	switch {
+	case containsRole(next.Roles, roleTenantAdmin) && next.ScopeTenantID == nil:
+		return model.AdminUser{}, AdminUserChangeSet{}, ErrAdminScopeRequired
+	case !containsRole(next.Roles, roleTenantAdmin) && next.ScopeTenantID != nil:
+		return model.AdminUser{}, AdminUserChangeSet{}, ErrAdminScopeUnexpected
+	}
 
 	// The invariant is judged on the outcome, not on the fields that were sent.
 	if keepsEnabledSuperAdmin(current) && !keepsEnabledSuperAdmin(next) {
@@ -406,24 +485,36 @@ WHERE id <> $1 AND status = $2 AND `+superAdminPredicate, id, model.AdminStatusE
 	// One statement, so auth_version moves by exactly one however many fields
 	// changed: a patch that alters roles, status and the display name together
 	// is one logical change, not three.
+	//
+	// The scope is the one field that does not bump auth_version. It narrows
+	// what an account may administer, not what it may authenticate as, and the
+	// authorisation check reads it on every request.
+	var scopeArg any
+	if next.ScopeTenantID != nil {
+		scopeArg = *next.ScopeTenantID
+	}
 	updated, err := scanAdminUser(tx.QueryRow(ctx, `
 UPDATE gateway_admin_user
 SET roles = $2::jsonb,
     status = $3,
     display_name = $4,
-    auth_version = CASE WHEN $5 THEN auth_version + 1 ELSE auth_version END,
-    updated_at = CASE WHEN $6 THEN NOW() ELSE updated_at END
+    scope_tenant_id = CASE WHEN $5 THEN $6::uuid ELSE scope_tenant_id END,
+    auth_version = CASE WHEN $7 THEN auth_version + 1 ELSE auth_version END,
+    updated_at = CASE WHEN $8 THEN NOW() ELSE updated_at END
 WHERE id = $1
 RETURNING `+adminUserColumns,
-		id, encoded, next.Status, next.DisplayName, changes.AuthenticationChanged(), changes.AnythingChanged()))
+		id, encoded, next.Status, next.DisplayName, changes.ScopeChanged, scopeArg,
+		changes.AuthenticationChanged(), changes.AnythingChanged()))
 	if err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
 	}
 	// This mutation never touches tenant_id, so RETURNING cannot produce the
 	// joined name; carry the before-state across rather than reporting the
-	// account as unassigned.
+	// account as unassigned. The scope is not in adminUserColumns either.
 	updated.TenantID = current.TenantID
 	updated.TenantName = current.TenantName
+	updated.ScopeTenantID = next.ScopeTenantID
+	updated.ScopeTenantName = scopeName
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.AdminUser{}, AdminUserChangeSet{}, err
@@ -459,8 +550,9 @@ func (p *Postgres) AssignAdminUserTenant(ctx context.Context, id, tenantID strin
 	// The lock is taken before the key count so the row cannot be deleted or
 	// concurrently mutated underneath the decision. FOR UPDATE OF u leaves the
 	// joined Tenant row alone.
-	if _, err := scanAdminUserWithTenant(tx.QueryRow(ctx,
-		`SELECT `+adminUserTenantColumns+adminUserTenantFrom+` WHERE u.id=$1 FOR UPDATE OF u`, id)); err != nil {
+	current, err := scanAdminUserWithTenant(tx.QueryRow(ctx,
+		`SELECT `+adminUserTenantColumns+adminUserTenantFrom+` WHERE u.id=$1 FOR UPDATE OF u`, id))
+	if err != nil {
 		return model.AdminUser{}, err
 	}
 
@@ -498,9 +590,11 @@ RETURNING `+adminUserColumns, id, tenantArg))
 		return model.AdminUser{}, err
 	}
 	// The UPDATE's RETURNING cannot join the tenant table, so the name read
-	// above is projected onto the returned account.
+	// above is projected onto the returned account. The scope is not part of
+	// adminUserColumns, so it is carried across as well.
 	updated.TenantID = tenantID
 	updated.TenantName = tenantName
+	updated.ScopeTenantID = current.ScopeTenantID
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.AdminUser{}, err
@@ -533,6 +627,20 @@ func sameRoleSet(a, b []string) bool {
 	}
 	return true
 }
+
+// sameOptionalString compares two nullable ids by value, so "" and nil are not
+// mistaken for a change and two copies of the same id are.
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// roleTenantAdmin is the one role whose grant is tied to a scope. The name is
+// repeated here rather than imported because storage must not depend on the
+// HTTP layer's role vocabulary; the two are pinned together by tests.
+const roleTenantAdmin = "tenant_admin"
 
 func containsRole(roles []string, want string) bool {
 	for _, r := range roles {

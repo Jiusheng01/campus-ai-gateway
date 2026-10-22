@@ -92,6 +92,10 @@ const VARIABLE_HELD_CLASSES = new Set([
   'clickRow',
   'drilledRow',
   'half-open',
+  // limitClass() returns one of these three for a tri-state quota value.
+  'limitInherit',
+  'limitSet',
+  'limitUnlimited',
   'none',
   'weighted',
 ])

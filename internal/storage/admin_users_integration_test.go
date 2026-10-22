@@ -185,6 +185,7 @@ func ptr[T any](v T) *T { return &v }
 func TestAdminUserStatsCountsRolesTheWayTheGatewayDoes(t *testing.T) {
 	pg := testPostgres(t)
 	clearAccounts(t, pg)
+	ctx := context.Background()
 
 	insertAccount(t, pg, "plain-member", []string{"member"}, model.AdminStatusEnabled)
 	insertAccount(t, pg, "legacy-tenant-admin", []string{"tenant_admin"}, model.AdminStatusEnabled)
@@ -192,21 +193,35 @@ func TestAdminUserStatsCountsRolesTheWayTheGatewayDoes(t *testing.T) {
 	insertAccount(t, pg, "boss", []string{"super_admin"}, model.AdminStatusEnabled)
 	insertAccount(t, pg, "off", []string{"operator"}, model.AdminStatusDisabled)
 
-	stats, err := pg.AdminUserStats(context.Background())
+	// A tenant_admin bound to a scope is a real administrator: it reaches the
+	// console for its subtree, so counting it as a member would understate the
+	// accounts that can change configuration. The SQL decides this from the
+	// same role list the gateway uses, with the scope as a second condition.
+	tenant, err := pg.CreateTenant(ctx, model.Tenant{Code: "stats-scope", Name: "Stats Scope", Status: 1})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	scoped := insertAccount(t, pg, "scoped-tenant-admin", []string{"tenant_admin"}, model.AdminStatusEnabled)
+	scopeID := tenant.ID
+	if _, _, err := pg.UpdateAdminUserAccount(ctx, scoped.ID, AdminUserMutation{Scope: &ScopeUpdate{TenantID: &scopeID}}); err != nil {
+		t.Fatalf("set scope: %v", err)
+	}
+
+	stats, err := pg.AdminUserStats(ctx)
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.Total != 5 {
-		t.Fatalf("total = %d, want 5", stats.Total)
+	if stats.Total != 6 {
+		t.Fatalf("total = %d, want 6", stats.Total)
 	}
 	// plain member plus the legacy tenant_admin, which now grants nothing.
 	if stats.Members != 2 {
 		t.Fatalf("members = %d, want 2: a legacy tenant_admin must count as a member", stats.Members)
 	}
-	// auditor, super_admin and the (disabled) operator: the count is about the
-	// roles held, not about the accounts being enabled.
-	if stats.Admins != 3 {
-		t.Fatalf("admins = %d, want 3", stats.Admins)
+	// auditor, super_admin, the (disabled) operator and the scoped tenant_admin:
+	// the count is about the roles held, not about the accounts being enabled.
+	if stats.Admins != 4 {
+		t.Fatalf("admins = %d, want 4: a scoped tenant_admin must count as an administrator", stats.Admins)
 	}
 	if stats.Disabled != 1 {
 		t.Fatalf("disabled = %d, want 1", stats.Disabled)
@@ -526,5 +541,137 @@ func TestMutationOfUnknownAccountIsNotFound(t *testing.T) {
 		"00000000-0000-0000-0000-000000000000", AdminUserMutation{DisplayName: ptr("x")})
 	if !errors.Is(err, ErrAdminUserNotFound) {
 		t.Fatalf("expected ErrAdminUserNotFound, got %v", err)
+	}
+}
+
+// --- the tenant_admin grant is a pair ---------------------------------------
+
+// The role grants reach over a subtree, so it is meaningless — and, if stored,
+// dangerous — without knowing which subtree. The database refuses the half
+// grants rather than trusting every future caller to remember the pairing, and
+// refuses them in the same transaction that would have written them.
+func TestTenantAdminGrantRequiresRoleAndScopeTogether(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant, err := pg.CreateTenant(ctx, model.Tenant{Code: "grant-scope", Name: "Grant Scope", Status: 1})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	tenantAdmin := []string{"tenant_admin"}
+	member := []string{"member"}
+
+	t.Run("role without scope is refused", func(t *testing.T) {
+		account := insertAccount(t, pg, "role-only", member, model.AdminStatusEnabled)
+		_, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{Roles: &tenantAdmin})
+		if !errors.Is(err, ErrAdminScopeRequired) {
+			t.Fatalf("expected ErrAdminScopeRequired, got %v", err)
+		}
+		reloaded, err := pg.FindAdminUserByID(ctx, account.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if containsRole(reloaded.Roles, roleTenantAdmin) {
+			t.Fatal("a refused grant must not leave the role behind")
+		}
+		if reloaded.ScopeTenantID != nil {
+			t.Fatal("a refused grant must not leave a scope behind")
+		}
+	})
+
+	t.Run("scope without role is refused", func(t *testing.T) {
+		account := insertAccount(t, pg, "scope-only", member, model.AdminStatusEnabled)
+		scopeID := tenant.ID
+		_, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{Scope: &ScopeUpdate{TenantID: &scopeID}})
+		if !errors.Is(err, ErrAdminScopeUnexpected) {
+			t.Fatalf("expected ErrAdminScopeUnexpected, got %v", err)
+		}
+	})
+
+	t.Run("both together are stored and named", func(t *testing.T) {
+		account := insertAccount(t, pg, "paired", member, model.AdminStatusEnabled)
+		scopeID := tenant.ID
+		updated, changes, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+			Roles: &tenantAdmin,
+			Scope: &ScopeUpdate{TenantID: &scopeID},
+		})
+		if err != nil {
+			t.Fatalf("grant: %v", err)
+		}
+		if !changes.ScopeChanged || updated.ScopeTenantID == nil || *updated.ScopeTenantID != tenant.ID {
+			t.Fatalf("scope not stored: %+v", updated.ScopeTenantID)
+		}
+		if updated.ScopeTenantName != tenant.Name {
+			t.Fatalf("scope name = %q, want %q", updated.ScopeTenantName, tenant.Name)
+		}
+	})
+
+	t.Run("clearing the scope while keeping the role is refused", func(t *testing.T) {
+		account := insertAccount(t, pg, "clear-scope", member, model.AdminStatusEnabled)
+		scopeID := tenant.ID
+		if _, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+			Roles: &tenantAdmin,
+			Scope: &ScopeUpdate{TenantID: &scopeID},
+		}); err != nil {
+			t.Fatalf("grant: %v", err)
+		}
+		_, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+			Scope: &ScopeUpdate{TenantID: nil},
+		})
+		if !errors.Is(err, ErrAdminScopeRequired) {
+			t.Fatalf("expected ErrAdminScopeRequired, got %v", err)
+		}
+	})
+
+	t.Run("unknown and malformed scope tenants are not found", func(t *testing.T) {
+		account := insertAccount(t, pg, "bad-scope", member, model.AdminStatusEnabled)
+		for _, id := range []string{"00000000-0000-0000-0000-000000000000", "not-a-uuid"} {
+			bad := id
+			_, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+				Roles: &tenantAdmin,
+				Scope: &ScopeUpdate{TenantID: &bad},
+			})
+			if !errors.Is(err, ErrAdminTenantNotFound) {
+				t.Fatalf("scope %q: expected ErrAdminTenantNotFound, got %v", id, err)
+			}
+		}
+	})
+}
+
+// A scope narrows where an account may act. Dropping it widens the account
+// back to global reach, so it can only be done together with losing the role.
+func TestRemovingTenantAdminRoleAlongWithScopeSucceeds(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant, err := pg.CreateTenant(ctx, model.Tenant{Code: "revoke-scope", Name: "Revoke Scope", Status: 1})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	tenantAdmin := []string{"tenant_admin"}
+	member := []string{"member"}
+	account := insertAccount(t, pg, "downgraded", member, model.AdminStatusEnabled)
+	scopeID := tenant.ID
+	if _, _, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+		Roles: &tenantAdmin,
+		Scope: &ScopeUpdate{TenantID: &scopeID},
+	}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	updated, changes, err := pg.UpdateAdminUserAccount(ctx, account.ID, AdminUserMutation{
+		Roles: &member,
+		Scope: &ScopeUpdate{TenantID: nil},
+	})
+	if err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	if !changes.ScopeChanged || updated.ScopeTenantID != nil || updated.ScopeTenantName != "" {
+		t.Fatalf("scope not cleared: %+v %q", updated.ScopeTenantID, updated.ScopeTenantName)
+	}
+	if containsRole(updated.Roles, roleTenantAdmin) {
+		t.Fatal("role still present after downgrade")
 	}
 }

@@ -33,8 +33,8 @@ func TestParseAdminRolesDropsRolelessGroups(t *testing.T) {
 		{"separators only", " , ; , ", []string{RoleMember}},
 		{"unknown only", "god_mode", []string{RoleMember}},
 		{"several unknown", "god_mode,root,;", []string{RoleMember}},
-		// The global form of tenant_admin was removed in Phase 1, so a proxy
-		// still sending it must not hand the account a management identity.
+		// The proxy path carries no scope, and tenant_admin without one is the
+		// global grant that was withdrawn, so the role is dropped here.
 		{"legacy tenant_admin", RoleTenantAdmin, []string{RoleMember}},
 		{"legacy tenant_admin beside member", "member," + RoleTenantAdmin, []string{RoleMember}},
 		{"known role survives", RoleAuditor, []string{RoleAuditor}},
