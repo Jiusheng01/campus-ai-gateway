@@ -1431,6 +1431,33 @@ input:focus, select:focus, textarea:focus {
 }
 .settingsReadOnly svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
 
+/* Personal overview: the ordered next steps. Each row is a link plus the fact
+   that decides whether it is already done, so the state has a text label as
+   well as a colour. */
+.nextSteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.nextStep {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) 1fr auto;
+  gap: 10px 16px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.nextStepLink { font-weight: 700; color: var(--primary); text-decoration: none; }
+.nextStepLink:hover { text-decoration: underline; }
+.nextStepLink:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+.nextStepDetail { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; }
+.nextStepState { font-size: 12px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.nextStep.done { border-color: color-mix(in srgb, var(--success) 32%, var(--border)); }
+.nextStep.done .nextStepState { color: var(--success); }
+.nextStep.todo .nextStepState { color: var(--warning); }
+.nextStep.blocked { grid-template-columns: 1fr; }
+@media (max-width: 720px) {
+  .nextStep { grid-template-columns: 1fr; gap: 4px; }
+}
+
 /* --- utilities ------------------------------------------------------------ */
 
 .mono { font-family: var(--font-mono); font-size: 12px; }

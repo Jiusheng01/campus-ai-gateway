@@ -233,7 +233,7 @@ describe('personal console overview', () => {
 
     expect(await screen.findByText('还没有 API Key')).toBeInTheDocument()
     expect(screen.getByText(/创建你的第一个 API Key/)).toBeInTheDocument()
-    expect(screen.getByRole('link', {name: '创建 API Key'})).toHaveAttribute('href', '/console/keys')
+    expect(screen.getAllByRole('link', {name: '创建 API Key'})[0]).toHaveAttribute('href', '/console/keys')
 
     // With no credential there is nothing to measure yet, so no traffic cards.
     expect(screen.queryByText('今日请求')).not.toBeInTheDocument()
@@ -316,5 +316,49 @@ describe('personal console overview', () => {
 
     expect(await screen.findByText('加载失败')).toBeInTheDocument()
     expect(screen.queryByText('尚未分配租户')).not.toBeInTheDocument()
+  })
+})
+
+describe('personal console next steps', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // The overview is a starting point, not only a report. The steps it offers
+  // have to follow the account's real state: a member with no key is not
+  // helped by a link to usage they have none of.
+  it('walks a new member from models to a key, an example and then usage', async () => {
+    stubConsole({keys: []})
+    render(<ConsoleOverviewPage />)
+
+    const steps = await screen.findByRole('region', {name: '接下来'})
+    const items = within(steps).getAllByRole('listitem')
+    expect(items).toHaveLength(4)
+    expect(items[0]).toHaveTextContent('查看模型')
+    expect(within(items[0]).getByRole('link')).toHaveAttribute('href', '/console/models')
+    expect(items[1]).toHaveTextContent('创建 API Key')
+    expect(within(items[1]).getByRole('link')).toHaveAttribute('href', '/console/keys')
+    expect(items[2]).toHaveTextContent('复制接入示例')
+    expect(items[3]).toHaveTextContent('查看用量与调用记录')
+    expect(within(items[3]).getByRole('link')).toHaveAttribute('href', '/console/usage')
+  })
+
+  it('marks completed steps from real data, not from the fact that the page loaded', async () => {
+    stubConsole()
+    render(<ConsoleOverviewPage />)
+
+    const steps = await screen.findByRole('region', {name: '接下来'})
+    // Two keys exist in the stub, so the key step is done. Reading the catalog
+    // and copying an example leave no server fact, so they are not claimed.
+    expect(within(steps).getAllByText('已完成').length).toBe(1)
+    expect(within(steps).queryByText('待完成')).not.toBeInTheDocument()
+  })
+
+  it('offers no next steps to an unassigned account beyond the assignment', async () => {
+    stubConsole({me: {tenant_id: '', tenant_name: '', allowed_models: [], workspace_usable: false}, keys: [], logs: {data: [], limit: 5, offset: 0}})
+    render(<ConsoleOverviewPage />)
+
+    await screen.findByText('尚未分配租户')
+    const steps = screen.getByRole('region', {name: '接下来'})
+    expect(within(steps).queryByText('创建 API Key')).not.toBeInTheDocument()
+    expect(within(steps).getByText(/联系管理员分配租户/)).toBeInTheDocument()
   })
 })

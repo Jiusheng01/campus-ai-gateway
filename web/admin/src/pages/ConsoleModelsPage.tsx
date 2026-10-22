@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   KeyRound,
+  RefreshCw,
   ServerOff,
   ShieldOff,
 } from 'lucide-react'
@@ -94,7 +95,15 @@ print(resp.choices[0].message.content)`
         </Panel>
       ) : (
         <>
-          <Panel title="可用模型" sub="仅列出已启用且当前有可用线路的模型。">
+          <Panel
+            title="可用模型"
+            sub="仅列出已启用且当前有可用线路的模型，这是网关的静态可路由集合，不是实时健康状态。"
+            actions={
+              <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={() => void reload()}>
+                刷新模型
+              </Button>
+            }
+          >
             {models.length ? (
               <Table heads={['模型别名', '显示名称', '说明']} minWidth={620}>
                 {models.map(m => (
@@ -114,6 +123,17 @@ print(resp.choices[0].message.content)`
 
           {models.length > 0 && (
             <Panel title="接入信息" sub="OpenAI 兼容接口；请使用你自己的个人 API Key。">
+              {/* The catalog is the gateway's current answer. A key issued
+                  earlier keeps the allowlist it was issued with, so a model
+                  added afterwards is callable only after that key's scope is
+                  widened. Saying it here prevents a 403 that looks like an
+                  outage. */}
+              <div className="panelPad">
+                <p className="hint">
+                  已有的 API Key 按签发时的模型授权工作，不会自动覆盖后来新增的模型；
+                  如果新模型调用返回未授权，请在「API Key」中编辑该 Key 的模型范围。
+                </p>
+              </div>
               <div className="panelPad accessStack">
                 <div className="accessBlock">
                   <div className="accessHeading">

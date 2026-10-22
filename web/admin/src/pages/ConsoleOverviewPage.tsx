@@ -104,6 +104,8 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
 
           {data.workspace_usable ? (
             <>
+              <NextSteps data={data} onNavigate={onNavigate} />
+
               <Panel title="租户与工作台" sub="租户决定你使用的配额与可调用的模型。">
                 <div className="panelPad">
                   <dl className="accountFacts">
@@ -124,17 +126,66 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
               <WorkspaceSummary keyCount={data.key_count} onNavigate={onNavigate} />
             </>
           ) : (
-            <Panel title="租户与工作台" sub="租户决定你使用的配额与可调用的模型。">
-              <EmptyState
-                icon={<Building2 />}
-                title="尚未分配租户"
-                description="你的账号还没有加入任何租户，因此暂时没有可使用的配额。请联系管理员在「用户」中为你的账号分配租户；分配后刷新本页即可看到工作台状态。"
-              />
-            </Panel>
+            <>
+              <section aria-label="接下来">
+                <Panel title="接下来" sub="账号还没有租户归属，这一步需要管理员完成。">
+                  <ol className="nextSteps">
+                    <li className="nextStep blocked">
+                      <b>联系管理员分配租户</b>
+                      <span>租户决定你可以使用哪些模型和多少配额；分配后刷新本页即可继续。</span>
+                    </li>
+                  </ol>
+                </Panel>
+              </section>
+              <Panel title="租户与工作台" sub="租户决定你使用的配额与可调用的模型。">
+                <EmptyState
+                  icon={<Building2 />}
+                  title="尚未分配租户"
+                  description="你的账号还没有加入任何租户，因此暂时没有可使用的配额。请联系管理员在「用户」中为你的账号分配租户；分配后刷新本页即可看到工作台状态。"
+                />
+              </Panel>
+            </>
           )}
         </>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The four things a member does, in the order that works.
+ *
+ * Completion is read from the data this page already holds: a key exists when
+ * `/me` reports a non-zero key count, and traffic exists when the account has
+ * request records. The step that depends on an action on another page (copying
+ * an example) has no server fact behind it, so it is never marked done — a
+ * tick there would be a guess.
+ */
+function NextSteps({data, onNavigate}: {data: ConsoleMe; onNavigate?: Navigate}) {
+  const steps: {label: string; detail: string; page: Page; done: boolean | null}[] = [
+    {label: '查看模型', detail: '确认你的租户允许调用哪些模型。', page: 'models', done: null},
+    {label: '创建 API Key', detail: '创建后完整 Key 只显示一次，当次复制。', page: 'keys', done: data.key_count > 0},
+    {label: '复制接入示例', detail: '在模型页复制 Base URL、curl 或 SDK 示例。', page: 'models', done: null},
+    {label: '查看用量与调用记录', detail: '调用之后在这里核对请求与 Token。', page: 'usage', done: null},
+  ]
+  return (
+    <section aria-label="接下来">
+      <Panel title="接下来" sub="按顺序完成即可接入；已完成状态来自你账号的真实数据。">
+        <ol className="nextSteps">
+          {steps.map(step => (
+            <li key={step.label} className={`nextStep ${step.done === true ? 'done' : step.done === false ? 'todo' : ''}`.trim()}>
+              <ConsoleLink page={step.page} onNavigate={onNavigate} className="nextStepLink">
+                {step.label}
+              </ConsoleLink>
+              <span className="nextStepDetail">{step.detail}</span>
+              <span className="nextStepState">
+                {step.done === true ? '已完成' : step.done === false ? '待完成' : '按需'}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </Panel>
+    </section>
   )
 }
 
