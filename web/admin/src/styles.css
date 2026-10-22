@@ -910,6 +910,9 @@ table.data tbody tr.drilledRow { background: var(--primary-soft); }
 }
 .chartReadout b { color: var(--text); font-variant-numeric: tabular-nums; }
 .chartReadout .chartReadoutWhen { min-width: 96px; color: var(--text); }
+/* The metric this chart draws leads the readout; the shared context follows. */
+.chartReadout .chartReadoutOwn { font-weight: 600; color: var(--text); }
+.chartReadout .chartReadoutOwn b { font-size: 13px; }
 .chartReadout .danger b { color: var(--danger); }
 
 .chartScroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
