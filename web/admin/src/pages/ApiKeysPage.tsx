@@ -85,12 +85,16 @@ export function ApiKeysPage({
     })
   }, [keys, searchQuery, statusFilter, tenantFilter])
 
+  // A refused clipboard must say so. The operator asked for a copy; staying
+  // silent would leave them believing the prefix is on it.
   const copyPrefix = async (prefix: string) => {
     if (await copyText(prefix)) {
       setCopiedPrefix(prefix)
       toast.success(`Key 前缀已复制: ${prefix}`)
       setTimeout(() => setCopiedPrefix(null), 2000)
+      return
     }
+    toast.error('复制失败，请手动选择并复制 Key 前缀')
   }
 
   const save = async (v: KeyDraft) => {
@@ -298,7 +302,15 @@ export function ApiKeysPage({
 
                     <td>
                       <div className="tenantCell">
-                        <span className="tenantName">{k.tenant_name || '默认租户'}</span>
+                        {/* The tenant is the key's owner. If the response carries
+                            no name, say that instead of inventing a default:
+                            a made-up owner sends an operator to the wrong
+                            department when a request is refused. */}
+                        {k.tenant_name ? (
+                          <span className="tenantName">{k.tenant_name}</span>
+                        ) : (
+                          <span className="tenantName unknown">归属租户未返回</span>
+                        )}
                         {k.tenant_code && (
                           <small className="tenantCode mono muted"> / {k.tenant_code}</small>
                         )}
