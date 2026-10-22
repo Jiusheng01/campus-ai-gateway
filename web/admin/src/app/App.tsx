@@ -341,7 +341,7 @@ function Console() {
           {route.page === 'usage' && <ConsoleUsagePage />}
           {route.page === 'logs' && <ConsoleLogsPage />}
           {route.page === 'profile' && <ProfilePage who={who} />}
-          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
+          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} minPasswordLength={authConfig?.min_password_length} />}
         </>
       ) : (
         <>
@@ -370,7 +370,7 @@ function Console() {
           {route.page === 'users' && <UsersPage />}
           {route.page === 'settings' && <SettingsPage who={who} authConfig={authConfig} />}
           {route.page === 'profile' && <ProfilePage who={who} />}
-          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} />}
+          {route.page === 'access' && <AccessPage who={who} onSignedOut={() => void signOut()} minPasswordLength={authConfig?.min_password_length} />}
         </>
       )}
     </Shell>
