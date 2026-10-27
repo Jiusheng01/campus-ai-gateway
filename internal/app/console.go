@@ -53,6 +53,15 @@ func (s *Server) consoleMiddleware(next http.Handler) http.Handler {
 			writeAdminError(w, reqID, ErrConsoleIdentityUnavailable)
 			return
 		}
+		// The personal workspace holds the same secrets a reset password must
+		// not reach: the account's keys, its Tenant's models and its own
+		// history. Unlike the management console there is no "change password"
+		// path here, so the fence admits nothing at all and the account has to
+		// use /admin-ui to set its own password.
+		if principal.PasswordResetRequired {
+			writeAdminError(w, reqID, ErrAdminPasswordResetRequired)
+			return
+		}
 		ctx := withAdminPrincipal(r.Context(), principal)
 
 		if !isStateChangingMethod(r.Method) {

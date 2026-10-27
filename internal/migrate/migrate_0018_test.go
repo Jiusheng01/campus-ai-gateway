@@ -90,8 +90,13 @@ func TestMigration0018UpgradesSeededDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(result.Applied) != 1 || !strings.HasSuffix(result.Applied[0], "0018_ownership_and_snapshot.sql") {
-		t.Fatalf("applied = %v, want only 0018", result.Applied)
+	// The runner advances the database to the end of the migration set, so a
+	// database parked at 0017 crosses 0018 and every later file too. The
+	// assertions below still pin what 0018 itself is responsible for.
+	if len(result.Applied) != 2 ||
+		!strings.HasSuffix(result.Applied[0], "0018_ownership_and_snapshot.sql") ||
+		!strings.HasSuffix(result.Applied[1], "0019_admin_password_reset.sql") {
+		t.Fatalf("applied = %v, want 0018 then 0019", result.Applied)
 	}
 
 	second, err := Apply(context.Background(), url, repoMigrations)

@@ -67,6 +67,10 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			writeAdminError(w, reqID, err)
 			return
 		}
+		if principal.PasswordResetRequired && !resetFenceAllows(r) {
+			writeAdminError(w, reqID, ErrAdminPasswordResetRequired)
+			return
+		}
 		if !principal.can(r) {
 			writeAdminError(w, reqID, ErrAdminForbidden)
 			return
@@ -79,6 +83,34 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// resetFenceAllows names the only requests an account holding a handed-over
+// password may make.
+//
+// After an administrator resets a password, the credential in the account
+// holder's hands is one somebody else chose, read aloud or written down. Letting
+// it reach the console would mean the escalation "an operator can reset any
+// account" silently became "an operator can become any account": they reset it,
+// sign in with the password they picked, and act with the target's roles and
+// Tenant. The fence keeps that from happening by holding the session shut until
+// the account holder replaces the password with one the operator never saw.
+//
+// The list is deliberately tiny and exact-match. Signing out, asking who you are
+// and changing your own password are the whole of what is needed to satisfy the
+// obligation; everything else — including reads — waits.
+func resetFenceAllows(r *http.Request) bool {
+	switch {
+	case r.URL.Path == "/admin/password" && r.Method == http.MethodPost:
+		return true
+	case r.URL.Path == "/admin/whoami" && r.Method == http.MethodGet:
+		return true
+	case r.URL.Path == "/admin/logout" && r.Method == http.MethodPost:
+		return true
+	case r.URL.Path == "/admin/auth/logout" && r.Method == http.MethodPost:
+		return true
+	}
+	return false
 }
 
 // isStateChangingMethod reports whether a method can mutate control-plane
@@ -260,6 +292,10 @@ func (s *Server) handleAdminWhoAmI(w http.ResponseWriter, r *http.Request) {
 		"session_id": p.SessionID,
 		"roles":      roles,
 		"auth_mode":  p.AuthMode,
+		// The sign-in response does not carry this, and it is the one fact the
+		// browser needs to route the account to the "choose a new password"
+		// screen instead of a workspace it cannot use.
+		"password_reset_required": p.PasswordResetRequired,
 	})
 }
 

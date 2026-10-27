@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
 )
 
@@ -31,10 +32,14 @@ type adminUserView struct {
 	// TenantID and TenantName are the Account's Tenant Membership. Empty
 	// strings mean "unassigned", not a Tenant named "". The name is projected
 	// for display; the id is the identifier.
-	TenantID    string  `json:"tenant_id"`
-	TenantName  string  `json:"tenant_name"`
-	LastLoginAt *string `json:"last_login_at"`
-	CreatedAt   string  `json:"created_at"`
+	TenantID   string `json:"tenant_id"`
+	TenantName string `json:"tenant_name"`
+	// PasswordResetRequired tells the user management page that this account is
+	// still holding a password an operator handed over, so the operator can see
+	// that the handover was never completed rather than assuming it was.
+	PasswordResetRequired bool    `json:"password_reset_required"`
+	LastLoginAt           *string `json:"last_login_at"`
+	CreatedAt             string  `json:"created_at"`
 }
 
 func adminUserViewFrom(u model.AdminUser) adminUserView {
@@ -44,15 +49,16 @@ func adminUserViewFrom(u model.AdminUser) adminUserView {
 		lastLogin = &formatted
 	}
 	return adminUserView{
-		ID:          u.ID,
-		Username:    u.Username,
-		DisplayName: u.DisplayName,
-		Roles:       NormalizeAccountRoles(u.Roles),
-		Status:      u.Status,
-		TenantID:    u.TenantID,
-		TenantName:  u.TenantName,
-		LastLoginAt: lastLogin,
-		CreatedAt:   u.CreatedAt.UTC().Format(time.RFC3339),
+		ID:                    u.ID,
+		Username:              u.Username,
+		DisplayName:           u.DisplayName,
+		Roles:                 NormalizeAccountRoles(u.Roles),
+		Status:                u.Status,
+		TenantID:              u.TenantID,
+		TenantName:            u.TenantName,
+		PasswordResetRequired: u.PasswordResetRequired,
+		LastLoginAt:           lastLogin,
+		CreatedAt:             u.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -160,6 +166,109 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 	return updated, changes, nil
 }
 
+// createUser lets an administrator open an account for somebody who has not
+// registered, choose its roles, and hand over a password.
+//
+// It differs from public registration in three ways, each deliberate:
+//
+//   - The role list is a parameter. Registration is hard-wired to ["member"]
+//     because an anonymous caller must not choose its own authority; here the
+//     caller is a super administrator, and the roles they pick are the grant.
+//   - No registration throttle applies. That counter exists to bound anonymous
+//     account creation, and the operator is not anonymous.
+//   - The password is marked reset-required, exactly as an administrator reset
+//     is. The operator chose it and can read it, so it proves a handover, not
+//     an identity; the account must choose its own before it can do anything.
+//
+// A Tenant may be assigned in the same call. It is written after the account
+// exists because the row has to exist first, and a failure there is reported as
+// a partial success rather than undoing an account the operator asked for.
+func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (model.AdminUser, error) {
+	username := strings.TrimSpace(in.Username)
+	displayName := strings.TrimSpace(in.DisplayName)
+
+	if username == "" || utf8.RuneCountInString(username) > 64 {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameRunes {
+		return model.AdminUser{}, ErrAdminBadRequest
+	}
+	// The same role rules the account patch applies. "member" is derived, not
+	// chosen: NormalizeAccountRoles keeps it only when no management role was
+	// picked, which is what "an ordinary account" means.
+	if err := ValidateAccountRoles(in.Roles); err != nil {
+		return model.AdminUser{}, err
+	}
+	roles := NormalizeAccountRoles(in.Roles)
+	if err := validateAdminPassword(username, in.Password); err != nil {
+		return model.AdminUser{}, err
+	}
+	if in.TenantID != "" {
+		// Checked before the account is inserted so a mistyped Tenant does not
+		// leave an orphan account the operator has to find and delete.
+		//
+		// A missing Tenant answers (nil, nil) from the allowlist read, which is
+		// the same answer as "a Tenant that grants nothing", so existence is
+		// asked for directly rather than inferred from that read.
+		exists, err := a.store.TenantExists(ctx, in.TenantID)
+		if err != nil {
+			return model.AdminUser{}, ErrAdminInternal
+		}
+		if !exists {
+			return model.AdminUser{}, ErrAdminTenantNotFound
+		}
+	}
+
+	hash, err := security.HashPassword(in.Password)
+	if err != nil {
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	created, err := a.store.CreateUser(ctx, username, displayName, hash, roles)
+	if err != nil {
+		switch {
+		case errors.Is(err, storage.ErrAdminUsernameTaken):
+			return model.AdminUser{}, ErrAdminUsernameTaken
+		case errors.Is(err, storage.ErrAdminUserNotFound):
+			return model.AdminUser{}, ErrAdminInternal
+		default:
+			return model.AdminUser{}, ErrAdminInternal
+		}
+	}
+
+	// The reset flag is what makes the handed-over password temporary. It is
+	// set with the same statement shape a reset uses, so the console shows the
+	// account as "waiting for its owner" from the moment it exists.
+	if _, err := a.store.ResetAdminUserPassword(ctx, created.ID, hash); err != nil {
+		log.Printf("user management: account %s created but could not be marked reset-required: %v", created.Username, err)
+	}
+
+	if in.TenantID != "" {
+		assigned, err := a.store.AssignAdminUserTenant(ctx, created.ID, in.TenantID)
+		if err != nil {
+			log.Printf("user management: account %s created but joining Tenant %s failed, an operator must assign it: %v",
+				created.Username, in.TenantID, err)
+			created.TenantID = ""
+			created.TenantName = ""
+			return created, nil
+		}
+		return assigned, nil
+	}
+	updated, err := a.store.FindAdminUserByID(ctx, created.ID)
+	if err != nil {
+		return created, nil
+	}
+	return updated, nil
+}
+
+// adminUserCreate is the validated input for an administrator-created account.
+type adminUserCreate struct {
+	Username    string
+	DisplayName string
+	Password    string
+	Roles       []string
+	TenantID    string
+}
+
 // adminUserOwnsKeysError is the service-level form of the storage refusal, kept
 // so the HTTP layer never has to know which layer decided the count.
 type adminUserOwnsKeysError struct{ Count int64 }
@@ -231,8 +340,15 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, reqID, ErrAdminAuthDisabled)
 		return
 	}
+	// The collection serves two operations: reading the list, and opening a new
+	// account. They share the RBAC prefix — /admin/users is super_admin only —
+	// so the split is by method rather than by path.
+	if r.Method == http.MethodPost {
+		s.handleAdminUserCreate(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+		w.Header().Set("Allow", "GET, POST")
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
@@ -254,6 +370,74 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 			"admins":   stats.Admins,
 			"disabled": stats.Disabled,
 		},
+	})
+}
+
+// --- POST /admin/users -----------------------------------------------------
+
+type adminUserCreateRequest struct {
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Password    string   `json:"password"`
+	Roles       []string `json:"roles"`
+	TenantID    string   `json:"tenant_id"`
+}
+
+// handleAdminUserCreate opens an account on somebody's behalf.
+//
+// It is the counterpart to the account patch: the patch changes an account that
+// exists, this one makes one. The alternative — asking every new person to
+// register themselves and then promoting them — puts the account-creation
+// moment in the hands of whoever reaches the site first, and does not work at
+// all when public registration is closed.
+//
+// The response deliberately contains no credential. The operator already knows
+// the password they typed; repeating it here would put it in the browser's
+// network log, the audit row and any proxy in between.
+func (s *Server) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
+	reqID := r.Header.Get("X-Request-Id")
+	if !s.cfg.SessionAuthEnabled() || s.adminAuth == nil {
+		writeAdminError(w, reqID, ErrAdminAuthDisabled)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+	principal, ok := adminPrincipalFrom(r.Context())
+	if !ok || principal.Username == "" {
+		writeAdminError(w, reqID, ErrAdminForbidden)
+		return
+	}
+
+	var in adminUserCreateRequest
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+
+	// An omitted role list means "an ordinary account", which is what the
+	// normaliser derives from an empty list. Management roles are only ever
+	// present because the operator picked them.
+	created, err := s.adminAuth.createUser(r.Context(), adminUserCreate{
+		Username:    in.Username,
+		DisplayName: in.DisplayName,
+		Password:    in.Password,
+		Roles:       in.Roles,
+		TenantID:    strings.TrimSpace(in.TenantID),
+	})
+	if err != nil {
+		s.auditAdminAuth(r, "user.create_failed", statusForAdminError(err), principal.Username)
+		writeAdminError(w, reqID, err)
+		return
+	}
+
+	s.auditAdminAuth(r, "user.create", http.StatusCreated, principal.Username)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"data": adminUserViewFrom(created),
+		"message": "Account created. Hand the password over out of band: " +
+			"the account must choose its own before it can be used.",
 	})
 }
 
@@ -291,6 +475,16 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleAdminUserTenant(w, r, tenantID, reqID, principal)
+		return
+	}
+	// The password reset is the same shape of mutation: its own path, its own
+	// permission question and its own refusals.
+	if resetID, ok := strings.CutSuffix(targetID, "/password-reset"); ok {
+		if resetID == "" || strings.Contains(resetID, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleAdminUserPasswordReset(w, r, resetID, reqID, principal)
 		return
 	}
 	if targetID == "" || strings.Contains(targetID, "/") {
@@ -341,6 +535,13 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type adminUserPasswordResetRequest struct {
+	// NewPassword is the password the operator hands over. There is no
+	// "current password" field: the whole point of a reset is that the current
+	// credential is unavailable to its owner.
+	NewPassword string `json:"new_password"`
+}
+
 type adminUserTenantUpdateRequest struct {
 	// TenantID is a pointer so an explicit null and an omitted field both mean
 	// "unassign": the endpoint is a complete statement about membership, not a
@@ -353,6 +554,48 @@ type adminUserTenantUpdateRequest struct {
 // The 409 is written by hand rather than through writeAdminError because the
 // refusal has to carry the key count as a field. Embedding the number in the
 // message alone would make the console parse prose to render it.
+func (s *Server) handleAdminUserPasswordReset(w http.ResponseWriter, r *http.Request, targetID, reqID string, principal adminPrincipal) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
+		return
+	}
+
+	// The RBAC allow-list admits only super_admin to /admin/users, and this
+	// handler inherits that. The explicit check is for the empty-username case
+	// the trusted-header paths can produce, where the principal reached the
+	// middleware without an account behind it and therefore could not be the
+	// target of an audit trail.
+	if principal.Username == "" {
+		writeAdminError(w, reqID, ErrAdminForbidden)
+		return
+	}
+
+	var in adminUserPasswordResetRequest
+	if err := decodeAdminAuthBody(w, r, &in); err != nil {
+		writeAdminError(w, reqID, ErrAdminBadRequest)
+		return
+	}
+
+	updated, err := s.adminAuth.resetPassword(r.Context(), targetID, in.NewPassword)
+	if err != nil {
+		s.auditAdminAuth(r, "user.password_reset_failed", statusForAdminError(err), principal.Username)
+		writeAdminError(w, reqID, err)
+		return
+	}
+
+	// The audit row records that a reset happened and to which account. It
+	// deliberately does not carry the password: the trail is read by people
+	// investigating an incident, and a password in it would be both a leak and
+	// a target.
+	s.auditAdminAuth(r, "user.password_reset", http.StatusOK, principal.Username)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": adminUserViewFrom(updated),
+		"message": "Password reset. The account must choose a new password at its next sign-in, " +
+			"and every existing session has been revoked.",
+	})
+}
+
 func (s *Server) handleAdminUserTenant(w http.ResponseWriter, r *http.Request, targetID, reqID string, principal adminPrincipal) {
 	if r.Method != http.MethodPut {
 		w.Header().Set("Allow", "PUT")
