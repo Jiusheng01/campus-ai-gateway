@@ -69,6 +69,29 @@ services:
       # switched to the break-glass ADMIN_AUTH_MODE=token; token mode refuses a
       # placeholder at startup.
       ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      # The nginx container sits in front of this one, so without this every
+      # request looks like it came from the proxy's address. The consequence is
+      # not cosmetic: login and registration throttling are keyed on the source
+      # address, so one shared key means one person's five failed attempts lock
+      # out the whole campus. Audit rows also record the proxy instead of the
+      # caller.
+      #
+      # It must be the network this stack actually uses, not a wide private
+      # range: anything listed here may set X-Forwarded-For, and a caller who
+      # can set it can pick the address the counters are keyed on. Find the real
+      # value with `docker network inspect <project>_default` and narrow it.
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}"
+      # Self-service registration. Off unless the host environment turns it on:
+      # the gateway refuses it until a super administrator exists, and every
+      # account it creates is a plain member with no management role.
+      #
+      # PUBLIC_REGISTER_TENANT_ID is what makes a signup usable — without it the
+      # account can sign in but cannot create a key, because it has no Tenant to
+      # draw quota and models from. Every account that joins the same Tenant
+      # shares its quota, so a deployment that bills by department leaves this
+      # unset and assigns Tenants by hand.
+      PUBLIC_REGISTRATION_ENABLED: "${PUBLIC_REGISTRATION_ENABLED:-false}"
+      PUBLIC_REGISTER_TENANT_ID: "${PUBLIC_REGISTER_TENANT_ID:-}"
     depends_on:
       postgres:
         condition: service_healthy

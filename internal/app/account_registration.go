@@ -86,6 +86,27 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 		}
 	}
 
+	// Membership is joined before the session is opened, so the first page the
+	// new Account loads already reflects reality. Assigning it afterwards
+	// would let the personal console's very first fetch — which happens
+	// immediately after sign-in — read "no Tenant assigned" and cache that
+	// answer in the page the user is looking at.
+	//
+	// A failure here is not allowed to undo the registration: the account and
+	// its password are already committed, and the operator can still assign
+	// the Tenant by hand. It is logged loudly because the deployment was
+	// configured to do this automatically and silently not doing it is exactly
+	// the state this setting exists to prevent.
+	if a.registrationTenantID != "" {
+		assigned, err := a.assignUserTenant(ctx, user.ID, a.registrationTenantID)
+		if err != nil {
+			log.Printf("registration: account %s created but joining Tenant %s failed, an operator must assign it: %v",
+				user.Username, a.registrationTenantID, err)
+		} else {
+			user = assigned
+		}
+	}
+
 	tokens, err := a.openSession(ctx, user, ip, userAgent, loginMethodRegister)
 	if err != nil {
 		// The account exists; only the automatic sign-in failed. A generic
