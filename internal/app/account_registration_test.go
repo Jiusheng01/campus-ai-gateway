@@ -34,7 +34,7 @@ func seedMember(t *testing.T, store *fakeAdminStore, username, password string) 
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	u, err := store.CreateUser(context.Background(), username, "Test Member", hash, []string{RoleMember})
+	u, err := store.CreateUser(context.Background(), username, "Test Member", hash, []string{RoleMember}, false)
 	if err != nil {
 		t.Fatalf("seed member: %v", err)
 	}
@@ -749,7 +749,7 @@ func TestOnlySuperAdminReachesUserManagement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.CreateUser(context.Background(), name, name, hash, []string{role}); err != nil {
+			if _, err := store.CreateUser(context.Background(), name, name, hash, []string{role}, false); err != nil {
 				t.Fatal(err)
 			}
 			token := accessTokenFor(t, s, name, "Campus#2026Gate")
@@ -1337,7 +1337,7 @@ func seedSetupAdminViaStore(t *testing.T, store *fakeAdminStore, username string
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := store.CreateUser(context.Background(), username, username, hash, []string{RoleSuperAdmin})
+	u, err := store.CreateUser(context.Background(), username, username, hash, []string{RoleSuperAdmin}, false)
 	if err != nil {
 		t.Fatalf("seed super admin: %v", err)
 	}

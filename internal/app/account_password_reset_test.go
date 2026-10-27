@@ -308,3 +308,42 @@ func TestWhoAmIReportsTheOutstandingReset(t *testing.T) {
 		t.Fatalf("an untouched account must report false: %s", adminWho.Body.String())
 	}
 }
+
+// The sign-in response has to say the account is fenced. The browser seeds its
+// identity from that response and skips whoami while an identity exists, so an
+// absent flag would drop the account into a console that answers 403 on every
+// request instead of the password screen.
+func TestLoginResponseCarriesTheResetFlag(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	member := seedMember(t, store, "zhangsan", "Campus#2026Gate")
+	adminToken := accessTokenFor(t, s, "campus-admin", "Campus#2026Gate")
+
+	if rec := resetPasswordVia(t, s, adminToken, member.ID, "Interim#2026Reset"); rec.Code != http.StatusOK {
+		t.Fatalf("reset: %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAdminLogin), http.MethodPost, "/admin/login",
+		`{"username":"zhangsan","password":"Interim#2026Reset"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with the handed-over password: %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	user, _ := body["user"].(map[string]any)
+	if user == nil {
+		t.Fatalf("login response has no user object: %s", rec.Body.String())
+	}
+	if required, ok := user["password_reset_required"].(bool); !ok || !required {
+		t.Fatalf("the sign-in response must flag the outstanding reset: %s", rec.Body.String())
+	}
+
+	// An untouched account reports false, so the client can rely on the field
+	// being present rather than guessing from its absence.
+	adminLogin := postJSON(t, http.HandlerFunc(s.handleAdminLogin), http.MethodPost, "/admin/login",
+		`{"username":"campus-admin","password":"Campus#2026Gate"}`, nil)
+	adminBody := decodeBody(t, adminLogin)
+	adminUser, _ := adminBody["user"].(map[string]any)
+	if required, ok := adminUser["password_reset_required"].(bool); !ok || required {
+		t.Fatalf("an untouched account must report false: %s", adminLogin.Body.String())
+	}
+}

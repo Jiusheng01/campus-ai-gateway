@@ -6,15 +6,6 @@ import {RegisterPage} from './RegisterPage'
 import {friendlyError} from '../lib/errors'
 
 /**
- * The sign-in screen.
- *
- * It is a unified account entrance, not an administrator entrance: registration
- * lives in the same card behind a second tab, because an ordinary campus user
- * and an administrator are the same kind of account differing only by role.
- * The password placeholder says "账号" rather than "管理员用户名" for the same
- * reason.
- */
-/**
  * The screen an account sees after an administrator reset its password.
  *
  * It is not the ordinary change-password form because the situation is not
@@ -116,6 +107,15 @@ export function PasswordResetRequiredPage({onSignedOut}: {onSignedOut: () => voi
   )
 }
 
+/**
+ * The sign-in screen.
+ *
+ * It is a unified account entrance, not an administrator entrance: registration
+ * lives in the same card behind a second tab, because an ordinary campus user
+ * and an administrator are the same kind of account differing only by role.
+ * The password placeholder says "账号" rather than "管理员用户名" for the same
+ * reason.
+ */
 export function LoginPage({
   config,
   notice,

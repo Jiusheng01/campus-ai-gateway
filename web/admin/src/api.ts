@@ -149,7 +149,18 @@ export type AuthConfig={
   registration_enabled:boolean
 }
 
-export type AdminUserView={id:string;username:string;display_name:string;roles:string[]}
+export type AdminUserView={
+  id:string
+  username:string
+  display_name:string
+  roles:string[]
+  /**
+   * The account is still holding a password an administrator handed over. The
+   * sign-in response carries it so the app can route to the password screen
+   * immediately; waiting for whoami would show a console that answers 403.
+   */
+  password_reset_required?:boolean
+}
 
 /**
  * A row in the user management table. Deliberately narrow: the API never sends

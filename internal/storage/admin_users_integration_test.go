@@ -133,7 +133,7 @@ func quoteIdent(name string) string {
 func insertAccount(t *testing.T, pg *Postgres, username string, roles []string, status int) model.AdminUser {
 	t.Helper()
 	ctx := context.Background()
-	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles)
+	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles, false)
 	if err != nil {
 		t.Fatalf("insert %s: %v", username, err)
 	}

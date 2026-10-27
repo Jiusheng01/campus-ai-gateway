@@ -187,11 +187,8 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 	username := strings.TrimSpace(in.Username)
 	displayName := strings.TrimSpace(in.DisplayName)
 
-	if username == "" || utf8.RuneCountInString(username) > 64 {
-		return model.AdminUser{}, ErrAdminBadRequest
-	}
-	if utf8.RuneCountInString(displayName) > maxDisplayNameRunes {
-		return model.AdminUser{}, ErrAdminBadRequest
+	if err := validateAccountNames(username, displayName); err != nil {
+		return model.AdminUser{}, err
 	}
 	// The same role rules the account patch applies. "member" is derived, not
 	// chosen: NormalizeAccountRoles keeps it only when no management role was
@@ -223,7 +220,10 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 	if err != nil {
 		return model.AdminUser{}, ErrAdminInternal
 	}
-	created, err := a.store.CreateUser(ctx, username, displayName, hash, roles)
+	// The flag rides in the same INSERT as the hash. Splitting them would leave
+	// a failure between the two as an operator-chosen password that never
+	// expires — the one outcome the reset fence exists to prevent.
+	created, err := a.store.CreateUser(ctx, username, displayName, hash, roles, true)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrAdminUsernameTaken):
@@ -233,13 +233,6 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 		default:
 			return model.AdminUser{}, ErrAdminInternal
 		}
-	}
-
-	// The reset flag is what makes the handed-over password temporary. It is
-	// set with the same statement shape a reset uses, so the console shows the
-	// account as "waiting for its owner" from the moment it exists.
-	if _, err := a.store.ResetAdminUserPassword(ctx, created.ID, hash); err != nil {
-		log.Printf("user management: account %s created but could not be marked reset-required: %v", created.Username, err)
 	}
 
 	if in.TenantID != "" {
@@ -549,11 +542,16 @@ type adminUserTenantUpdateRequest struct {
 	TenantID *string `json:"tenant_id"`
 }
 
-// handleAdminUserTenant serves PUT /admin/users/{id}/tenant.
+// handleAdminUserPasswordReset serves POST /admin/users/{id}/password-reset.
 //
-// The 409 is written by hand rather than through writeAdminError because the
-// refusal has to carry the key count as a field. Embedding the number in the
-// message alone would make the console parse prose to render it.
+// It installs a password the operator chose. That password is proof of a
+// handover rather than of identity, so the account is marked reset-required and
+// every session it had is revoked: see resetFenceAllows for what a session
+// opened with it may do.
+//
+// The response carries no password. The operator typed it; echoing it back
+// would put it in the browser's network log, the audit row and any proxy in
+// between.
 func (s *Server) handleAdminUserPasswordReset(w http.ResponseWriter, r *http.Request, targetID, reqID string, principal adminPrincipal) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -596,6 +594,11 @@ func (s *Server) handleAdminUserPasswordReset(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// handleAdminUserTenant serves PUT /admin/users/{id}/tenant.
+//
+// The 409 is written by hand rather than through writeAdminError because the
+// refusal has to carry the key count as a field. Embedding the number in the
+// message alone would make the console parse prose to render it.
 func (s *Server) handleAdminUserTenant(w http.ResponseWriter, r *http.Request, targetID, reqID string, principal adminPrincipal) {
 	if r.Method != http.MethodPut {
 		w.Header().Set("Allow", "PUT")

@@ -57,7 +57,7 @@ func tenantAssignmentAccount(t *testing.T, pg *storage.Postgres, username string
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	u, err := pg.CreateUser(context.Background(), username, username, hash, roles)
+	u, err := pg.CreateUser(context.Background(), username, username, hash, roles, false)
 	if err != nil {
 		t.Fatalf("create account %s: %v", username, err)
 	}

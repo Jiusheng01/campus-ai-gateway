@@ -249,15 +249,21 @@ RETURNING ` + adminUserColumns
 // separate guards. A username collision is reported as ErrAdminUsernameTaken
 // rather than as a database error, so the HTTP layer can answer 409 without
 // leaking constraint names.
-func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error) {
+//
+// passwordResetRequired is written in the same statement as the hash. The two
+// are one fact — "this password is temporary" — and splitting them would let a
+// failure between them leave an operator-chosen password permanently valid,
+// which is exactly the escalation the reset fence exists to prevent. A
+// self-registered account passes false: its password is the owner's own.
+func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, passwordResetRequired bool) (model.AdminUser, error) {
 	encoded, err := json.Marshal(roles)
 	if err != nil {
 		return model.AdminUser{}, err
 	}
-	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles)
-VALUES ($1, $2, $3, $4::jsonb)
+	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles, password_reset_required)
+VALUES ($1, $2, $3, $4::jsonb, $5)
 RETURNING ` + adminUserColumns
-	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded))
+	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded, passwordResetRequired))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {

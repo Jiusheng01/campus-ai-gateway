@@ -199,17 +199,20 @@ func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displ
 	return u, nil
 }
 
-func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
+func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string, passwordResetRequired bool) (model.AdminUser, error) {
 	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
 		return model.AdminUser{}, storage.ErrAdminUsernameTaken
 	}
 	f.seq++
 	id := uuid.NewString()
 	now := time.Now().UTC()
+	// The flag arrives with the hash, exactly as the real INSERT takes it, so a
+	// service test cannot observe a created account without it.
 	u := model.AdminUser{
 		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
 		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
-		CreatedAt: now, UpdatedAt: now,
+		PasswordResetRequired: passwordResetRequired,
+		CreatedAt:             now, UpdatedAt: now,
 	}
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id

@@ -237,6 +237,11 @@ function Console() {
             username: result.user.username,
             roles: resultRoles,
             auth_mode: authModeOf(authConfig) || 'session',
+            // Carried from the sign-in response rather than fetched: whoami is
+            // skipped while an identity is already seeded, so an account held
+            // by the reset fence would otherwise land in a console whose every
+            // request answers 403.
+            password_reset_required: result.user.password_reset_required,
           }
         : null,
     )

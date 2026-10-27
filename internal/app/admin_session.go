@@ -78,7 +78,9 @@ type adminStore interface {
 	TenantExists(ctx context.Context, tenantID string) (bool, error)
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
-	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	// passwordResetRequired travels with the hash so an operator-chosen
+	// password can never be stored without its "temporary" marking.
+	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, passwordResetRequired bool) (model.AdminUser, error)
 	// UpdateAdminUserAccount is the only way an existing account is changed.
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.

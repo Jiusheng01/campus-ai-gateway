@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -42,11 +41,8 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
 
-	if username == "" || utf8.RuneCountInString(username) > 64 {
-		return model.AdminUser{}, adminTokens{}, ErrAdminBadRequest
-	}
-	if utf8.RuneCountInString(displayName) > 128 {
-		return model.AdminUser{}, adminTokens{}, ErrAdminBadRequest
+	if err := validateAccountNames(username, displayName); err != nil {
+		return model.AdminUser{}, adminTokens{}, err
 	}
 	if err := validateAdminPassword(username, password); err != nil {
 		return model.AdminUser{}, adminTokens{}, err
@@ -74,7 +70,7 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 		return model.AdminUser{}, adminTokens{}, ErrAdminInternal
 	}
 
-	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles)
+	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles, false)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrAdminUsernameTaken):

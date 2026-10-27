@@ -96,18 +96,18 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 // Tenant. The fence keeps that from happening by holding the session shut until
 // the account holder replaces the password with one the operator never saw.
 //
-// The list is deliberately tiny and exact-match. Signing out, asking who you are
-// and changing your own password are the whole of what is needed to satisfy the
+// The list is deliberately tiny and exact-match. Asking who you are and
+// changing your own password are the whole of what is needed to satisfy the
 // obligation; everything else — including reads — waits.
+//
+// Signing out is absent on purpose: both logout routes are registered on the
+// mux directly (see routes) and never pass through this middleware, so a case
+// for them here would be dead code that reads like a live rule.
 func resetFenceAllows(r *http.Request) bool {
 	switch {
 	case r.URL.Path == "/admin/password" && r.Method == http.MethodPost:
 		return true
 	case r.URL.Path == "/admin/whoami" && r.Method == http.MethodGet:
-		return true
-	case r.URL.Path == "/admin/logout" && r.Method == http.MethodPost:
-		return true
-	case r.URL.Path == "/admin/auth/logout" && r.Method == http.MethodPost:
 		return true
 	}
 	return false

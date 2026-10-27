@@ -3,6 +3,7 @@ package app
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Account roles.
@@ -198,3 +199,20 @@ var publicRegistrationRoles = []string{RoleMember}
 // refused with a 400 rather than failing as a storage error, and it keeps the
 // client from being the only place the rule exists.
 const maxDisplayNameRunes = 128
+
+// maxUsernameRunes bounds the account name. It is a rune count so a Chinese
+// name is measured the way a person counts it.
+const maxUsernameRunes = 64
+
+// validateAccountNames applies the two shape rules every account-creation path
+// shares. It exists because registration and administrator creation both need
+// them, and a duplicated copy had already drifted on the display-name bound.
+func validateAccountNames(username, displayName string) error {
+	if username == "" || utf8.RuneCountInString(username) > maxUsernameRunes {
+		return ErrAdminBadRequest
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameRunes {
+		return ErrAdminBadRequest
+	}
+	return nil
+}

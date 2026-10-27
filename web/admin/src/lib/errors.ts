@@ -23,6 +23,7 @@ const AUTH_ERRORS: Record<string, string> = {
   registration_unavailable: '注册服务暂时不可用，请稍后重试。',
   setup_required: '系统尚未完成初始化，请先创建管理员。',
   username_taken: '该用户名已被使用，请换一个。',
+  tenant_not_found: '所选租户不存在，请刷新后重试。',
   account_created_login_failed: '账号已创建成功，但自动登录失败。请直接使用刚设置的密码登录。',
   last_super_admin: '系统至少需要保留一个启用的超级管理员。',
   csrf_rejected: '请求被安全策略拒绝，请刷新页面后重试。',
@@ -44,4 +45,21 @@ export function friendlyError(err: unknown, fallback: string): string {
     return AUTH_ERRORS[err.code] || fallback
   }
   return err instanceof Error && err.message ? err.message : fallback
+}
+
+/**
+ * describeAccountError is friendlyError for the account-management actions.
+ *
+ * It differs in one way: when the code is one the gateway has no mapped
+ * sentence for, it does not fall through to the server's message. That message
+ * is written in English because the API is a machine interface, and showing it
+ * in the console is the thing errors.ts exists to prevent. A fallback written
+ * by the caller is used instead.
+ */
+export function describeAccountError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'invalid_request' && err.status === 400) return fallback
+    return AUTH_ERRORS[err.code] || fallback
+  }
+  return fallback
 }
