@@ -20,7 +20,7 @@ import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import {AuthSplash} from '../auth/AuthSplash'
 import {AuthUnsupported} from '../auth/AuthUnsupported'
 import {IdentityRequired} from '../auth/IdentityRequired'
-import {LoginPage} from '../auth/LoginPage'
+import {LoginPage, PasswordResetRequiredPage} from '../auth/LoginPage'
 import {SetupPage} from '../auth/SetupPage'
 import {WorkspaceForbidden, WorkspaceNotFound} from '../auth/WorkspaceBoundary'
 import {DashboardPage} from '../pages/DashboardPage'
@@ -283,6 +283,14 @@ function Console() {
   // workspace before the roles arrive is what used to bounce an administrator
   // to 个人资料; here it would briefly show a 403 to a legitimate member.
   if (!who) return <AuthSplash text="正在读取账号身份…" />
+
+  // A reset password is one an administrator chose and may still hold. The
+  // gateway refuses every page but the password form, so the app does not
+  // render a workspace it knows will answer 403 — it asks for the new password
+  // first. Signing out is still offered, and lands on the ordinary login page.
+  if (who.password_reset_required) {
+    return <PasswordResetRequiredPage onSignedOut={() => void signOut()} />
+  }
 
   const route = resolveRoute(path)
   if (!route) {

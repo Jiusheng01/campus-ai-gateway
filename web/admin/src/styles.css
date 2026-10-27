@@ -1675,6 +1675,12 @@ input:focus, select:focus, textarea:focus {
 .linkInline{border:0;background:none;color:var(--primary);padding:0 3px;font-size:inherit;font-weight:600;font-family:inherit}
 .linkInline:hover{text-decoration:underline}
 
+/* The sign-out escape on the password-reset screen. It sits under the submit
+   button, centred and quiet: leaving is available, but it is not the path the
+   screen is asking for. */
+.authSignOut{display:block;margin:12px auto 0;color:var(--text-muted)}
+.authSignOut:hover{color:var(--text)}
+
 /* --- 我的账号（普通用户首页） ---------------------------------------- */
 .accountHero{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:18px}
 .accountAvatar{width:44px;height:44px;flex:none;border-radius:999px;display:grid;place-items:center;background:var(--primary-soft);border:1px solid color-mix(in srgb,var(--primary) 22%,var(--border));color:var(--primary)}
