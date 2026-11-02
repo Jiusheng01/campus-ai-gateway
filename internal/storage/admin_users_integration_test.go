@@ -518,6 +518,18 @@ func TestDisplayNameOnlyLeavesAuthVersionAlone(t *testing.T) {
 	}
 }
 
+func TestTenantExistsTreatsAMalformedIDAsMissing(t *testing.T) {
+	pg := testPostgres(t)
+
+	exists, err := pg.TenantExists(context.Background(), "not-a-uuid")
+	if err != nil {
+		t.Fatalf("TenantExists on a malformed id returned an error: %v", err)
+	}
+	if exists {
+		t.Fatal("TenantExists on a malformed id reported a Tenant")
+	}
+}
+
 func TestMutationOfUnknownAccountIsNotFound(t *testing.T) {
 	pg := testPostgres(t)
 	clearAccounts(t, pg)

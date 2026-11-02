@@ -225,18 +225,16 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 	// expires — the one outcome the reset fence exists to prevent.
 	created, err := a.store.CreateUser(ctx, username, displayName, hash, roles, true)
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrAdminUsernameTaken):
+		if errors.Is(err, storage.ErrAdminUsernameTaken) {
 			return model.AdminUser{}, ErrAdminUsernameTaken
-		case errors.Is(err, storage.ErrAdminUserNotFound):
-			return model.AdminUser{}, ErrAdminInternal
-		default:
-			return model.AdminUser{}, ErrAdminInternal
 		}
+		return model.AdminUser{}, ErrAdminInternal
 	}
 
 	if in.TenantID != "" {
-		assigned, err := a.store.AssignAdminUserTenant(ctx, created.ID, in.TenantID)
+		// Go through the service wrapper so the Tenant assignment used here and
+		// the one used by self-registration share their error translation.
+		assigned, err := a.assignUserTenant(ctx, created.ID, in.TenantID)
 		if err != nil {
 			log.Printf("user management: account %s created but joining Tenant %s failed, an operator must assign it: %v",
 				created.Username, in.TenantID, err)

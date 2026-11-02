@@ -807,8 +807,13 @@ func (a *adminAuthService) changePassword(ctx context.Context, userID, current, 
 	if err := a.store.UpdateAdminUserPassword(ctx, userID, hash); err != nil {
 		return ErrAdminInternal
 	}
-	// Reaching this line is what satisfies a pending reset: the account holder
-	// proved the reset password and then chose one the operator never saw.
+	// Reaching this line satisfies a pending reset: the reset password has
+	// been replaced. It is not proof of the holder's identity — whoever
+	// performed the reset knows that password, including the administrator who
+	// chose it. The fence bounds what the credential can do until it is
+	// replaced; preventing an operator from completing the replacement needs
+	// out-of-band verification or multi-party approval, which this deployment
+	// does not have (see ADR-0021).
 	// Clearing the flag is best-effort because the password is already the
 	// account's own; a failure leaves the account asked to change a password it
 	// has already changed, which is a prompt and not a lockout.

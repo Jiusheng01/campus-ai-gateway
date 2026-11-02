@@ -58,12 +58,12 @@ export function PasswordResetRequiredPage({onSignedOut}: {onSignedOut: () => voi
 
         <div className="authNotice">
           <ShieldCheck aria-hidden />
-          当前密码是管理员交给你的临时密码。请设置一个只有你自己知道的新密码；在此之前，此账号无法使用任何功能。
+          当前密码是管理员设置的重置密码。请设置一个只有你自己知道的新密码；在此之前，此账号无法使用任何功能。
         </div>
 
         <label className="field">
-          <span className="fieldLabel">临时密码</span>
-          <PasswordInput autoComplete="current-password" value={current} placeholder="管理员交给你的密码" onChange={setCurrent} />
+          <span className="fieldLabel">重置密码</span>
+          <PasswordInput autoComplete="current-password" value={current} placeholder="管理员提供的重置密码" onChange={setCurrent} />
         </label>
         <label className="field">
           <span className="fieldLabel">新密码</span>

@@ -178,10 +178,15 @@ export function UsersPage() {
                   )}
                 </td>
                 <td>
-                  <span className={`badge status ${u.status === 1 ? 'success' : 'neutral'}`}>
-                    <i className={`dot ${u.status === 1 ? 'on' : 'off'}`} aria-hidden />
-                    {u.status === 1 ? '正常' : '已停用'}
-                  </span>
+                  <div className="userStatusCell">
+                    <span className={`badge status ${u.status === 1 ? 'success' : 'neutral'}`}>
+                      <i className={`dot ${u.status === 1 ? 'on' : 'off'}`} aria-hidden />
+                      {u.status === 1 ? '正常' : '已停用'}
+                    </span>
+                    {/* ADR-0021 makes an unfinished handover a fact the list
+                        must show, not something only the drawer reveals. */}
+                    {u.password_reset_required && <Badge tone="warning">待设置新密码</Badge>}
+                  </div>
                 </td>
                 <td>{ago(u.last_login_at)}</td>
                 <td>{when(u.created_at)}</td>
@@ -524,7 +529,7 @@ function UserDrawer({
           </div>
           <div className="form">
             <label className="field">
-              <span className="fieldLabel">新的临时密码</span>
+              <span className="fieldLabel">新的重置密码</span>
               <PasswordInput
                 autoComplete="new-password"
                 value={newResetPassword}
@@ -728,7 +733,7 @@ function CreateUserDrawer({
               onChange={setPassword}
             />
             <small className="fieldHint">
-              这是你交给对方的临时密码。对方首次登录后必须先设置一个只有自己知道的新密码，在此之前无法使用任何功能；
+              这是你交给对方的重置密码。对方首次登录后必须先设置一个只有自己知道的新密码，在此之前无法使用任何功能；
               你手里的这个密码随即失效。
             </small>
           </label>

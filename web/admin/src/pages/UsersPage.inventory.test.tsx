@@ -86,6 +86,18 @@ describe('UsersPage summary honesty', () => {
   })
 })
 
+describe('UsersPage reset handover', () => {
+  // ADR-0021 makes an unfinished handover a fact the operator must be able to
+  // scan for; the drawer alone hides it until the row is opened.
+  it('marks an unfinished handover in the list, not only in the drawer', async () => {
+    stub({users: [user({password_reset_required: true})], stats: {total: 1, members: 1, admins: 0, disabled: 0}})
+    renderPage()
+
+    const row = (await screen.findByText('zhangsan')).closest('tr') as HTMLElement
+    expect(within(row).getByText('待设置新密码')).toBeInTheDocument()
+  })
+})
+
 describe('UsersPage search and filters', () => {
   it('narrows by username, display name and tenant as the operator types', async () => {
     stub()

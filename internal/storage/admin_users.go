@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -589,6 +590,12 @@ func (p *Postgres) RehashAdminUserPassword(ctx context.Context, id, passwordHash
 // the same value they use for "a Tenant that grants nothing", so they cannot
 // distinguish the two.
 func (p *Postgres) TenantExists(ctx context.Context, id string) (bool, error) {
+	// A mistyped id must read as "no such Tenant", not as a storage failure.
+	// Letting the ::uuid cast reject the string would surface a server error
+	// for a client mistake the handler can answer with 400 tenant_not_found.
+	if _, err := uuid.Parse(id); err != nil {
+		return false, nil
+	}
 	var exists bool
 	err := p.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_tenant WHERE id=$1::uuid)`, id).Scan(&exists)
 	return exists, err

@@ -387,6 +387,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .badge.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); background: var(--danger-soft); }
 .badge.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--border)); background: var(--info-soft); }
 .badge.http { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+.userStatusCell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .dot { width: 7px; height: 7px; border-radius: 999px; display: inline-block; background: var(--text-faint); }
 .dot.on { background: var(--success); }
