@@ -103,22 +103,24 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
 
   if (!config) {
     return (
-      <Panel title="系统设置" sub="网关的启动配置。所有值都为只读。">
-        {loadError ? (
-          <EmptyState
-            icon={<Lock />}
-            title="无法读取认证配置"
-            description={`${loadError}。页面不显示默认值，以免把读不到的配置当成当前配置。`}
-            action={
-              <Button variant="primary" loading={loading} onClick={() => void load()}>
-                重新加载
-              </Button>
-            }
-          />
-        ) : (
-          <p className="muted" role="status">正在读取认证配置…</p>
-        )}
-      </Panel>
+      <div className="stack">
+        <Panel title="系统设置" sub="网关的启动配置。所有值都为只读。">
+          {loadError ? (
+            <EmptyState
+              icon={<Lock />}
+              title="无法读取认证配置"
+              description={`${loadError}。页面不显示默认值，以免把读不到的配置当成当前配置。`}
+              action={
+                <Button variant="primary" loading={loading} onClick={() => void load()}>
+                  重新加载
+                </Button>
+              }
+            />
+          ) : (
+            <p className="muted" role="status">正在读取认证配置…</p>
+          )}
+        </Panel>
+      </div>
     )
   }
 
