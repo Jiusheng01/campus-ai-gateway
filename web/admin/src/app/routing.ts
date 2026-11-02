@@ -1,6 +1,7 @@
 import {isManagementRole} from '../lib/roles'
 import {
   adminRoutePages,
+  allowedPages,
   consoleRoutePages,
   type Page,
 } from './navigation'
@@ -51,8 +52,8 @@ export function pathFor(workspace: Workspace, page: Page): string {
 /**
  * mayUseWorkspace reports whether an account with these roles may open the
  * workspace. Any signed-in account may use the personal console; the
- * administrator workspace requires a management role. This mirrors the
- * gateway's definition, where `tenant_admin` grants nothing.
+ * administrator workspace requires a management role. A tenant_admin counts:
+ * its pages are narrowed to the subtree rather than withheld entirely.
  */
 export function mayUseWorkspace(workspace: Workspace, roles: string[]): boolean {
   if (workspace === 'console') return true
@@ -64,8 +65,16 @@ export function landingWorkspace(roles: string[]): Workspace {
   return roles.some(isManagementRole) ? 'admin' : 'console'
 }
 
-/** The landing URL after login, used when the current path names no workspace. */
+/**
+ * The landing URL after login, used when the current path names no workspace.
+ *
+ * The dashboard is preferred, but a scoped tenant_admin cannot open it — its
+ * numbers are campus-wide — so that account lands on the first page it may
+ * actually enter instead of a 403.
+ */
 export function landingPath(roles: string[]): string {
   const workspace = landingWorkspace(roles)
-  return pathFor(workspace, workspace === 'admin' ? 'dashboard' : 'overview')
+  if (workspace === 'console') return pathFor('console', 'overview')
+  const pages = allowedPages(roles)
+  return pathFor('admin', pages.includes('dashboard') ? 'dashboard' : pages[0] || 'profile')
 }

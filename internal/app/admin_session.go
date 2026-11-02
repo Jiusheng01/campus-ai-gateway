@@ -637,7 +637,7 @@ func (a *adminAuthService) authenticate(ctx context.Context, accessToken string)
 		a.store.TouchAdminSession(ctx, session.SID)
 	}
 
-	return adminPrincipal{
+	principal := adminPrincipal{
 		UserID:    user.ID,
 		Username:  user.Username,
 		User:      user.Username,
@@ -648,7 +648,11 @@ func (a *adminAuthService) authenticate(ctx context.Context, accessToken string)
 		// mid-session fences the session on its very next request rather than
 		// at the next sign-in.
 		PasswordResetRequired: user.PasswordResetRequired,
-	}, nil
+	}
+	if user.ScopeTenantID != nil {
+		principal.ScopeTenantID = *user.ScopeTenantID
+	}
+	return principal, nil
 }
 
 // tokenErrorToSentinel translates JWT failures into admin sentinels. An expired

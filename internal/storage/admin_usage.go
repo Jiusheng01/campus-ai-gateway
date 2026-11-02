@@ -42,7 +42,9 @@ ORDER BY g.tokens DESC, k.name
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.APIKeyUsage
+	// An empty grouping is an empty list, not null: the console renders this
+	// field as an array and a database with no traffic would otherwise crash it.
+	out := []model.APIKeyUsage{}
 	for rows.Next() {
 		var v model.APIKeyUsage
 		if err := rows.Scan(&v.APIKeyID, &v.Name, &v.KeyPrefix, &v.Requests, &v.Tokens); err != nil {

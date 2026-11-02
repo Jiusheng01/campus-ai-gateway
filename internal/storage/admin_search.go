@@ -29,6 +29,11 @@ type RequestLogFilter struct {
 	Failover  int // -1 any, 0 false, 1 true
 	TenantID  string
 	APIKeyID  string
+	// ScopeTenantID restricts the read to one tenant subtree. It is set from
+	// the caller's administrator scope and is not a client-supplied filter: a
+	// scoped tenant_admin must not be able to read beside its subtree by
+	// omitting a query parameter.
+	ScopeTenantID string
 	// From and To bound created_at. A zero time means "unbounded on that
 	// side"; they are converted to SQL NULL so the predicate stays a plain
 	// index-friendly comparison rather than a sentinel the planner has to
@@ -70,7 +75,7 @@ FROM gateway_request_log`
 // different set of rows than the list directly beneath it, and the operator
 // would have no way to tell which number was wrong.
 //
-// The positions are fixed at $1..$9 so the fragment can be reused verbatim;
+// The positions are fixed at $1..$10 so the fragment can be reused verbatim;
 // each caller appends its own LIMIT/OFFSET after it. Every identity and time
 // parameter is typed with an explicit cast so a NULL is unambiguous to the
 // planner — `''::uuid` would raise instead of matching nothing.
@@ -83,9 +88,12 @@ WHERE ($1='' OR requested_model=$1)
   AND ($6::uuid IS NULL OR tenant_id=$6::uuid)
   AND ($7::uuid IS NULL OR api_key_id=$7::uuid)
   AND ($8::timestamptz IS NULL OR created_at >= $8::timestamptz)
-  AND ($9::timestamptz IS NULL OR created_at <= $9::timestamptz)`
+  AND ($9::timestamptz IS NULL OR created_at <= $9::timestamptz)
+  AND ($10::uuid IS NULL OR tenant_id IN (
+        SELECT id FROM gateway_tenant
+        WHERE path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id = $10::uuid)))`
 
-// requestLogArgs returns the $1..$9 parameters requestLogWhere expects, in
+// requestLogArgs returns the $1..$10 parameters requestLogWhere expects, in
 // order. It is the only place the positional contract is spelled out, so a
 // filter field added to the struct cannot be wired into one query and forgotten
 // in another.
@@ -100,6 +108,7 @@ func requestLogArgs(f RequestLogFilter) []any {
 		optionalString(f.APIKeyID),
 		optionalTime(f.From),
 		optionalTime(f.To),
+		optionalString(f.ScopeTenantID),
 	}
 }
 
@@ -124,7 +133,7 @@ func (p *Postgres) SearchRequestLogs(ctx context.Context, f RequestLogFilter) ([
 	args := append(requestLogArgs(f), f.Limit, f.Offset)
 	rows, err := p.Pool.Query(ctx, requestLogColumns+requestLogWhere+`
 ORDER BY id DESC
-LIMIT $10 OFFSET $11
+LIMIT $11 OFFSET $12
 `, args...)
 	if err != nil {
 		return nil, err
@@ -236,15 +245,46 @@ ORDER BY bucket
 // table, not a copy of the management tables. The DISTINCT is what the new
 // (tenant_id, created_at) and (api_key_id, created_at) indexes make cheap —
 // without them this would be a full scan of the log for every page load.
-func (p *Postgres) RequestLogFacets(ctx context.Context) (model.RequestLogFacets, error) {
+func (p *Postgres) RequestLogFacets(ctx context.Context, scopeTenantID string) (model.RequestLogFacets, error) {
 	var out model.RequestLogFacets
 
-	tenantRows, err := p.Pool.Query(ctx, `
+	// The facet lists are a read of the log, so a scoped administrator must see
+	// only the tenants and keys inside its subtree. Without this filter the
+	// option lists would name every tenant in the deployment even though the
+	// rows behind them are refused.
+	tenantQuery := `
 SELECT DISTINCT t.id::text, t.code, t.name
 FROM gateway_request_log l
 JOIN gateway_tenant t ON t.id = l.tenant_id
 ORDER BY t.name
-`)
+`
+	keyQuery := `
+SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
+FROM gateway_request_log l
+JOIN gateway_api_key k ON k.id = l.api_key_id
+ORDER BY k.name
+`
+	var args []any
+	if scopeTenantID != "" {
+		const scopePredicate = `
+WHERE t.path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id=$1::uuid)`
+		tenantQuery = `
+SELECT DISTINCT t.id::text, t.code, t.name
+FROM gateway_request_log l
+JOIN gateway_tenant t ON t.id = l.tenant_id` + scopePredicate + `
+ORDER BY t.name
+`
+		keyQuery = `
+SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
+FROM gateway_request_log l
+JOIN gateway_api_key k ON k.id = l.api_key_id
+JOIN gateway_tenant t ON t.id = k.tenant_id` + scopePredicate + `
+ORDER BY k.name
+`
+		args = append(args, scopeTenantID)
+	}
+
+	tenantRows, err := p.Pool.Query(ctx, tenantQuery, args...)
 	if err != nil {
 		return out, err
 	}
@@ -260,12 +300,7 @@ ORDER BY t.name
 		return out, err
 	}
 
-	keyRows, err := p.Pool.Query(ctx, `
-SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
-FROM gateway_request_log l
-JOIN gateway_api_key k ON k.id = l.api_key_id
-ORDER BY k.name
-`)
+	keyRows, err := p.Pool.Query(ctx, keyQuery, args...)
 	if err != nil {
 		return out, err
 	}

@@ -176,6 +176,9 @@ export function UsersPage() {
                   ) : (
                     <Badge>{roleLabel('member')}</Badge>
                   )}
+                  {u.scope_tenant_id && (
+                    <div className="fieldHint">管理范围：{u.scope_tenant_name || u.scope_tenant_id}</div>
+                  )}
                 </td>
                 <td>
                   <div className="userStatusCell">
@@ -254,6 +257,9 @@ function managementRolesOf(user: AccountUser): string[] {
  * signed out — because it was not.
  */
 function changeSummary(changes: AccountChangeSet, status: number): string {
+  // Scope is not an authentication event: narrowing or moving a tenant_admin's
+  // subtree does not sign them out. Saying it did would be wrong.
+  if (changes.scope && !changes.roles && !changes.status) return '管理范围已更新。'
   if (!changes.roles && !changes.status) return '用户信息已更新。'
   if (changes.roles && changes.status) {
     return '用户设置已更新；权限或状态变更已使该用户现有登录会话失效。'
@@ -311,6 +317,7 @@ function UserDrawer({
   const [status, setStatus] = useState(user.status)
   const [displayName, setDisplayName] = useState(user.display_name || '')
   const [tenantId, setTenantId] = useState(user.tenant_id || '')
+  const [scope, setScope] = useState(user.scope_tenant_id || '')
   const [busy, setBusy] = useState(false)
   // The reset form is separate state from the save button: a reset is not an
   // edit to this account, it is an event that signs the account out, so it gets
@@ -326,7 +333,17 @@ function UserDrawer({
   const statusChanged = status !== user.status
   const displayNameChanged = displayName.trim() !== (user.display_name || '')
   const tenantChanged = tenantId !== (user.tenant_id || '')
-  const dirty = rolesChanged || statusChanged || displayNameChanged || tenantChanged
+  const tenantScoped = selected.includes('tenant_admin')
+  // Removing the role must also clear its scope. Leaving the old value in
+  // place made the API refuse the patch as "a scope without the role", so the
+  // role could be granted but never taken away.
+  const scopeChanged = tenantScoped
+    ? scope !== (user.scope_tenant_id || '')
+    : Boolean(user.scope_tenant_id)
+  // The role and its subtree are one grant: the API refuses a tenant_admin
+  // without a scope, so the form must not submit one either.
+  const scopeMissing = tenantScoped && !scope
+  const dirty = rolesChanged || statusChanged || displayNameChanged || tenantChanged || scopeChanged
 
   const grantsSuperAdmin = selected.includes('super_admin')
   const disabling = status !== 1
@@ -334,6 +351,10 @@ function UserDrawer({
   const save = async () => {
     if (!dirty) {
       onClose()
+      return
+    }
+    if (scopeMissing) {
+      onDenied('租户管理员必须选择管理范围')
       return
     }
 
@@ -372,6 +393,7 @@ function UserDrawer({
     // it cannot end up alongside a management role.
     const patch: UserPatch = {}
     if (rolesChanged) patch.roles = selected
+    if (scopeChanged) patch.scope_tenant_id = tenantScoped ? scope : null
     if (statusChanged) patch.status = status
     if (displayNameChanged) patch.display_name = displayName.trim()
 
@@ -553,6 +575,27 @@ function UserDrawer({
               <small className="fieldHint">账号已停用时不能重置密码，请先启用。</small>
             )}
           </div>
+          {tenantScoped && (
+            <div className="detailRow column">
+              <span className="detailKey">管理范围</span>
+              <select value={scope} onChange={e => setScope(e.target.value)}>
+                <option value="">请选择租户</option>
+                {tenants.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {'　'.repeat(Math.max(0, t.depth || 0))}
+                    {t.name}（{t.code}）
+                  </option>
+                ))}
+              </select>
+              <small className="fieldHint">
+                租户管理员只能管理该租户及其下级租户的密钥与模型额度，不能修改该租户自身的预算，也不能查看校园级模型池。
+              </small>
+              {scopeMissing && <small className="fieldHint dangerText">必须选择管理范围后才能保存。</small>}
+              {!scopeMissing && !scopeChanged && user.scope_tenant_name && (
+                <small className="fieldHint">当前范围：{user.scope_tenant_name}</small>
+              )}
+            </div>
+          )}
         </section>
 
         {grantsSuperAdmin && (

@@ -558,3 +558,78 @@ func clearTenantsAndKeys(t *testing.T, pg *Postgres) {
 		}
 	}
 }
+
+// TestTenantScopedReadsStayInsideTheSubtree pins the two reads that used to
+// bypass a scoped administrator: the filter facets named every tenant in the
+// deployment, and the quota block read the tenant row the caller asked for.
+// Usage is also asserted inclusively, because admission charges every ancestor.
+func TestTenantScopedReadsStayInsideTheSubtree(t *testing.T) {
+	pg := testPostgres(t)
+	clearTenantsAndKeys(t, pg)
+	ctx := context.Background()
+
+	root, err := pg.CreateTenant(ctx, model.Tenant{Code: "scope-root", Name: "Root", Status: 1})
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	child, err := pg.CreateTenant(ctx, model.Tenant{Code: "scope-child", Name: "Child", Status: 1, ParentID: &root.ID})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	outside, err := pg.CreateTenant(ctx, model.Tenant{Code: "scope-outside", Name: "Outside", Status: 1})
+	if err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+
+	key := func(tenantID, name string) logFixture {
+		k, err := pg.CreateAPIKey(ctx, model.APIKeyAdmin{TenantID: tenantID, Name: name, KeyPrefix: "campus_" + name, Status: 1}, "digest-"+name)
+		if err != nil {
+			t.Fatalf("create key %s: %v", name, err)
+		}
+		return logFixture{tenantID: tenantID, keyID: k.ID}
+	}
+	rootFix := key(root.ID, "scope-root-key")
+	childFix := key(child.ID, "scope-child-key")
+	outsideFix := key(outside.ID, "scope-outside-key")
+
+	now := time.Now().UTC().Add(-time.Minute)
+	insertLogRows(t, pg, []logRow{
+		{requestID: "req_scope_root", fixture: rootFix, model: "m", provider: "p", status: 200, tokens: 10, latency: 1, createdAt: now},
+		{requestID: "req_scope_child", fixture: childFix, model: "m", provider: "p", status: 200, tokens: 20, latency: 1, createdAt: now},
+		{requestID: "req_scope_outside", fixture: outsideFix, model: "m", provider: "p", status: 200, tokens: 40, latency: 1, createdAt: now},
+	})
+
+	rootUsage, err := pg.TenantUsageStats(ctx, root.ID)
+	if err != nil {
+		t.Fatalf("root usage: %v", err)
+	}
+	if rootUsage.DailyRequests != 2 || rootUsage.MonthlyRequests != 2 || rootUsage.DailyTokens != 30 || rootUsage.MonthlyTokens != 30 {
+		t.Fatalf("root usage must include the child: %+v", rootUsage)
+	}
+	childUsage, err := pg.TenantUsageStats(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("child usage: %v", err)
+	}
+	if childUsage.DailyRequests != 1 || childUsage.DailyTokens != 20 {
+		t.Fatalf("child usage = %+v, want only its own row", childUsage)
+	}
+
+	facets, err := pg.RequestLogFacets(ctx, root.ID)
+	if err != nil {
+		t.Fatalf("facets: %v", err)
+	}
+	tenantIDs := map[string]bool{}
+	for _, v := range facets.Tenants {
+		tenantIDs[v.ID] = true
+	}
+	if !tenantIDs[root.ID] || !tenantIDs[child.ID] || tenantIDs[outside.ID] || len(tenantIDs) != 2 {
+		t.Fatalf("scoped tenant facets = %v, want root and child only", tenantIDs)
+	}
+	keyIDs := map[string]bool{}
+	for _, v := range facets.Keys {
+		keyIDs[v.ID] = true
+	}
+	if !keyIDs[rootFix.keyID] || !keyIDs[childFix.keyID] || keyIDs[outsideFix.keyID] || len(keyIDs) != 2 {
+		t.Fatalf("scoped key facets = %v, want root and child keys only", keyIDs)
+	}
+}

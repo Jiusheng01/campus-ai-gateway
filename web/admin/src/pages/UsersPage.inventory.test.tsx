@@ -9,7 +9,7 @@ function jsonResponse(body: unknown, status = 200) {
   return {ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body)} as Response
 }
 
-const tenants = [{id: 't-1', code: 'cs-dept', name: '计算机学院', status: 1, daily_token_limit: 0, monthly_token_limit: 0, monthly_request_limit: 0, monthly_budget_micros: 0, rpm_limit: 0, tpm_limit: 0, max_concurrency: 0}] as Tenant[]
+const tenants = [{id: 't-1', code: 'cs-dept', name: '计算机学院', status: 1, parent_id: null, path: '/t-1/', depth: 0, kind: 'tenant', daily_token_limit: 0, monthly_token_limit: 0, monthly_request_limit: 0, monthly_budget_micros: 0, rpm_limit: 0, tpm_limit: 0, max_concurrency: 0}] as Tenant[]
 
 function user(over: Partial<AccountUser> = {}): AccountUser {
   return {
@@ -21,6 +21,8 @@ function user(over: Partial<AccountUser> = {}): AccountUser {
     tenant_id: 't-1',
     tenant_name: '计算机学院',
     password_reset_required: false,
+    scope_tenant_id: '',
+    scope_tenant_name: '',
     last_login_at: '2026-10-20T08:00:00Z',
     created_at: '2026-01-01T00:00:00Z',
     ...over,

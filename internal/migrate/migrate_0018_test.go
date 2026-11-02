@@ -93,10 +93,11 @@ func TestMigration0018UpgradesSeededDatabase(t *testing.T) {
 	// The runner advances the database to the end of the migration set, so a
 	// database parked at 0017 crosses 0018 and every later file too. The
 	// assertions below still pin what 0018 itself is responsible for.
-	if len(result.Applied) != 2 ||
+	if len(result.Applied) != 3 ||
 		!strings.HasSuffix(result.Applied[0], "0018_ownership_and_snapshot.sql") ||
-		!strings.HasSuffix(result.Applied[1], "0019_admin_password_reset.sql") {
-		t.Fatalf("applied = %v, want 0018 then 0019", result.Applied)
+		!strings.HasSuffix(result.Applied[1], "0019_admin_password_reset.sql") ||
+		!strings.HasSuffix(result.Applied[2], "0020_tenant_hierarchy_and_model_quota.sql") {
+		t.Fatalf("applied = %v, want 0018, 0019 then 0020", result.Applied)
 	}
 
 	second, err := Apply(context.Background(), url, repoMigrations)
@@ -176,7 +177,8 @@ func TestMigration0018UpgradesSeededDatabase(t *testing.T) {
 		t.Fatalf("existing tenant allowed_models = %s, want [\"*\"]", allowed)
 	}
 	if _, err := conn.Exec(ctx,
-		`INSERT INTO gateway_tenant(code,name) VALUES ('fresh-tenant','Fresh Tenant')`); err != nil {
+		`INSERT INTO gateway_tenant(id,code,name,path)
+		 VALUES ('11111111-1111-1111-1111-111111111111','fresh-tenant','Fresh Tenant','/11111111-1111-1111-1111-111111111111/')`); err != nil {
 		t.Fatalf("insert tenant after 0018: %v", err)
 	}
 	if err := conn.QueryRow(ctx,
@@ -238,7 +240,10 @@ func TestMigration0018KeyOwnerIsSetNullWhenTheAccountIsDeleted(t *testing.T) {
 
 	var tenantID, userID, keyID string
 	if err := conn.QueryRow(ctx,
-		`INSERT INTO gateway_tenant(code,name) VALUES ('fk-tenant','FK Tenant') RETURNING id::text`).Scan(&tenantID); err != nil {
+		`WITH t AS (SELECT gen_random_uuid() AS id)
+		 INSERT INTO gateway_tenant(id,code,name,path)
+		 SELECT id,'fk-tenant','FK Tenant','/'||id::text||'/' FROM t
+		 RETURNING id::text`).Scan(&tenantID); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx,

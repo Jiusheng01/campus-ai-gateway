@@ -16,6 +16,10 @@ const tenants = [
     code: 'cs-dept',
     name: '计算机学院',
     status: 1,
+    parent_id: null,
+    path: '/t-1/',
+    depth: 0,
+    kind: 'tenant',
     daily_token_limit: 0,
     monthly_token_limit: 0,
     monthly_request_limit: 0,
@@ -46,8 +50,25 @@ const users = [
     status: 1,
     tenant_id: 't-1',
     tenant_name: '计算机学院',
+    scope_tenant_id: '',
+    scope_tenant_name: '',
+    password_reset_required: false,
     last_login_at: null,
     created_at: '2026-01-02T00:00:00Z',
+  },
+  {
+    id: 'u-scoped',
+    username: 'wangwu',
+    display_name: '王五',
+    roles: ['tenant_admin'],
+    status: 1,
+    tenant_id: 't-1',
+    tenant_name: '计算机学院',
+    scope_tenant_id: 't-1',
+    scope_tenant_name: '计算机学院',
+    password_reset_required: false,
+    last_login_at: null,
+    created_at: '2026-01-03T00:00:00Z',
   },
 ] as AccountUser[]
 
@@ -55,10 +76,13 @@ function stubUsersAPI(putResponse: () => Response = () => jsonResponse({data: {.
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url === '/admin/users' && (!init?.method || init.method === 'GET')) {
-      return jsonResponse({data: users, stats: {total: 2, members: 2, admins: 0, disabled: 0}})
+      return jsonResponse({data: users, stats: {total: 3, members: 2, admins: 1, disabled: 0}})
     }
     if (url === '/admin/tenants') return jsonResponse({data: tenants})
     if (url === '/admin/users/u-unassigned/tenant' && init?.method === 'PUT') return putResponse()
+    if (url === '/admin/users/u-scoped' && init?.method === 'PATCH') {
+      return jsonResponse({data: {...users[2], roles: ['member'], scope_tenant_id: '', scope_tenant_name: ''}})
+    }
     return jsonResponse({error: {code: 'not_found', message: `unexpected ${url}`}}, 404)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -122,6 +146,31 @@ describe('UsersPage Tenant Membership', () => {
         ([url, init]) => String(url) === '/admin/users/u-unassigned' && init?.method === 'PATCH',
       ),
     ).toBe(false)
+  })
+
+  // Removing tenant_admin must clear its scope in the same patch. Leaving the
+  // old scope behind made the API refuse the change as "a scope without the
+  // role", so the role could be granted but never taken away.
+  it('clears the scope when the tenant administrator role is removed', async () => {
+    const fetchMock = stubUsersAPI()
+    const user = userEvent.setup()
+    renderUsersPage()
+
+    const row = (await screen.findByText('wangwu')).closest('tr') as HTMLElement
+    await user.click(within(row).getByRole('button', {name: /管理/}))
+    const dialog = await screen.findByRole('dialog', {name: '管理账号'})
+    const roleBox = within(dialog).getByRole('checkbox', {name: '租户管理员'})
+    expect(roleBox).toBeChecked()
+    await user.click(roleBox)
+    await user.click(within(dialog).getByRole('button', {name: '保存更改'}))
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) => String(url) === '/admin/users/u-scoped' && init?.method === 'PATCH',
+      )
+      expect(call).toBeTruthy()
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({roles: [], scope_tenant_id: null})
+    })
   })
 
   it('surfaces the owned-key count when the gateway refuses the assignment', async () => {

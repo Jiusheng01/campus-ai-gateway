@@ -142,11 +142,17 @@ func (s *Server) consoleSharedQuota(r *http.Request, tenantID string) (*model.Co
 	if err != nil {
 		return nil, err
 	}
+	// The member sees the budget that actually applies to them, which with
+	// inheritance is not necessarily the number their own Tenant declared.
+	effective, err := s.pg.EffectiveTenantLimits(r.Context(), tenantID)
+	if err != nil {
+		return nil, err
+	}
 	return &model.ConsoleUsageQuota{
 		TenantID:       tenant.ID,
 		TenantName:     tenant.Name,
-		DailyToken:     quotaUsage(stats.DailyTokens, tenant.DailyTokenLimit),
-		MonthlyToken:   quotaUsage(stats.MonthlyTokens, tenant.MonthlyTokenLimit),
-		MonthlyRequest: quotaUsage(stats.MonthlyRequests, tenant.MonthlyRequestLimit),
+		DailyToken:     quotaUsage(stats.DailyTokens, effective.DailyTokenLimit),
+		MonthlyToken:   quotaUsage(stats.MonthlyTokens, effective.MonthlyTokenLimit),
+		MonthlyRequest: quotaUsage(stats.MonthlyRequests, effective.MonthlyRequestLimit),
 	}, nil
 }

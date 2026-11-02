@@ -2,6 +2,7 @@ import {
   BarChart3,
   Boxes,
   FileClock,
+  Gauge,
   KeyRound,
   LayoutDashboard,
   Network,
@@ -11,6 +12,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   UserRound,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -29,6 +31,7 @@ export type Page =
   | 'calls'
   | 'users'
   | 'tenants'
+  | 'model-quotas'
   | 'settings'
   | 'profile'
   | 'access'
@@ -49,13 +52,20 @@ export type NavItem = {
 export type NavGroup = {id: string; label: string; items: NavItem[]}
 
 // MANAGEMENT mirrors the gateway's allow-list for the pages every
-// administrator may reach. tenant_admin is deliberately absent: it is inert
-// until the scoped tenant membership exists, so offering it here would only
-// lead to a 403.
+// administrator may reach. tenant_admin is absent here on purpose: its
+// authority is bounded to one subtree, so it reaches exactly the tenant, key
+// and model-quota pages listed under SCOPED_ADMIN.
 const MANAGEMENT = ['super_admin', 'gateway_admin', 'auditor', 'operator']
 
-// Anyone signed in has a profile and can manage their own password and devices.
-const EVERYONE = [...MANAGEMENT, 'member']
+// SCOPED_ADMIN is the role set that reaches the subtree-bounded surfaces. A
+// tenant_admin stored without a scope is inert on the server, so its pages
+// answer 403; assigning a scope is what makes the grant real.
+const SCOPED_ADMIN = ['super_admin', 'tenant_admin']
+
+// Anyone signed in has a profile and can manage their own password and devices,
+// including a scoped tenant_admin — its narrowing applies to tenant data, not to
+// the account's own credentials.
+const EVERYONE = [...MANAGEMENT, 'tenant_admin', 'member']
 
 // Entries are grouped by the business area the operator is working in. The old
 // page ids (`keys`, `tenants`, `logs`, etc.) remain valid aliases in App.tsx so
@@ -69,7 +79,7 @@ export const navGroups: NavGroup[] = [
       {id: 'providers', label: '上游渠道', icon: Network, roles: ['super_admin', 'gateway_admin']},
       {id: 'models', label: '对外模型', icon: Boxes, roles: ['super_admin', 'gateway_admin']},
       {id: 'routes', label: '路由策略', icon: Route, roles: ['super_admin', 'gateway_admin']},
-      {id: 'calls', label: '调用管理', icon: KeyRound, roles: ['super_admin']},
+      {id: 'calls', label: '调用管理', icon: KeyRound, roles: SCOPED_ADMIN},
       // Raw logs stay restricted: gateway_admin uses the scoped runtime summary
       // on the channel/model pages instead.
       {id: 'logs', label: '调用日志', icon: FileClock, roles: ['super_admin', 'auditor']},
@@ -87,7 +97,11 @@ export const navGroups: NavGroup[] = [
   {
     id: 'people',
     label: '用户与租户',
-    items: [{id: 'users', label: '用户', icon: UserRound, roles: ['super_admin']}],
+    items: [
+      {id: 'tenants', label: '租户层级', icon: Users, roles: SCOPED_ADMIN},
+      {id: 'model-quotas', label: '模型额度', icon: Gauge, roles: SCOPED_ADMIN},
+      {id: 'users', label: '用户', icon: UserRound, roles: ['super_admin']},
+    ],
   },
   {
     id: 'system',
@@ -149,6 +163,7 @@ export const adminRoutePages: Page[] = [
   'calls',
   'users',
   'tenants',
+  'model-quotas',
   'settings',
   'profile',
   'access',
@@ -169,9 +184,10 @@ export const pageMeta: Record<Page, {title: string; subtitle: string}> = {
   providers: {title: '上游渠道', subtitle: '管理上游渠道的接入、凭据与候选模型'},
   models: {title: '对外模型', subtitle: '管理业务系统调用的模型名称与线路配置'},
   routes: {title: '路由策略', subtitle: '查看和编辑所有对外模型的线路'},
-  calls: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
+  calls: {title: '调用管理', subtitle: '管理业务调用凭据与租户配额'},
   users: {title: '用户', subtitle: '管理注册用户和管理员角色'},
-  tenants: {title: '调用管理', subtitle: '管理租户配额与业务调用凭据'},
+  tenants: {title: '租户层级', subtitle: '管理租户层级、配额与继承关系'},
+  'model-quotas': {title: '模型额度', subtitle: '按主体与模型设定 Token 上限'},
   settings: {title: '系统设置', subtitle: '认证方式与运行参数'},
   profile: {title: '个人资料', subtitle: '账号身份与权限范围'},
   access: {title: '安全与访问', subtitle: '密码与登录设备'},
@@ -198,10 +214,10 @@ export const allNavItems: NavItem[] = navGroups.flatMap(g => g.items)
 /** Pages the account may enter, in navigation order. */
 export function allowedPages(roles: string[]): Page[] {
   const pages = allNavItems.filter(item => roleGranted(item.roles, roles)).map(item => item.id)
-  // `keys` and `tenants` are legacy page ids that now land on 调用管理. They
-  // are not separate navigation entries, but an existing link must not be
+  // `keys` is the legacy id for the key page that now lives under 调用管理. It
+  // is not a separate navigation entry, but an existing link must not be
   // redirected away by the role guard.
-  if (pages.includes('calls')) pages.push('keys', 'tenants')
+  if (pages.includes('calls') && !pages.includes('keys')) pages.push('keys')
   return pages
 }
 
