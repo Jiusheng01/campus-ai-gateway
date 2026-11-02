@@ -402,7 +402,7 @@ export function ConsoleKeysPage() {
         <Drawer
           size="lg"
           title="创建 API Key"
-          subtitle="Key 归属于你的账号，模型范围受租户授权限制。创建后完整 Key 仅显示一次。"
+          subtitle="个人 API Key，模型范围受租户授权限制。提交后完整 Key 仅显示一次。"
           onClose={() => setCreating(false)}
         >
           <CreateKeyForm
@@ -422,7 +422,7 @@ export function ConsoleKeysPage() {
         <Drawer
           size="lg"
           title="编辑 API Key"
-          subtitle="可以修改名称、模型范围、IP 白名单和过期时间。租户与归属账号不可修改；停用与启用请使用行内操作。"
+          subtitle="编辑名称、模型范围、IP 白名单与过期时间。"
           onClose={() => setEditing(null)}
         >
           <EditKeyForm

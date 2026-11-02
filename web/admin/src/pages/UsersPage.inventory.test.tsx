@@ -20,6 +20,7 @@ function user(over: Partial<AccountUser> = {}): AccountUser {
     status: 1,
     tenant_id: 't-1',
     tenant_name: '计算机学院',
+    password_reset_required: false,
     last_login_at: '2026-10-20T08:00:00Z',
     created_at: '2026-01-01T00:00:00Z',
     ...over,

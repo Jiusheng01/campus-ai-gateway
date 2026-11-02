@@ -47,7 +47,7 @@ export function SecurityPage() {
     <>
       <RecordList
         title="安全事件"
-        sub="集中展示鉴权、权限、限流与租户配额拒绝事件。事件说明请求为何被拒，不包含请求或响应正文。"
+        sub="鉴权、权限、限流与配额拒绝事件，不含请求内容。"
         filters={
           <RecordFilters
             search={search}

@@ -55,6 +55,9 @@
 | `PUBLIC_REGISTRATION_ENABLED` | 是否开放公开注册（只能创建 `member`） | 否 | `false` |
 | `PUBLIC_REGISTER_MAX_ATTEMPTS` | 注册限流，按来源 IP 计 | 否 | `5` |
 | `PUBLIC_REGISTER_WINDOW` | 注册限流窗口 | 否 | `1h` |
+| `PUBLIC_REGISTER_TENANT_ID` | 新注册的 Account 自动加入的 Tenant UUID。留空则注册后保持未分配，需管理员在「用户」页手工分配。**该 Tenant 的配额与限流就是全部自助注册用户的上限**；需要按院系分开计费的部署必须留空 | 否 | 空 |
+
+`PUBLIC_REGISTER_TENANT_ID` 在启动时校验是否合法 UUID，即使注册开关当时是关闭的——否则一个拼错的值会在管理员打开注册的那天静默生效。配置的 Tenant 在启动后被删除时，注册本身不会失败，只是该账号保持未分配并写一条日志，由管理员补分配。
 
 ### 个人控制台
 

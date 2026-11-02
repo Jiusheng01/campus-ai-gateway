@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/httpx"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
@@ -42,11 +41,8 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
 
-	if username == "" || utf8.RuneCountInString(username) > 64 {
-		return model.AdminUser{}, adminTokens{}, ErrAdminBadRequest
-	}
-	if utf8.RuneCountInString(displayName) > 128 {
-		return model.AdminUser{}, adminTokens{}, ErrAdminBadRequest
+	if err := validateAccountNames(username, displayName); err != nil {
+		return model.AdminUser{}, adminTokens{}, err
 	}
 	if err := validateAdminPassword(username, password); err != nil {
 		return model.AdminUser{}, adminTokens{}, err
@@ -74,7 +70,7 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 		return model.AdminUser{}, adminTokens{}, ErrAdminInternal
 	}
 
-	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles)
+	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles, false)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrAdminUsernameTaken):
@@ -83,6 +79,27 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 			return model.AdminUser{}, adminTokens{}, ErrAdminInternal
 		default:
 			return model.AdminUser{}, adminTokens{}, ErrAdminInternal
+		}
+	}
+
+	// Membership is joined before the session is opened, so the first page the
+	// new Account loads already reflects reality. Assigning it afterwards
+	// would let the personal console's very first fetch — which happens
+	// immediately after sign-in — read "no Tenant assigned" and cache that
+	// answer in the page the user is looking at.
+	//
+	// A failure here is not allowed to undo the registration: the account and
+	// its password are already committed, and the operator can still assign
+	// the Tenant by hand. It is logged loudly because the deployment was
+	// configured to do this automatically and silently not doing it is exactly
+	// the state this setting exists to prevent.
+	if a.registrationTenantID != "" {
+		assigned, err := a.assignUserTenant(ctx, user.ID, a.registrationTenantID)
+		if err != nil {
+			log.Printf("registration: account %s created but joining Tenant %s failed, an operator must assign it: %v",
+				user.Username, a.registrationTenantID, err)
+		} else {
+			user = assigned
 		}
 	}
 

@@ -1,11 +1,11 @@
 import {useCallback, useEffect, useState} from 'react'
-import {Fingerprint, KeyRound, Lock, ShieldCheck, UserRound} from 'lucide-react'
+import {Fingerprint, KeyRound, Lock, ShieldCheck} from 'lucide-react'
 import {getAuthConfig, type AuthConfig, type WhoAmI} from '../api'
 import {Panel} from '../components/ui/Panel'
 import {Badge} from '../components/ui/Badge'
 import {Button} from '../components/ui/Button'
 import {EmptyState} from '../components/ui/EmptyState'
-import {roleSummary} from '../lib/roles'
+import {InfoDisclosure} from '../components/ui/InfoDisclosure'
 
 type ModeInfo = {label: string; description: string; icon: typeof KeyRound; tone: 'success' | 'info' | 'warning'}
 
@@ -50,12 +50,11 @@ function duration(seconds: number): string {
   return `${seconds} 秒`
 }
 
-function Fact({label, value, hint}: {label: string; value: React.ReactNode; hint?: string}) {
+function Fact({label, value}: {label: string; value: React.ReactNode}) {
   return (
     <div className="settingFact">
       <span className="settingFactLabel">{label}</span>
       <b className="settingFactValue">{value}</b>
-      {hint && <small className="settingFactHint">{hint}</small>}
     </div>
   )
 }
@@ -103,22 +102,29 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
 
   if (!config) {
     return (
-      <Panel title="系统设置" sub="网关的启动配置。所有值都为只读。">
-        {loadError ? (
-          <EmptyState
-            icon={<Lock />}
-            title="无法读取认证配置"
-            description={`${loadError}。页面不显示默认值，以免把读不到的配置当成当前配置。`}
-            action={
-              <Button variant="primary" loading={loading} onClick={() => void load()}>
-                重新加载
-              </Button>
-            }
-          />
-        ) : (
-          <p className="muted" role="status">正在读取认证配置…</p>
-        )}
-      </Panel>
+      <div className="stack">
+        <Panel
+          className="settingsPanel"
+          title="认证与安全配置"
+          sub="登录、会话与安全策略。"
+          actions={<Badge tone="neutral">只读</Badge>}
+        >
+          {loadError ? (
+            <EmptyState
+              icon={<Lock />}
+              title="无法读取认证配置"
+              description={`${loadError}。页面不显示默认值，以免把读不到的配置当成当前配置。`}
+              action={
+                <Button variant="primary" loading={loading} onClick={() => void load()}>
+                  重新加载
+                </Button>
+              }
+            />
+          ) : (
+            <p className="muted" role="status">正在读取认证配置…</p>
+          )}
+        </Panel>
+      </div>
     )
   }
 
@@ -132,20 +138,13 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
   return (
     <div className="stack">
       <Panel
-        title="系统设置"
-        sub="以下内容来自网关的启动配置（ADMIN_AUTH_MODE 及其相关环境变量），修改后需要重启网关。本页面只读。"
+        className="settingsPanel"
+        title="认证与安全配置"
+        sub="登录、会话与安全策略。"
+        actions={<Badge tone="neutral">只读</Badge>}
+        footer={<a className="linkInline" href="/admin-ui/profile">前往个人资料</a>}
       >
         <div className="settingsGroups">
-          <section className="settingsGroup" aria-label="当前操作者">
-            <h3 className="settingsGroupTitle"><UserRound aria-hidden />当前操作者</h3>
-            <div className="settingsFacts">
-              <Fact label="账号" value={<span className="mono">{who?.username || who?.user || '—'}</span>} />
-              <Fact label="角色" value={roleSummary(who?.roles)} />
-              <Fact label="权限范围" value={who?.roles?.length ? '由角色决定，见导航中的可用页面' : '未返回角色，按普通用户处理'} />
-            </div>
-            <p className="settingsNote">账号自身的资料、密码和设备管理在「个人」下的页面中维护，不在本页。</p>
-          </section>
-
           <section className="settingsGroup" aria-label="认证方式">
             <h3 className="settingsGroupTitle"><Icon aria-hidden />认证方式</h3>
             <div className="authModeCard">
@@ -158,7 +157,9 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
                   <Badge tone={info.tone}>{mode || '未返回'}</Badge>
                   {!known && <Badge tone="warning">未知模式</Badge>}
                 </div>
-                <p>{info.description}</p>
+                {/* An unknown mode is a warning, not a detail: keep its
+                    explanation visible instead of folding it away. */}
+                {!known && <p>{info.description}</p>}
               </div>
             </div>
           </section>
@@ -169,18 +170,12 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
               <Fact
                 label="账号登录"
                 value={<Badge tone={config.login_enabled ? 'success' : 'warning'}>{config.login_enabled ? '已启用' : '已关闭'}</Badge>}
-                hint={config.login_enabled ? '登录入口可用' : '控制台没有本地登录入口'}
               />
               <Fact
                 label="公开注册"
                 value={<Badge tone={config.registration_enabled ? 'success' : 'neutral'}>{config.registration_enabled ? '已开放' : '未开放'}</Badge>}
-                hint={config.registration_enabled ? '任何人可自助注册为普通用户' : '账号由管理员创建'}
               />
-              <Fact
-                label="初始化状态"
-                value={config.needs_setup ? '尚未完成' : '已完成'}
-                hint={config.needs_setup ? '还没有超级管理员' : '首个超级管理员已存在'}
-              />
+              <Fact label="初始化状态" value={config.needs_setup ? '尚未完成' : '已完成'} />
               <Fact label="初始化来源限制" value={setupMode} />
             </div>
           </section>
@@ -188,15 +183,19 @@ export function SettingsPage({who, authConfig}: {who: WhoAmI | null; authConfig:
           <section className="settingsGroup" aria-label="会话与密码">
             <h3 className="settingsGroupTitle"><ShieldCheck aria-hidden />会话与密码</h3>
             <div className="settingsFacts">
-              <Fact label="访问凭证有效期" value={duration(config.access_ttl_seconds)} hint="到期后由续期 Cookie 自动换取新凭证" />
-              <Fact label="密码最短长度" value={`${config.min_password_length} 位`} hint="由网关的密码策略决定" />
+              <Fact label="访问凭证有效期" value={duration(config.access_ttl_seconds)} />
+              <Fact label="密码最短长度" value={`${config.min_password_length} 位`} />
             </div>
           </section>
+
+          <InfoDisclosure summary="高级信息与部署说明">
+            <p>{info.description}</p>
+            <p>
+              配置来自启动配置与环境变量（如 <code>ADMIN_AUTH_MODE</code>），修改后需要重启网关。
+            </p>
+            <p>初始化只能在网关本机完成；首个超级管理员创建后，初始化入口关闭。</p>
+          </InfoDisclosure>
         </div>
-        <p className="settingsReadOnly">
-          <Lock aria-hidden />
-          全部字段为只读：接口没有提供修改系统配置的入口，本页不会显示无法保存的开关。
-        </p>
       </Panel>
     </div>
   )

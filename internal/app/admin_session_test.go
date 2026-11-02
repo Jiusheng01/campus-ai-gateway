@@ -159,6 +159,13 @@ func (f *fakeAdminStore) FindAdminUserByID(_ context.Context, id string) (model.
 	return u, nil
 }
 
+// TenantExists mirrors the real EXISTS query: a Tenant is present exactly when
+// the fake's tenant map has an entry for it.
+func (f *fakeAdminStore) TenantExists(_ context.Context, tenantID string) (bool, error) {
+	_, ok := f.tenants[tenantID]
+	return ok, nil
+}
+
 func (f *fakeAdminStore) TenantAllowedModels(_ context.Context, tenantID string) ([]string, error) {
 	if _, ok := f.tenants[tenantID]; !ok {
 		return nil, nil
@@ -192,17 +199,20 @@ func (f *fakeAdminStore) CreateFirstAdminUser(_ context.Context, username, displ
 	return u, nil
 }
 
-func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string) (model.AdminUser, error) {
+func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, hash string, roles []string, passwordResetRequired bool) (model.AdminUser, error) {
 	if _, taken := f.names[strings.ToLower(strings.TrimSpace(username))]; taken {
 		return model.AdminUser{}, storage.ErrAdminUsernameTaken
 	}
 	f.seq++
 	id := uuid.NewString()
 	now := time.Now().UTC()
+	// The flag arrives with the hash, exactly as the real INSERT takes it, so a
+	// service test cannot observe a created account without it.
 	u := model.AdminUser{
 		ID: id, Username: username, DisplayName: displayName, PasswordHash: hash,
 		Roles: roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
-		CreatedAt: now, UpdatedAt: now,
+		PasswordResetRequired: passwordResetRequired,
+		CreatedAt:             now, UpdatedAt: now,
 	}
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id
@@ -302,6 +312,31 @@ func (f *fakeAdminStore) UpdateAdminUserPassword(_ context.Context, id, hash str
 	}
 	u.PasswordHash = hash
 	u.AuthVersion++
+	f.users[id] = u
+	return nil
+}
+
+// ResetAdminUserPassword mirrors the single statement the real store runs: the
+// hash, the flag and the version move together, so no test can observe a
+// half-applied reset.
+func (f *fakeAdminStore) ResetAdminUserPassword(_ context.Context, id, hash string) (model.AdminUser, error) {
+	u, ok := f.users[id]
+	if !ok {
+		return model.AdminUser{}, storage.ErrAdminUserNotFound
+	}
+	u.PasswordHash = hash
+	u.PasswordResetRequired = true
+	u.AuthVersion++
+	f.users[id] = u
+	return u, nil
+}
+
+func (f *fakeAdminStore) ClearAdminPasswordReset(_ context.Context, id string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return storage.ErrAdminUserNotFound
+	}
+	u.PasswordResetRequired = false
 	f.users[id] = u
 	return nil
 }

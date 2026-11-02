@@ -1,10 +1,12 @@
 import {useMemo, useState} from 'react'
-import {Pencil, Search, ShieldAlert, UserCheck, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
+import {Pencil, Search, ShieldAlert, UserCheck, UserPlus, UserRound, UserX, Users as UsersIcon} from 'lucide-react'
 import {
   ApiError,
   api,
   assignUserTenant,
+  createUser,
   listUsers,
+  resetUserPassword,
   updateUser,
   type AccountChangeSet,
   type AccountUser,
@@ -21,6 +23,8 @@ import {Table} from '../components/ui/Table'
 import {Detail} from '../components/ui/Detail'
 import {useConfirm} from '../components/ui/ConfirmDialog'
 import {useToast} from '../components/ui/Toast'
+import {PasswordInput} from '../components/ui/PasswordInput'
+import {describeAccountError} from '../lib/errors'
 import {useResource} from '../lib/useResource'
 import {ASSIGNABLE_ROLES, canonicalRoles, roleLabel} from '../lib/roles'
 import {ago, num, when} from '../lib/format'
@@ -45,6 +49,7 @@ export function UsersPage() {
     return {users: users.data, stats: users.stats, tenants}
   })
   const [editing, setEditing] = useState<AccountUser | null>(null)
+  const [creating, setCreating] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -76,7 +81,7 @@ export function UsersPage() {
     <>
       <Panel
         title="用户"
-        sub="管理注册用户和管理员角色。管理员角色只能由超级管理员授予。"
+        sub="管理账号与角色；管理角色仅超级管理员可授予。"
       >
         <div className="kpiGrid">
           {/* A count is a fact about the account table. Before it is read, or
@@ -89,7 +94,16 @@ export function UsersPage() {
         </div>
       </Panel>
 
-      <Panel title="账号列表" sub="点击「管理」可调整角色或停用账号。上方统计始终描述全部账号。">
+      <Panel
+        title="账号列表"
+        sub="管理角色与账号状态；统计覆盖全部账号。"
+        actions={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            <UserPlus aria-hidden />
+            新建账号
+          </Button>
+        }
+      >
         <div className="filterCard">
           <div className="filtersBar">
             <div className="searchFieldGroup">
@@ -193,6 +207,18 @@ export function UsersPage() {
         )}
       </Panel>
 
+      {creating && (
+        <CreateUserDrawer
+          tenants={tenants}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false)
+            reload()
+          }}
+          onDenied={message => toast.error(message)}
+        />
+      )}
+
       {editing && (
         <UserDrawer
           user={editing}
@@ -281,6 +307,11 @@ function UserDrawer({
   const [displayName, setDisplayName] = useState(user.display_name || '')
   const [tenantId, setTenantId] = useState(user.tenant_id || '')
   const [busy, setBusy] = useState(false)
+  // The reset form is separate state from the save button: a reset is not an
+  // edit to this account, it is an event that signs the account out, so it gets
+  // its own confirmation and its own busy flag.
+  const [newResetPassword, setNewResetPassword] = useState('')
+  const [resetting, setResetting] = useState(false)
 
   // Comparisons are over the canonical form, so reordering the same roles is
   // not mistaken for an edit — otherwise merely opening the drawer and saving
@@ -386,6 +417,40 @@ function UserDrawer({
     }
   }
 
+  // No server-generated password: the operator types the one they will hand
+  // over, so the gateway never has to send a password or show it on screen.
+  const doReset = async () => {
+    if (!newResetPassword) return
+    const ok = await confirm({
+      title: `重置 ${user.username} 的密码？`,
+      description:
+        '该账号的全部登录会话将立即失效。对方用这个密码登录后，必须先设置一个只有自己知道的新密码，' +
+        '在此之前无法进入任何页面。请通过可信渠道把密码交给本人，不要留在聊天记录里。',
+      confirmText: '重置密码',
+      danger: true,
+    })
+    if (!ok) return
+
+    setResetting(true)
+    try {
+      await resetUserPassword(user.id, newResetPassword)
+      setNewResetPassword('')
+      toast.success('密码已重置，对方下次登录时必须设置新密码。')
+      onSaved()
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : ''
+      if (code === 'account_disabled') {
+        onDenied('该账号已停用，请先启用再重置密码。')
+      } else {
+        // The policy sentence and the tenant refusal both come from the shared
+        // code-to-Chinese map; the server's English text is never shown.
+        onDenied(describeAccountError(err, '重置失败'))
+      }
+    } finally {
+      setResetting(false)
+    }
+  }
+
   return (
     <Drawer
       title="管理账号"
@@ -417,26 +482,12 @@ function UserDrawer({
           </label>
         </div>
 
-        <section className="detailBox">
-          <h3>租户</h3>
-          <div className="detailRow">
-            <span className="detailKey">所属租户</span>
-            <b className="detailValue">
-              <select value={tenantId} onChange={e => setTenantId(e.target.value)}>
-                <option value="">未分配</option>
-                {tenants.map(t => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}（{t.code}）
-                  </option>
-                ))}
-              </select>
-            </b>
-          </div>
-          <div className="detailRow">
-            <span className="detailKey">说明</span>
-            <b className="detailValue muted">账号拥有 API Key 时不能更改租户，需先删除其全部 Key。</b>
-          </div>
-        </section>
+        <TenantPicker
+          tenants={tenants}
+          value={tenantId}
+          onChange={setTenantId}
+          hint="账号拥有 API Key 时不能更改租户，需先删除其全部 Key。"
+        />
 
         <section className="detailBox">
           <h3>状态</h3>
@@ -457,26 +508,45 @@ function UserDrawer({
           </div>
         </section>
 
+        <RolePicker value={selected} onChange={setSelected} />
+
         <section className="detailBox">
-          <h3>权限</h3>
-          <div className="detailRow column">
-            <span className="detailKey">管理角色</span>
-            <div className="checks">
-              {ASSIGNABLE_ROLES.map(role => (
-                <label key={role}>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(role)}
-                    onChange={e => {
-                      if (e.target.checked) setSelected([...selected, role])
-                      else setSelected(selected.filter(r => r !== role))
-                    }}
-                  />
-                  {roleLabel(role)}
-                </label>
-              ))}
-            </div>
-            <small className="fieldHint">不选择任何管理角色时，该账号即为普通用户。</small>
+          <h3>重置密码</h3>
+          <div className="detailRow">
+            <span className="detailKey">当前状态</span>
+            <b className="detailValue">
+              {user.password_reset_required ? (
+                <span className="badge status warning">等待本人设置新密码</span>
+              ) : (
+                <span className="badge status success">密码由本人保管</span>
+              )}
+            </b>
+          </div>
+          <div className="form">
+            <label className="field">
+              <span className="fieldLabel">新的临时密码</span>
+              <PasswordInput
+                autoComplete="new-password"
+                value={newResetPassword}
+                placeholder="至少 10 位，需包含两类字符"
+                onChange={setNewResetPassword}
+              />
+              <small className="fieldHint">
+                这是唯一一条不依赖短信、也不依赖对方记得旧密码的找回路径。重置后该账号的会话全部失效，
+                对方登录后必须先设置自己的新密码才能使用。
+              </small>
+            </label>
+            <Button
+              variant="primary"
+              loading={resetting}
+              disabled={!newResetPassword || resetting || status !== 1}
+              onClick={() => void doReset()}
+            >
+              重置密码
+            </Button>
+            {status !== 1 && (
+              <small className="fieldHint">账号已停用时不能重置密码，请先启用。</small>
+            )}
           </div>
         </section>
 
@@ -484,6 +554,198 @@ function UserDrawer({
           <div className="notice warning">
             <ShieldAlert aria-hidden />
             超级管理员拥有完整系统控制权限，且系统必须始终保留至少一个启用的超级管理员。
+          </div>
+        )}
+      </div>
+    </Drawer>
+  )
+}
+
+/**
+ * TenantPicker renders the Tenant field both account drawers need. The copy
+ * above the select is the caller's, because the consequence of leaving it
+ * unassigned differs between creating and editing.
+ */
+function TenantPicker({
+  tenants,
+  value,
+  onChange,
+  hint,
+}: {
+  tenants: Tenant[]
+  value: string
+  onChange: (value: string) => void
+  hint: string
+}) {
+  return (
+    <section className="detailBox">
+      <h3>租户</h3>
+      <div className="detailRow">
+        <span className="detailKey">所属租户</span>
+        <b className="detailValue">
+          <select value={value} onChange={e => onChange(e.target.value)}>
+            <option value="">未分配</option>
+            {tenants.map(t => (
+              <option key={t.id} value={t.id}>
+                {t.name}（{t.code}）
+              </option>
+            ))}
+          </select>
+        </b>
+      </div>
+      <div className="detailRow">
+        <span className="detailKey">说明</span>
+        <b className="detailValue muted">{hint}</b>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * RolePicker renders the assignable management roles. "member" is not among
+ * them: an account is an ordinary user when it holds nothing else.
+ */
+function RolePicker({value, onChange}: {value: string[]; onChange: (value: string[]) => void}) {
+  return (
+    <section className="detailBox">
+      <h3>权限</h3>
+      <div className="detailRow column">
+        <span className="detailKey">管理角色</span>
+        <div className="checks">
+          {ASSIGNABLE_ROLES.map(role => (
+            <label key={role}>
+              <input
+                type="checkbox"
+                checked={value.includes(role)}
+                onChange={e => {
+                  if (e.target.checked) onChange([...value, role])
+                  else onChange(value.filter(r => r !== role))
+                }}
+              />
+              {roleLabel(role)}
+            </label>
+          ))}
+        </div>
+        <small className="fieldHint">不选择任何管理角色时，该账号即为普通用户。</small>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * 新建账号.
+ *
+ * The counterpart to the account drawer: that one changes an account, this one
+ * makes one. It exists so an operator can open an account for somebody who has
+ * not registered — and so the deployment does not have to leave public
+ * registration switched on just to add people.
+ *
+ * The password typed here is handed over out of band, which is why the gateway
+ * marks the account reset-required. The copy says so, because an operator who
+ * expects the person to start working immediately would otherwise be surprised
+ * by a password screen.
+ */
+function CreateUserDrawer({
+  tenants,
+  onClose,
+  onCreated,
+  onDenied,
+}: {
+  tenants: Tenant[]
+  onClose: () => void
+  onCreated: () => void
+  onDenied: (message: string) => void
+}) {
+  const toast = useToast()
+  const [username, setUsername] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [password, setPassword] = useState('')
+  const [roles, setRoles] = useState<string[]>([])
+  const [tenantId, setTenantId] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const canSubmit = username.trim() !== '' && password !== '' && !busy
+
+  const submit = async () => {
+    if (!canSubmit) return
+    setBusy(true)
+    try {
+      await createUser({
+        username: username.trim(),
+        display_name: displayName.trim(),
+        password,
+        roles,
+        tenant_id: tenantId || undefined,
+      })
+      toast.success('账号已创建。请通过可信渠道把密码交给本人。')
+      onCreated()
+    } catch (err) {
+      onDenied(describeAccountError(err, '创建失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Drawer
+      title="新建账号"
+      subtitle="用于给尚未注册的人开通账号"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void submit()}>
+            创建账号
+          </Button>
+        </>
+      }
+    >
+      <div className="detailStack">
+        <div className="form">
+          <label className="field">
+            <span className="fieldLabel">用户名</span>
+            <input
+              autoFocus
+              autoComplete="off"
+              value={username}
+              placeholder="用于登录的账号名，例如学号或工号"
+              onChange={e => setUsername(e.target.value)}
+            />
+            <small className="fieldHint">3–64 个字符，大小写不敏感且不可重复。</small>
+          </label>
+
+          <label className="field">
+            <span className="fieldLabel">显示名称（可选）</span>
+            <input value={displayName} placeholder="例如 张三" onChange={e => setDisplayName(e.target.value)} />
+          </label>
+
+          <label className="field">
+            <span className="fieldLabel">初始密码</span>
+            <PasswordInput
+              autoComplete="new-password"
+              value={password}
+              placeholder="至少 10 位，需包含两类字符"
+              onChange={setPassword}
+            />
+            <small className="fieldHint">
+              这是你交给对方的临时密码。对方首次登录后必须先设置一个只有自己知道的新密码，在此之前无法使用任何功能；
+              你手里的这个密码随即失效。
+            </small>
+          </label>
+        </div>
+
+        <TenantPicker
+          tenants={tenants}
+          value={tenantId}
+          onChange={setTenantId}
+          hint="不分配租户时，该账号登录后无法创建 API Key。"
+        />
+        <RolePicker value={roles} onChange={setRoles} />
+
+        {roles.includes('super_admin') && (
+          <div className="notice warning">
+            <ShieldAlert aria-hidden />
+            超级管理员拥有完整系统控制权限，包括管理所有渠道、租户与其它管理员。
           </div>
         )}
       </div>

@@ -51,6 +51,11 @@ const (
 	// client. It is distinct from every other reason so a device list can say
 	// "this was never a usable session" rather than "this was logged out".
 	revokeReasonSignInFailed = "signin_failed"
+	// revokeReasonAdminReset retires the sessions of an account whose password
+	// an administrator replaced. It is distinct from revokeReasonPassword
+	// because the account holder did not change anything: an operator did, and
+	// the device list should say so.
+	revokeReasonAdminReset = "password_reset_by_admin"
 
 	// Session login methods recorded in gateway_admin_session.login_method.
 	loginMethodPassword = "password"
@@ -68,9 +73,14 @@ type adminStore interface {
 	// when creating a key. It is read separately from the account because it is
 	// the Tenant's fact, not a claim carried in the session.
 	TenantAllowedModels(ctx context.Context, tenantID string) ([]string, error)
+	// TenantExists distinguishes "no such Tenant" from "a Tenant that grants
+	// nothing", which the allowlist read reports identically.
+	TenantExists(ctx context.Context, tenantID string) (bool, error)
 	ListAdminUsers(ctx context.Context, limit int) ([]model.AdminUser, error)
 	CreateFirstAdminUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
-	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error)
+	// passwordResetRequired travels with the hash so an operator-chosen
+	// password can never be stored without its "temporary" marking.
+	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, passwordResetRequired bool) (model.AdminUser, error)
 	// UpdateAdminUserAccount is the only way an existing account is changed.
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.
@@ -80,6 +90,12 @@ type adminStore interface {
 	// the role/status transaction.
 	AssignAdminUserTenant(ctx context.Context, id, tenantID string) (model.AdminUser, error)
 	UpdateAdminUserPassword(ctx context.Context, id, passwordHash string) error
+	// ResetAdminUserPassword installs an administrator-chosen password, marks
+	// the account reset-required and bumps auth_version in one statement.
+	ResetAdminUserPassword(ctx context.Context, id, passwordHash string) (model.AdminUser, error)
+	// ClearAdminPasswordReset is the acknowledgement that the account holder
+	// replaced a reset password with one of their own.
+	ClearAdminPasswordReset(ctx context.Context, id string) error
 	RehashAdminUserPassword(ctx context.Context, id, passwordHash string) error
 	TouchAdminUserLogin(ctx context.Context, id string)
 
@@ -118,6 +134,14 @@ type adminAuthService struct {
 	// that so tests can exercise the flow without a cache.
 	registration registrationLimiter
 
+	// registrationTenantID is the Tenant every publicly registered Account
+	// joins automatically, or "" to leave the account unassigned.
+	//
+	// It is a property of the deployment rather than of a request: a caller
+	// cannot choose its Tenant at signup, for the same reason it cannot choose
+	// its roles.
+	registrationTenantID string
+
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
 	maxAttempts int64
@@ -147,7 +171,10 @@ func newAdminAuthService(store adminStore, limiter adminLoginLimiter, secret []b
 		maxAttempts: cfg.AdminLoginMaxAttempts,
 		window:      cfg.AdminLoginWindow,
 		grace:       cfg.AdminRefreshReplayGrace,
-		now:         time.Now,
+
+		registrationTenantID: cfg.PublicRegisterTenantID,
+
+		now: time.Now,
 	}
 	a.mint = a.mintAccessToken
 	return a
@@ -617,6 +644,10 @@ func (a *adminAuthService) authenticate(ctx context.Context, accessToken string)
 		Roles:     filterAdminRoles(user.Roles),
 		SessionID: session.SID,
 		AuthMode:  "session",
+		// Read from the row, not from a token claim, so a reset that lands
+		// mid-session fences the session on its very next request rather than
+		// at the next sign-in.
+		PasswordResetRequired: user.PasswordResetRequired,
 	}, nil
 }
 
@@ -776,10 +807,70 @@ func (a *adminAuthService) changePassword(ctx context.Context, userID, current, 
 	if err := a.store.UpdateAdminUserPassword(ctx, userID, hash); err != nil {
 		return ErrAdminInternal
 	}
+	// Reaching this line is what satisfies a pending reset: the account holder
+	// proved the reset password and then chose one the operator never saw.
+	// Clearing the flag is best-effort because the password is already the
+	// account's own; a failure leaves the account asked to change a password it
+	// has already changed, which is a prompt and not a lockout.
+	if user.PasswordResetRequired {
+		if err := a.store.ClearAdminPasswordReset(ctx, userID); err != nil {
+			log.Printf("admin password change: could not clear the reset flag for %s: %v", user.Username, err)
+		}
+	}
 	if err := a.store.RevokeSessionsForUser(ctx, userID, revokeReasonPassword); err != nil {
 		return ErrAdminInternal
 	}
 	return nil
+}
+
+// resetPassword installs an administrator-chosen password on another account.
+//
+// It is the deployment's only recovery path for an account whose holder can no
+// longer sign in, so it deliberately does not require the old password — and
+// that is exactly why it is restricted to a super administrator at the HTTP
+// boundary.
+//
+// The returned password is plaintext and exists only to be handed over. It is
+// never written to the audit trail, and it is only useful once: the account is
+// marked reset-required, so the sessions it opens can do nothing but choose a
+// new password.
+func (a *adminAuthService) resetPassword(ctx context.Context, targetID, newPassword string) (model.AdminUser, error) {
+	user, err := a.store.FindAdminUserByID(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	// A disabled account is reset only after it is enabled again. Otherwise the
+	// operator would believe they had restored access while the account stayed
+	// unable to sign in, with nothing on screen explaining why.
+	if user.Status != model.AdminStatusEnabled {
+		return model.AdminUser{}, ErrAdminUserDisabled
+	}
+	if err := validateAdminPassword(user.Username, newPassword); err != nil {
+		return model.AdminUser{}, err
+	}
+
+	hash, err := security.HashPassword(newPassword)
+	if err != nil {
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	updated, err := a.store.ResetAdminUserPassword(ctx, targetID, hash)
+	if err != nil {
+		if errors.Is(err, storage.ErrAdminUserNotFound) {
+			return model.AdminUser{}, ErrAdminUserNotFound
+		}
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	// The store bumped auth_version, which already invalidates the tokens, but
+	// the session rows stay "active" until someone says otherwise. Revoking
+	// them is what makes the account's device list show the truth: every device
+	// signed in under the old password is gone.
+	if err := a.store.RevokeSessionsForUser(ctx, targetID, revokeReasonAdminReset); err != nil {
+		return model.AdminUser{}, ErrAdminInternal
+	}
+	return updated, nil
 }
 
 // --- password policy -------------------------------------------------------

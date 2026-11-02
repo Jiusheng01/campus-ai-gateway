@@ -83,7 +83,7 @@ export function ConsoleUsagePage() {
     <div className="stack">
       <PageBanner
         title="用量"
-        subtitle="你在所选时间段内的请求、成功与失败、输入与输出 Tokens，以及按模型分组的用量。"
+        subtitle="所选时间段内的用量与趋势。"
         illustration={false}
       />
 
@@ -177,7 +177,7 @@ export function ConsoleUsagePage() {
 
           <Panel
             title="租户共享配额"
-            sub="配额属于整个租户，是成员共同消耗的共享预算；这里只展示汇总，不包含其他成员的明细。"
+            sub="租户共享配额与汇总用量。"
           >
             {quota ? (
               <div className="panelPad">

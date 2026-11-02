@@ -44,13 +44,13 @@ func (e *AdminUserOwnsKeysError) Error() string {
 	return "the account still owns API keys"
 }
 
-const adminUserColumns = `id::text, username, password_hash, display_name, roles, status, auth_version, last_login_at, created_at, updated_at`
+const adminUserColumns = `id::text, username, password_hash, display_name, roles, status, auth_version, password_reset_required, last_login_at, created_at, updated_at`
 
 // adminUserTenantColumns is adminUserColumns plus the Tenant Membership the
 // user management page renders. It needs a join, so it lives beside the plain
 // list instead of replacing it: INSERT ... RETURNING cannot join the tenant
 // table, and a newly created account never has a Tenant anyway.
-const adminUserTenantColumns = `u.id::text, u.username, u.password_hash, u.display_name, u.roles, u.status, u.auth_version, u.last_login_at, u.created_at, u.updated_at, COALESCE(u.tenant_id::text,''), COALESCE(t.name,'')`
+const adminUserTenantColumns = `u.id::text, u.username, u.password_hash, u.display_name, u.roles, u.status, u.auth_version, u.password_reset_required, u.last_login_at, u.created_at, u.updated_at, COALESCE(u.tenant_id::text,''), COALESCE(t.name,'')`
 
 const adminUserTenantFrom = ` FROM gateway_admin_user u LEFT JOIN gateway_tenant t ON t.id = u.tenant_id`
 
@@ -59,7 +59,7 @@ func scanAdminUser(row pgx.Row) (model.AdminUser, error) {
 	var roles []byte
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
-		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.Status, &u.AuthVersion, &u.PasswordResetRequired, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AdminUser{}, ErrAdminUserNotFound
@@ -75,7 +75,7 @@ func scanAdminUserWithTenant(row pgx.Row) (model.AdminUser, error) {
 	var roles []byte
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &roles,
-		&u.Status, &u.AuthVersion, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.Status, &u.AuthVersion, &u.PasswordResetRequired, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.TenantID, &u.TenantName,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -249,15 +249,21 @@ RETURNING ` + adminUserColumns
 // separate guards. A username collision is reported as ErrAdminUsernameTaken
 // rather than as a database error, so the HTTP layer can answer 409 without
 // leaking constraint names.
-func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string) (model.AdminUser, error) {
+//
+// passwordResetRequired is written in the same statement as the hash. The two
+// are one fact — "this password is temporary" — and splitting them would let a
+// failure between them leave an operator-chosen password permanently valid,
+// which is exactly the escalation the reset fence exists to prevent. A
+// self-registered account passes false: its password is the owner's own.
+func (p *Postgres) CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, passwordResetRequired bool) (model.AdminUser, error) {
 	encoded, err := json.Marshal(roles)
 	if err != nil {
 		return model.AdminUser{}, err
 	}
-	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles)
-VALUES ($1, $2, $3, $4::jsonb)
+	q := `INSERT INTO gateway_admin_user (username, display_name, password_hash, roles, password_reset_required)
+VALUES ($1, $2, $3, $4::jsonb, $5)
 RETURNING ` + adminUserColumns
-	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded))
+	user, err := scanAdminUser(p.Pool.QueryRow(ctx, q, username, displayName, passwordHash, encoded, passwordResetRequired))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -574,6 +580,56 @@ func (p *Postgres) RehashAdminUserPassword(ctx context.Context, id, passwordHash
 		return ErrAdminUserNotFound
 	}
 	return nil
+}
+
+// TenantExists reports whether a Tenant id names a row.
+//
+// It exists for the account-creation path, which must refuse a mistyped Tenant
+// before inserting an account. The sibling reads answer "no such Tenant" with
+// the same value they use for "a Tenant that grants nothing", so they cannot
+// distinguish the two.
+func (p *Postgres) TenantExists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := p.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_tenant WHERE id=$1::uuid)`, id).Scan(&exists)
+	return exists, err
+}
+
+// ResetAdminUserPassword installs an administrator-chosen password and marks
+// the account as requiring a change of its own.
+//
+// Both facts are written in one statement. A reset that landed the hash but not
+// the flag would hand out a permanent password; one that landed the flag but not
+// the hash would lock the account out with a password nobody knows.
+//
+// auth_version moves, so every session and access token issued before the reset
+// stops working. That is the point: the operator is resetting an account
+// precisely because its current holder can no longer prove who they are, and any
+// session still alive may belong to whoever holds the old password.
+func (p *Postgres) ResetAdminUserPassword(ctx context.Context, id, passwordHash string) (model.AdminUser, error) {
+	tag, err := p.Pool.Exec(ctx, `
+UPDATE gateway_admin_user
+SET password_hash=$2, password_reset_required=TRUE, auth_version=auth_version+1, updated_at=NOW()
+WHERE id=$1`, id, passwordHash)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return model.AdminUser{}, ErrAdminUserNotFound
+	}
+	return p.FindAdminUserByID(ctx, id)
+}
+
+// ClearAdminPasswordReset records that the account holder has replaced a reset
+// password with one of their own.
+//
+// Only the flag moves. The hash and auth_version were already written by the
+// password change that satisfied the obligation, and bumping auth_version a
+// second time would revoke the session that just proved ownership.
+func (p *Postgres) ClearAdminPasswordReset(ctx context.Context, id string) error {
+	_, err := p.Pool.Exec(ctx,
+		`UPDATE gateway_admin_user SET password_reset_required=FALSE, updated_at=NOW() WHERE id=$1 AND password_reset_required`,
+		id)
+	return err
 }
 
 // TouchAdminUserLogin records a successful login. Best effort: a failure here

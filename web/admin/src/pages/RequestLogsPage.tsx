@@ -191,7 +191,7 @@ export function RequestLogsPage({initialFilters}: {initialFilters?: Partial<Filt
     <>
       <Panel
         title="使用日志"
-        sub="一次业务请求对应一行。点击任意一行查看路由、用量与时延详情。"
+        sub="一次业务请求一行，点开查看路由、用量与时延。"
         actions={
           <Button icon={<Download />} onClick={() => void exportCsv()}>
             导出 CSV

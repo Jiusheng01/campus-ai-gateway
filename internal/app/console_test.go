@@ -30,7 +30,7 @@ func consoleMember(t *testing.T, s *Server, store *fakeAdminStore, username stri
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	user, err := store.CreateUser(context.Background(), username, "普通用户"+username, hash, []string{RoleMember})
+	user, err := store.CreateUser(context.Background(), username, "普通用户"+username, hash, []string{RoleMember}, false)
 	if err != nil {
 		t.Fatalf("create member: %v", err)
 	}

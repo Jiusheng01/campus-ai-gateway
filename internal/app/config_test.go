@@ -399,6 +399,7 @@ func loadConfigWithSecrets(t *testing.T, overrides map[string]string) (Config, e
 	t.Setenv("ADMIN_PROXY_SECRET", "")
 	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "")
 	t.Setenv("DATA_PLANE", "direct")
+	t.Setenv("PUBLIC_REGISTER_TENANT_ID", "")
 	for key, value := range overrides {
 		t.Setenv(key, value)
 	}
@@ -637,5 +638,61 @@ func TestTrustedHeaderRequiresALongProxySecret(t *testing.T) {
 	t.Setenv("ADMIN_PROXY_CIDRS", "not-an-address")
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("an invalid ADMIN_PROXY_CIDRS entry must be rejected at startup")
+	}
+}
+
+// PUBLIC_REGISTER_TENANT_ID is read once at startup and used for every signup
+// afterwards. A malformed value must stop startup rather than surface as a
+// failed registration for a user who cannot fix it.
+func TestPublicRegisterTenantIDMustBeAUUID(t *testing.T) {
+	// The last two parse as UUIDs under Go's lenient rules but are not the form
+	// PostgreSQL's ::uuid cast accepts, so they must be refused here rather
+	// than on the first signup.
+	for _, bad := range []string{
+		"not-a-uuid",
+		"12345",
+		"campus",
+		"11111111-1111-1111-1111",
+		"urn:uuid:4a3f29c0-0943-4dad-91a1-832725781aa2",
+		"4a3f29c009434dad91a1832725781aa2",
+	} {
+		_, err := loadConfigWithSecrets(t, map[string]string{"PUBLIC_REGISTER_TENANT_ID": bad})
+		if err == nil {
+			t.Fatalf("PUBLIC_REGISTER_TENANT_ID=%q must stop startup", bad)
+		}
+		if !strings.Contains(err.Error(), "PUBLIC_REGISTER_TENANT_ID") {
+			t.Fatalf("the refusal must name the variable, got %q", err.Error())
+		}
+	}
+
+	// Empty is the default: registration still works, the account is just
+	// unassigned until an operator says otherwise.
+	cfg, err := loadConfigWithSecrets(t, nil)
+	if err != nil {
+		t.Fatalf("an absent PUBLIC_REGISTER_TENANT_ID must be accepted: %v", err)
+	}
+	if cfg.PublicRegisterTenantID != "" {
+		t.Fatalf("PublicRegisterTenantID = %q, want empty", cfg.PublicRegisterTenantID)
+	}
+
+	const valid = "4a3f29c0-0943-4dad-91a1-832725781aa2"
+	cfg, err = loadConfigWithSecrets(t, map[string]string{"PUBLIC_REGISTER_TENANT_ID": " " + valid + " "})
+	if err != nil {
+		t.Fatalf("a valid Tenant id must be accepted: %v", err)
+	}
+	if cfg.PublicRegisterTenantID != valid {
+		t.Fatalf("PublicRegisterTenantID = %q, want the trimmed id %q", cfg.PublicRegisterTenantID, valid)
+	}
+}
+
+// The value is validated even while registration is closed: it would otherwise
+// activate silently the day an operator turns registration on.
+func TestPublicRegisterTenantIDIsValidatedWhileRegistrationIsClosed(t *testing.T) {
+	_, err := loadConfigWithSecrets(t, map[string]string{
+		"PUBLIC_REGISTRATION_ENABLED": "false",
+		"PUBLIC_REGISTER_TENANT_ID":   "not-a-uuid",
+	})
+	if err == nil {
+		t.Fatal("a malformed Tenant id must stop startup even with registration disabled")
 	}
 }

@@ -87,10 +87,21 @@ describe('SettingsPage grouping', () => {
     expect(screen.getByRole('heading', {name: '会话与密码'})).toBeInTheDocument()
   })
 
-  it('names the acting account and its role scope', () => {
+  it('marks the page read-only and links to the profile instead of repeating it', () => {
     render(<SettingsPage who={who} authConfig={sessionConfig} />)
-    const scope = screen.getByRole('region', {name: '当前操作者'})
-    expect(within(scope).getByText('zhangsan')).toBeInTheDocument()
-    expect(within(scope).getByText(/超级管理员/)).toBeInTheDocument()
+
+    expect(screen.getByText('只读')).toBeInTheDocument()
+    expect(screen.getByRole('link', {name: '前往个人资料'})).toHaveAttribute('href', '/admin-ui/profile')
+    // The acting account is already in the top bar; the page must not be a
+    // second, staler copy of the profile.
+    expect(screen.queryByText('zhangsan')).not.toBeInTheDocument()
+  })
+
+  it('keeps deployment details behind an explicit disclosure', () => {
+    render(<SettingsPage who={who} authConfig={sessionConfig} />)
+
+    const disclosure = screen.getByText('高级信息与部署说明').closest('details')
+    expect(disclosure).not.toBeNull()
+    expect(within(disclosure as HTMLElement).getByText(/启动配置/)).toBeInTheDocument()
   })
 })

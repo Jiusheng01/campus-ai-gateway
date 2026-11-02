@@ -267,8 +267,15 @@ svg { width: 16px; height: 16px; flex: none; }
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* The page title keeps its full width. When the bar runs out of room the
+     search box shrinks first; letting the title shrink wrapped the heading
+     into a vertical column over the page. */
+  flex: none;
 }
-.mobileNavTrigger {
+/* The `.topbar` prefix is load-bearing: `.iconBtn` later in the sheet sets
+   `display: grid` at equal specificity and would otherwise bring the drawer
+   trigger back on every desktop page. */
+.topbar .mobileNavTrigger {
   display: none;
 }
 /* The drawer's close button belongs to the drawer, so it stays out of the
@@ -1379,7 +1386,6 @@ input:focus, select:focus, textarea:focus {
 
 /* --- settings ------------------------------------------------------------- */
 
-
 .authModeCard { display: flex; gap: 13px; padding: 18px; }
 .authModeIcon {
   width: 38px; height: 38px;
@@ -1395,44 +1401,99 @@ input:focus, select:focus, textarea:focus {
 .authModeIcon.warning { color: var(--warning); background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .authModeText { min-width: 0; }
 .authModeTitle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.authModeText p { margin: 8px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.65; }
+.authModeText p { margin: 8px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.65; overflow-wrap: anywhere; }
 
 /* System settings: deployment facts grouped by responsibility. Everything is
-   read-only, so the layout is a definition list rather than a form. */
-.settingsGroups { display: flex; flex-direction: column; gap: 20px; }
-.settingsGroup { border-top: 1px solid var(--border); padding-top: 16px; }
+   read-only, so the layout is a definition list rather than a form.
+
+   The padding lives on this page's panel, not on the shared `.panelBody`:
+   other pages either put a table there or bring their own `.panelPad`, and a
+   global body padding would double those up. 20px matches `.panelHead`, so the
+   content and the card title share a left edge. */
+.settingsPanel .panelBody { padding: 20px; }
+
+.settingsGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  /* Ask the content box how much room it actually has rather than the
+     viewport: the sidebar and the two paddings take a large share of a 1024px
+     window, and the grid must fall back to one column before the fields get
+     too narrow. */
+  container-type: inline-size;
+}
+.settingsGroup { border-top: 1px solid var(--border); padding-top: 20px; }
 .settingsGroup:first-child { border-top: 0; padding-top: 0; }
 .settingsGroupTitle {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   font-size: 15px;
   font-weight: 700;
 }
 .settingsGroupTitle svg { width: 16px; height: 16px; color: var(--primary); }
+
+/* Two columns on a desktop-width card, one when the content box is narrower.
+   The query is on `.settingsGroups`, so 125%/150% browser zoom and the
+   sidebar's collapsed state are both reflected without extra viewport
+   breakpoints. */
 .settingsFacts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px 24px;
 }
-.settingFact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+@container (min-width: 560px) {
+  .settingsFacts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.settingFact { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .settingFactLabel { font-size: 12px; color: var(--text-muted); }
 .settingFactValue { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.settingFactHint { font-size: 12px; color: var(--text-faint); line-height: 1.5; }
-.settingsNote { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
-.settingsReadOnly {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 18px 0 0;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-  font-size: 12.5px;
+
+/* On-demand explanation block. Native <details> keeps it keyboard reachable,
+   touch friendly and available to find-in-page; nothing depends on hover. */
+.infoDisclosure { border-top: 1px solid var(--border); padding-top: 16px; }
+.infoDisclosure > summary {
+  cursor: pointer;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-muted);
-  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
-.settingsReadOnly svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+.infoDisclosure[open] > summary { color: var(--text); }
+.infoDisclosure summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+.infoDisclosureBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.infoDisclosureBody p { margin: 0; }
+.infoDisclosureBody code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+/* Phones: keep the 20px horizontal edge shared with the panel title and trim
+   only the vertical rhythm. */
+@media (max-width: 620px) {
+  .settingsPanel .panelBody { padding: 16px 20px; }
+  .settingsGroups { gap: 20px; }
+  .settingsGroup { padding-top: 16px; }
+  .settingsGroupTitle { margin-bottom: 12px; }
+  .settingsReadOnly { margin-top: 20px; padding-top: 14px; }
+}
 
 /* Personal overview: the ordered next steps. Each row is a link plus the fact
    that decides whether it is already done, so the state has a text label as
@@ -1562,7 +1623,7 @@ input:focus, select:focus, textarea:focus {
     z-index: 90;
     animation: fade 0.16s ease-out;
   }
-  .mobileNavTrigger {
+  .topbar .mobileNavTrigger {
     display: grid;
     place-items: center;
   }
@@ -1674,6 +1735,12 @@ input:focus, select:focus, textarea:focus {
    button where the sentence is the affordance. */
 .linkInline{border:0;background:none;color:var(--primary);padding:0 3px;font-size:inherit;font-weight:600;font-family:inherit}
 .linkInline:hover{text-decoration:underline}
+
+/* The sign-out escape on the password-reset screen. It sits under the submit
+   button, centred and quiet: leaving is available, but it is not the path the
+   screen is asking for. */
+.authSignOut{display:block;margin:12px auto 0;color:var(--text-muted)}
+.authSignOut:hover{color:var(--text)}
 
 /* --- 我的账号（普通用户首页） ---------------------------------------- */
 .accountHero{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:18px}
@@ -3007,7 +3074,8 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: none;
+  /* Shrinkable so the search field can give up width before anything hides. */
+  flex: 0 1 auto;
 }
 .topbarActionItem {
   display: inline-flex;
@@ -3022,8 +3090,9 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 8px;
   height: var(--control-h);
-  min-width: 0;
+  min-width: 32px;
   width: 300px;
+  flex: 0 1 300px;
   max-width: 34vw;
   padding: 0 8px 0 11px;
   border: 1px solid var(--border);
@@ -3466,23 +3535,30 @@ input:focus, select:focus, textarea:focus {
 .shell.isMobileOpen { overflow: hidden; }
 .shell.isMobileOpen .workspace { touch-action: none; }
 
+/* The shortcut cap is the first thing to go when the search field starts to
+   shrink; the field itself and the identity chip keep their content. */
+@media (max-width: 1000px) {
+  .searchBarKbd { display: none; }
+}
+
 /* The sidebar drawer breakpoint is 780px everywhere in this sheet. The shell
    used to close the drawer at 960px, which left a 180px band where the drawer
    could be opened but the layout never showed its trigger. */
 @media (max-width: 780px) {
-  .topbarSearchBar {
-    width: auto;
-    max-width: none;
-    flex: 0 0 auto;
-    padding: 0;
-    justify-content: center;
-  }
-  .topbarSearchBar .searchBarPlaceholder,
-  .topbarSearchBar .searchBarKbd { display: none; }
+  /* On a phone the header cannot hold the identity text as well: keeping it
+     pushed the user chip past the viewport edge and gave the whole document a
+     horizontal scrollbar. The avatar alone stays as the menu trigger. */
   .userMeta { display: none; }
-  .userMenuTrigger { padding: 0 4px; }
   .userChevron { display: none; }
+  .userMenuTrigger { padding: 0 4px; }
   .campusPromoCard { margin: 10px 8px 4px; }
+}
+
+/* Very narrow phones (and a 125% zoom on a 390px layout viewport): the icon
+   cluster only fits once the topbar's own gaps tighten. */
+@media (max-width: 380px) {
+  .topbar { padding: 0 10px; gap: 8px; }
+  .topbarLeft { gap: 8px; }
 }
 
 @media (max-width: 480px) {

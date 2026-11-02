@@ -80,12 +80,11 @@ export function ProfilePage({who: initialWho}: {who: WhoAmI | null}) {
         </Panel>
       )}
 
-      <Panel title="权限范围" sub="你的账号目前对网关管理界面的访问范围，角色变更即时生效。">
+      <Panel title="权限范围" sub="当前账号可访问的管理界面范围。">
         {isManager ? (
           <div className="panelPad">
             <p className="hint">
-              当前账号持有管理角色，侧栏中可见的页面即为可访问范围。若某个页面返回 403，
-              说明角色允许看到入口但不允许该操作，请以网关的权限判定为准。
+              以侧栏可见页面为准；页面内返回 403 表示该操作超出角色权限。
             </p>
           </div>
         ) : (
