@@ -1308,6 +1308,10 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 	// Quota is only expressible against a single tenant's limits.
 	tenantID, err := s.resolveUsageTenant(r.Context(), f)
 	if err != nil {
+		if errors.Is(err, ErrAdminForbidden) {
+			writeAdminError(w, reqID, ErrAdminForbidden)
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to load tenant quota", reqID)
 		return
 	}
@@ -1341,6 +1345,19 @@ func (s *Server) handleRequestLogsUsage(w http.ResponseWriter, r *http.Request) 
 // returns "" when the filter spans tenants (or matches none).
 func (s *Server) resolveUsageTenant(ctx context.Context, f storage.RequestLogFilter) (string, error) {
 	if f.TenantID != "" {
+		// The quota block is read from the tenant row, not from the filtered
+		// log. A scoped administrator asking for a tenant outside its subtree
+		// would otherwise get that tenant's usage and effective limits even
+		// though every log row behind them is refused.
+		if f.ScopeTenantID != "" {
+			allowed, err := s.pg.TenantIsDescendant(ctx, f.ScopeTenantID, f.TenantID, true)
+			if err != nil {
+				return "", err
+			}
+			if !allowed {
+				return "", ErrAdminForbidden
+			}
+		}
 		return f.TenantID, nil
 	}
 	ids, err := s.pg.DistinctRequestTenants(ctx, f)
@@ -1396,7 +1413,7 @@ func (s *Server) handleRequestLogFacets(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", reqID)
 		return
 	}
-	facets, err := s.pg.RequestLogFacets(r.Context())
+	facets, err := s.pg.RequestLogFacets(r.Context(), callerScope(r))
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "database_error", "Unable to list request log filters", reqID)
 		return

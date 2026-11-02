@@ -26,7 +26,7 @@ type adminPrincipal struct {
 	PasswordResetRequired bool
 	// ScopeTenantID confines tenant_admin to one subtree. Empty means global
 	// reach: token and trusted-header callers never carry a scope, and an
-	// account signed in without one keeps its pre-0019 behaviour. The value is
+	// account signed in without one keeps its pre-0020 behaviour. The value is
 	// re-read from the account row on every request, so revoking or narrowing a
 	// grant applies immediately rather than at the next token refresh.
 	ScopeTenantID string

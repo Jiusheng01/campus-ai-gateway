@@ -245,15 +245,46 @@ ORDER BY bucket
 // table, not a copy of the management tables. The DISTINCT is what the new
 // (tenant_id, created_at) and (api_key_id, created_at) indexes make cheap —
 // without them this would be a full scan of the log for every page load.
-func (p *Postgres) RequestLogFacets(ctx context.Context) (model.RequestLogFacets, error) {
+func (p *Postgres) RequestLogFacets(ctx context.Context, scopeTenantID string) (model.RequestLogFacets, error) {
 	var out model.RequestLogFacets
 
-	tenantRows, err := p.Pool.Query(ctx, `
+	// The facet lists are a read of the log, so a scoped administrator must see
+	// only the tenants and keys inside its subtree. Without this filter the
+	// option lists would name every tenant in the deployment even though the
+	// rows behind them are refused.
+	tenantQuery := `
 SELECT DISTINCT t.id::text, t.code, t.name
 FROM gateway_request_log l
 JOIN gateway_tenant t ON t.id = l.tenant_id
 ORDER BY t.name
-`)
+`
+	keyQuery := `
+SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
+FROM gateway_request_log l
+JOIN gateway_api_key k ON k.id = l.api_key_id
+ORDER BY k.name
+`
+	var args []any
+	if scopeTenantID != "" {
+		const scopePredicate = `
+WHERE t.path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id=$1::uuid)`
+		tenantQuery = `
+SELECT DISTINCT t.id::text, t.code, t.name
+FROM gateway_request_log l
+JOIN gateway_tenant t ON t.id = l.tenant_id` + scopePredicate + `
+ORDER BY t.name
+`
+		keyQuery = `
+SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
+FROM gateway_request_log l
+JOIN gateway_api_key k ON k.id = l.api_key_id
+JOIN gateway_tenant t ON t.id = k.tenant_id` + scopePredicate + `
+ORDER BY k.name
+`
+		args = append(args, scopeTenantID)
+	}
+
+	tenantRows, err := p.Pool.Query(ctx, tenantQuery, args...)
 	if err != nil {
 		return out, err
 	}
@@ -269,12 +300,7 @@ ORDER BY t.name
 		return out, err
 	}
 
-	keyRows, err := p.Pool.Query(ctx, `
-SELECT DISTINCT k.id::text, k.name, k.key_prefix, k.tenant_id::text
-FROM gateway_request_log l
-JOIN gateway_api_key k ON k.id = l.api_key_id
-ORDER BY k.name
-`)
+	keyRows, err := p.Pool.Query(ctx, keyQuery, args...)
 	if err != nil {
 		return out, err
 	}

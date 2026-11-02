@@ -334,7 +334,12 @@ function UserDrawer({
   const displayNameChanged = displayName.trim() !== (user.display_name || '')
   const tenantChanged = tenantId !== (user.tenant_id || '')
   const tenantScoped = selected.includes('tenant_admin')
-  const scopeChanged = tenantScoped && scope !== (user.scope_tenant_id || '')
+  // Removing the role must also clear its scope. Leaving the old value in
+  // place made the API refuse the patch as "a scope without the role", so the
+  // role could be granted but never taken away.
+  const scopeChanged = tenantScoped
+    ? scope !== (user.scope_tenant_id || '')
+    : Boolean(user.scope_tenant_id)
   // The role and its subtree are one grant: the API refuses a tenant_admin
   // without a scope, so the form must not submit one either.
   const scopeMissing = tenantScoped && !scope
@@ -388,7 +393,7 @@ function UserDrawer({
     // it cannot end up alongside a management role.
     const patch: UserPatch = {}
     if (rolesChanged) patch.roles = selected
-    if (scopeChanged) patch.scope_tenant_id = scope
+    if (scopeChanged) patch.scope_tenant_id = tenantScoped ? scope : null
     if (statusChanged) patch.status = status
     if (displayNameChanged) patch.display_name = displayName.trim()
 

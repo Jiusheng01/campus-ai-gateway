@@ -6,7 +6,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// Limits are three-state since 0019: nil means inherit, 0 means explicitly
+// Limits are three-state since 0020: nil means inherit, 0 means explicitly
 // unlimited, and a positive value is a cap. Validation must preserve all three
 // distinctions rather than rewriting one into another. The bug this pins on the
 // key was validation silently turning a zero into a hard default; the tenant

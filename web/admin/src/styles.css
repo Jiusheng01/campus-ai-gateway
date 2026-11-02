@@ -2460,10 +2460,7 @@ input:focus, select:focus, textarea:focus {
 .routeConfirmList { max-height: 40vh; overflow-y: auto; }
 
 /* --- 9. Call management (calls, keys, tenants) ---------------------------- */
-.callsPageTabs {
-  background: var(--surface);
-}
-.keysSectionCard, .tenantsSectionCard {
+.keysSectionCard {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -3033,11 +3030,6 @@ input:focus, select:focus, textarea:focus {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
-}
-.quotaUnit {
-  font-size: var(--fs-caption);
-  color: var(--text-muted);
-  font-weight: normal;
 }
 
 /* --- tenants (ticket 09) --- */

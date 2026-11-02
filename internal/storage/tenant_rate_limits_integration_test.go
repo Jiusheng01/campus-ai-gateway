@@ -7,7 +7,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
 )
 
-// Rate limits live on the Tenant and are three-state since 0019. This pins the
+// Rate limits live on the Tenant and are three-state since 0020. This pins the
 // storage contract: an inherited limit stays nil, an explicit zero stays 0, and
 // a positive cap stays itself through create, allocation and list.
 func TestTenantRateLimitsRoundTrip(t *testing.T) {

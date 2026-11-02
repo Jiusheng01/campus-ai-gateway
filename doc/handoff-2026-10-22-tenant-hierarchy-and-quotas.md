@@ -11,7 +11,7 @@
 | 数据库 | PostgreSQL `campus_gateway_remote`，容器 `deploy-postgres-1`，`127.0.0.1:5432` |
 | Redis | 容器 `campus-remote-redis`，`127.0.0.1:16379` |
 | 数据面 | `DATA_PLANE=direct`（渠道在进程内直连） |
-| 迁移版本 | 19（`schema_migrations`），迁移前备份在 `.local-backups/campus_gateway_remote-pre-0019.sql` |
+| 迁移版本 | 20（`schema_migrations`），迁移前备份在 `.local-backups/campus_gateway_remote-pre-0019.sql` |
 | 二进制 | `.local-bin/gateway`、`.local-bin/migrate`；日志 `.local-bin/gateway.{out,err}.log` |
 
 启动所需环境变量（**值不入库、不入文档**，使用部署机本地配置）：

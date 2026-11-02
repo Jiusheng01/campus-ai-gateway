@@ -909,14 +909,18 @@ func (p *Postgres) TenantUsageStats(ctx context.Context, tenantID string) (model
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	// Usage is inclusive of the subtree: admission charges every ancestor, so a
+	// parent's own request log would otherwise under-report the consumption
+	// that its cap is actually being measured against.
 	err := p.Pool.QueryRow(ctx, `
 SELECT
-	COUNT(*) FILTER (WHERE created_at >= $2::timestamptz)::bigint,
-	COUNT(*) FILTER (WHERE created_at >= $3::timestamptz)::bigint,
-	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= $2::timestamptz),0)::bigint,
-	COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= $3::timestamptz),0)::bigint
-FROM gateway_request_log
-WHERE tenant_id=$1::uuid
+	COUNT(*) FILTER (WHERE l.created_at >= $2::timestamptz)::bigint,
+	COUNT(*) FILTER (WHERE l.created_at >= $3::timestamptz)::bigint,
+	COALESCE(SUM(l.total_tokens) FILTER (WHERE l.created_at >= $2::timestamptz),0)::bigint,
+	COALESCE(SUM(l.total_tokens) FILTER (WHERE l.created_at >= $3::timestamptz),0)::bigint
+FROM gateway_request_log l
+JOIN gateway_tenant t ON t.id = l.tenant_id
+WHERE t.path LIKE (SELECT path || '%' FROM gateway_tenant WHERE id=$1::uuid)
 `, tenantID, dayStart, monthStart).Scan(&v.DailyRequests, &v.MonthlyRequests, &v.DailyTokens, &v.MonthlyTokens)
 	return v, err
 }

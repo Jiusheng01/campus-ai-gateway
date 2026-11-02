@@ -88,7 +88,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"status", "smallint", true},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
-				// 0019: the six enforced quotas are three-state, so they are
+				// 0020: the six enforced quotas are three-state, so they are
 				// nullable. monthly_budget_micros is stored but not enforced and
 				// stays two-state.
 				{"daily_token_limit", "bigint", false},
@@ -99,7 +99,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"tpm_limit", "bigint", false},
 				{"max_concurrency", "bigint", false},
 				{"allowed_models", "jsonb", true},
-				// 0019: materialized-path tree. path is a UUID segment list
+				// 0020: materialized-path tree. path is a UUID segment list
 				// ("/<root>/<child>/"), depth is its segment count - 1, kind is
 				// the school/dept/teacher/student label.
 				{"parent_id", "uuid", false},
@@ -283,7 +283,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
 				{"tenant_id", "uuid", false},
-				// 0019: NULL scope means global reach, which is what every
+				// 0020: NULL scope means global reach, which is what every
 				// pre-existing administrator keeps.
 				{"scope_tenant_id", "uuid", false},
 			},
@@ -365,7 +365,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		// Removing either parent clears the link instead of removing the row.
 		{"gateway_admin_user", "tenant_id", "gateway_tenant", "id", "n"},
 		{"gateway_api_key", "owner_user_id", "gateway_admin_user", "id", "n"},
-		// 0019: a tenant's parent is required to outlive it (RESTRICT), a scoped
+		// 0020: a tenant's parent is required to outlive it (RESTRICT), a scoped
 		// administrator is never silently promoted to global reach (RESTRICT),
 		// and a deleted tenant's model quota rows go with it (CASCADE).
 		{"gateway_tenant", "parent_id", "gateway_tenant", "id", "r"},
@@ -401,7 +401,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_admin_user", "idx_gateway_admin_user_tenant", false, []string{"tenant_id"}, `CREATE INDEX idx_gateway_admin_user_tenant ON gateway_admin_user(tenant_id)`},
 		{"gateway_api_key", "idx_gateway_api_key_owner", false, []string{"owner_user_id"}, `CREATE INDEX idx_gateway_api_key_owner ON gateway_api_key(owner_user_id)`},
 		{"gateway_request_log", "idx_gateway_request_log_owner_created", false, []string{"owner_user_id", "created_at DESC"}, `CREATE INDEX idx_gateway_request_log_owner_created ON gateway_request_log(owner_user_id, created_at DESC)`},
-		// 0019: tree traversal, scoped administrators, and per-model quota lookup.
+		// 0020: tree traversal, scoped administrators, and per-model quota lookup.
 		{"gateway_tenant", "idx_gateway_tenant_parent", false, []string{"parent_id"}, `CREATE INDEX idx_gateway_tenant_parent ON gateway_tenant(parent_id)`},
 		{"gateway_tenant", "idx_gateway_tenant_path", false, []string{"path"}, `CREATE INDEX idx_gateway_tenant_path ON gateway_tenant(path text_pattern_ops)`},
 		{"gateway_admin_user", "idx_gateway_admin_user_scope", false, []string{"scope_tenant_id"}, `CREATE INDEX idx_gateway_admin_user_scope ON gateway_admin_user(scope_tenant_id)`},
@@ -414,7 +414,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 		{"gateway_model_route", "gateway_model_route_priority_chk", "CHECK (priority >= 1)"},
 		{"gateway_model_route", "gateway_model_route_weight_chk", "CHECK (weight >= 0)"},
 		{"gateway_model_route", "gateway_model_route_timeout_chk", "CHECK (timeout_ms > 0)"},
-		// 0019: a CHECK cannot express "no cycle anywhere in the tree", but it
+		// 0020: a CHECK cannot express "no cycle anywhere in the tree", but it
 		// can refuse the degenerate one-segment cycle.
 		{"gateway_tenant", "chk_gateway_tenant_parent_not_self", "CHECK (parent_id IS NULL OR parent_id <> id)"},
 	}

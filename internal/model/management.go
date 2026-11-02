@@ -176,14 +176,14 @@ type Tenant struct {
 	Name   string `json:"name"`
 	Status int    `json:"status"`
 
-	// Hierarchy (0019). ParentID is nil for a root; Path is the materialized
+	// Hierarchy (0020). ParentID is nil for a root; Path is the materialized
 	// path "/<root>/.../<self>/" that makes a subtree a prefix compare.
 	ParentID *string `json:"parent_id"`
 	Path     string  `json:"path"`
 	Depth    int     `json:"depth"`
 	Kind     string  `json:"kind"`
 
-	// The six enforced limits are three-state since 0019:
+	// The six enforced limits are three-state since 0020:
 	//
 	//	nil -> this level adds no cap; caps above it still apply
 	//	  0 -> explicitly unlimited at this level
@@ -213,7 +213,7 @@ type Tenant struct {
 	// list denies every model. It is deliberately not read by the data plane:
 	// the key's own list stays the only admission authority (see the personal
 	// console spec), so changing a Tenant never silently changes live traffic.
-	// 0019 does not make it hierarchical for the same reason.
+	// 0020 does not make it hierarchical for the same reason.
 	AllowedModels []string `json:"allowed_models"`
 }
 

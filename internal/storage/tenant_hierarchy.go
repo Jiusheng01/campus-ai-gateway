@@ -250,7 +250,7 @@ type TenantUpdate struct {
 // MoveTenant where the cost is explicit.
 //
 // The quotas are not part of this write either. They are three-state since
-// 0019, and a JSON body cannot distinguish "omitted" from "explicitly null" in
+// 0020, and a JSON body cannot distinguish "omitted" from "explicitly null" in
 // a way that would let a rename avoid resetting a budget. Renaming through this
 // statement therefore leaves the allocations exactly as they were; changing one
 // is AllocateTenantQuota's job, where a full replacement is the stated
@@ -557,6 +557,12 @@ func (p *Postgres) TenantPath(ctx context.Context, tenantID string) (string, err
 // foreign key that would fail with an opaque constraint error.
 func (p *Postgres) TenantExists(ctx context.Context, tenantID string) (bool, error) {
 	if tenantID == "" {
+		return false, nil
+	}
+	// A mistyped id must read as "no such Tenant", not as a storage failure.
+	// Letting the ::uuid cast reject the string would surface a server error
+	// for a client mistake the handler can answer with 400 tenant_not_found.
+	if _, err := uuid.Parse(tenantID); err != nil {
 		return false, nil
 	}
 	var ok bool

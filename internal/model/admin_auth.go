@@ -42,7 +42,7 @@ type AdminUser struct {
 	// what the fence does and does not prove about the holder.
 	PasswordResetRequired bool
 	// ScopeTenantID confines a tenant_admin to one subtree. nil means global
-	// reach, which is the default and what every account predating 0019 keeps.
+	// reach, which is the default and what every account predating 0020 keeps.
 	// It is separate from TenantID: membership says which tenant an account
 	// belongs to, scope says which subtree it may administer. A scoped
 	// administrator is not necessarily a member of the tenant it administers.

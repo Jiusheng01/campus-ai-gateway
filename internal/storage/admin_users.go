@@ -690,24 +690,6 @@ func (p *Postgres) RehashAdminUserPassword(ctx context.Context, id, passwordHash
 	return nil
 }
 
-// TenantExists reports whether a Tenant id names a row.
-//
-// It exists for the account-creation path, which must refuse a mistyped Tenant
-// before inserting an account. The sibling reads answer "no such Tenant" with
-// the same value they use for "a Tenant that grants nothing", so they cannot
-// distinguish the two.
-func (p *Postgres) TenantExists(ctx context.Context, id string) (bool, error) {
-	// A mistyped id must read as "no such Tenant", not as a storage failure.
-	// Letting the ::uuid cast reject the string would surface a server error
-	// for a client mistake the handler can answer with 400 tenant_not_found.
-	if _, err := uuid.Parse(id); err != nil {
-		return false, nil
-	}
-	var exists bool
-	err := p.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_tenant WHERE id=$1::uuid)`, id).Scan(&exists)
-	return exists, err
-}
-
 // ResetAdminUserPassword installs an administrator-chosen password and marks
 // the account as requiring a change of its own.
 //
