@@ -285,6 +285,18 @@ func TestRegisterJoinsTheConfiguredTenant(t *testing.T) {
 	if user.AuthVersion != 1 {
 		t.Fatalf("joining a Tenant must not bump auth_version, got %d", user.AuthVersion)
 	}
+
+	// The session opened after the commit belongs to the same row that carries
+	// the membership; there is no window in which sign-in sees an older state.
+	var sessionUserID string
+	for _, sess := range store.sessions {
+		if sess.LoginMethod == loginMethodRegister {
+			sessionUserID = sess.UserID
+		}
+	}
+	if sessionUserID != user.ID {
+		t.Fatalf("registration session belongs to %q, want the assigned account %q", sessionUserID, user.ID)
+	}
 }
 
 func TestRegisterWithoutTenantConfigLeavesAccountUnassigned(t *testing.T) {
@@ -303,27 +315,80 @@ func TestRegisterWithoutTenantConfigLeavesAccountUnassigned(t *testing.T) {
 	}
 }
 
-// A Tenant deleted between startup and the first signup must not turn
-// registration into a failure: the account is the user's, and an operator can
-// repair the membership. Refusing the signup would strand a person who did
-// nothing wrong.
-func TestRegisterSucceedsWhenTheConfiguredTenantIsGone(t *testing.T) {
+// A Tenant deleted between startup and the first signup is a broken deployment,
+// not a person's mistake. Creating the account anyway would answer 201 and then
+// strand the user in a personal console that cannot issue a key — the exact
+// half-success this rule exists to prevent. The account and its session are
+// rolled back with the failed assignment.
+func TestRegisterFailsWhenTheConfiguredTenantIsGone(t *testing.T) {
 	cfg := registrationTenantConfig("22222222-2222-2222-2222-222222222222")
 	s, store, _ := newTestServerWithRegistration(t, cfg)
 	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
 
 	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
 		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("a missing Tenant must not fail the signup, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a missing Tenant must refuse the signup, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "registration_tenant_not_found" {
+		t.Fatalf("error code = %q, want registration_tenant_not_found", code)
 	}
 
-	user, err := store.FindAdminUserByUsername(context.Background(), "zhangsan")
-	if err != nil {
-		t.Fatalf("the account must still exist: %v", err)
+	if _, err := store.FindAdminUserByUsername(context.Background(), "zhangsan"); !errors.Is(err, storage.ErrAdminUserNotFound) {
+		t.Fatalf("a refused registration must not leave an account: %v", err)
 	}
-	if user.TenantID != "" {
-		t.Fatalf("an unjoinable Tenant must leave the account unassigned, got %q", user.TenantID)
+	if store.liveSessions() != 0 {
+		t.Fatalf("a refused registration must not open a session, got %d", store.liveSessions())
+	}
+}
+
+// A disabled Tenant is the same broken deployment with a different label. The
+// account would be able to sign in, but every data-plane request would answer
+// tenant_disabled, so registration is refused before anything is written.
+func TestRegisterFailsWhenTheConfiguredTenantIsDisabled(t *testing.T) {
+	cfg := registrationTenantConfig("44444444-4444-4444-4444-444444444444")
+	s, store, _ := newTestServerWithRegistration(t, cfg)
+	store.tenants[cfg.PublicRegisterTenantID] = "已停用租户"
+	store.disabledTenants[cfg.PublicRegisterTenantID] = true
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a disabled Tenant must refuse the signup, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "registration_tenant_disabled" {
+		t.Fatalf("error code = %q, want registration_tenant_disabled", code)
+	}
+	if _, err := store.FindAdminUserByUsername(context.Background(), "zhangsan"); !errors.Is(err, storage.ErrAdminUserNotFound) {
+		t.Fatalf("a refused registration must not leave an account: %v", err)
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("a refused registration must not open a session, got %d", store.liveSessions())
+	}
+}
+
+// A storage failure while writing the account-and-membership pair must be
+// reported as a failure, with neither an account nor a session left behind. The
+// fake fails inside the transactional call, which is the same point at which a
+// real constraint violation would roll the INSERT back.
+func TestRegisterRollsBackWhenTheAccountAndTenantWriteFails(t *testing.T) {
+	cfg := registrationTenantConfig("11111111-1111-1111-1111-111111111111")
+	s, store, _ := newTestServerWithRegistration(t, cfg)
+	store.tenants[cfg.PublicRegisterTenantID] = "全校公共"
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	store.createWithTenantErr = errors.New("insert failed")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("a failed account write must be a 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.users) != 1 {
+		t.Fatalf("the failed transaction left %d accounts behind, want only the setup admin", len(store.users))
+	}
+	if store.liveSessions() != 0 {
+		t.Fatalf("a failed account write must not open a session, got %d", store.liveSessions())
 	}
 }
 

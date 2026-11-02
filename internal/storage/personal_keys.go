@@ -27,6 +27,12 @@ var (
 	// deliberately granted its members no models.
 	ErrPersonalTenantModelsEmpty = errors.New("tenant allows no models")
 
+	// ErrPersonalTenantDisabled means the Account's Tenant has been switched
+	// off. Issuing a key against it would create a credential every data-plane
+	// request rejects with tenant_disabled, so the refusal happens before the
+	// row is written.
+	ErrPersonalTenantDisabled = errors.New("tenant is disabled")
+
 	// ErrPersonalAccountNotFound means the session named an account that no
 	// longer exists. It cannot normally happen while a session is valid; it is
 	// kept distinct so the handler does not turn it into a generic 500.
@@ -181,11 +187,12 @@ FOR UPDATE
 	}
 
 	var tenantCode, tenantName, tenantModelsJSON string
+	var tenantStatus int
 	err = tx.QueryRow(ctx, `
-SELECT code, name, allowed_models::text
+SELECT code, name, allowed_models::text, status
 FROM gateway_tenant
 WHERE id=$1::uuid
-`, *tenantID).Scan(&tenantCode, &tenantName, &tenantModelsJSON)
+`, *tenantID).Scan(&tenantCode, &tenantName, &tenantModelsJSON, &tenantStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The Account's foreign key is ON DELETE SET NULL, so this is only
 		// reachable in the moment between a Tenant delete and the account row's
@@ -194,6 +201,9 @@ WHERE id=$1::uuid
 	}
 	if err != nil {
 		return model.APIKeyAdmin{}, err
+	}
+	if tenantStatus != 1 {
+		return model.APIKeyAdmin{}, ErrPersonalTenantDisabled
 	}
 	var tenantModels []string
 	if err := json.Unmarshal([]byte(tenantModelsJSON), &tenantModels); err != nil {
@@ -305,11 +315,12 @@ FOR UPDATE
 	}
 
 	var tenantCode, tenantName, tenantModelsJSON string
+	var tenantStatus int
 	err = tx.QueryRow(ctx, `
-SELECT code, name, allowed_models::text
+SELECT code, name, allowed_models::text, status
 FROM gateway_tenant
 WHERE id=$1::uuid
-`, tenantID).Scan(&tenantCode, &tenantName, &tenantModelsJSON)
+`, tenantID).Scan(&tenantCode, &tenantName, &tenantModelsJSON, &tenantStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The key's tenant_id is NOT NULL, so this is only reachable if the
 		// Tenant was deleted in the same instant. Report the state the write
@@ -318,6 +329,9 @@ WHERE id=$1::uuid
 	}
 	if err != nil {
 		return model.APIKeyAdmin{}, err
+	}
+	if tenantStatus != 1 {
+		return model.APIKeyAdmin{}, ErrPersonalTenantDisabled
 	}
 	var tenantModels []string
 	if err := json.Unmarshal([]byte(tenantModelsJSON), &tenantModels); err != nil {

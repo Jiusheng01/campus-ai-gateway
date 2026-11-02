@@ -57,7 +57,16 @@
 | `PUBLIC_REGISTER_WINDOW` | 注册限流窗口 | 否 | `1h` |
 | `PUBLIC_REGISTER_TENANT_ID` | 新注册的 Account 自动加入的 Tenant UUID。留空则注册后保持未分配，需管理员在「用户」页手工分配。**该 Tenant 的配额与限流就是全部自助注册用户的上限**；需要按院系分开计费的部署必须留空 | 否 | 空 |
 
-`PUBLIC_REGISTER_TENANT_ID` 在启动时校验是否合法 UUID，即使注册开关当时是关闭的——否则一个拼错的值会在管理员打开注册的那天静默生效。配置的 Tenant 在启动后被删除时，注册本身不会失败，只是该账号保持未分配并写一条日志，由管理员补分配。
+`PUBLIC_REGISTER_TENANT_ID` 在启动时校验是否合法 UUID，即使注册开关当时是关闭的——否则一个拼错的值会在管理员打开注册的那天静默生效。当 `PUBLIC_REGISTRATION_ENABLED=true` 且该值非空时，启动还会检查该 Tenant **存在且已启用**；不满足则网关拒绝启动，错误信息会指明是哪一项。这个检查只覆盖启动时刻，因此注册事务内会再次锁定并校验 Tenant。
+
+账号 INSERT 与 Tenant 归属在**同一个 PostgreSQL 事务**内完成。配置的 Tenant 在运行时被删除、停用或在注册过程中并发变化时，接口返回 `409`：
+
+- `registration_tenant_not_found`：默认租户不存在；
+- `registration_tenant_disabled`：默认租户已停用。
+
+此时不会创建账号，也不会签发 Session；前端显示对应的中文提示。留空 `PUBLIC_REGISTER_TENANT_ID` 仍是允许的“先注册、等待管理员分配”策略，不受影响。
+
+所有变量都在进程启动时读取，因此修改后必须重启 Gateway（Docker Compose 见[运维](operations.md#开放注册与默认租户)）。
 
 ### 个人控制台
 

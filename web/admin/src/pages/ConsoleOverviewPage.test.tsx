@@ -14,6 +14,7 @@ const me = {
   status: 1,
   tenant_id: 't-1',
   tenant_name: '校园信息化',
+  tenant_status: 1,
   allowed_models: ['*'],
   workspace_usable: true,
   key_count: 2,
@@ -215,6 +216,19 @@ describe('personal console overview', () => {
     expect(screen.queryByText('今日请求')).not.toBeInTheDocument()
     expect(screen.queryByText('我的 API Key')).not.toBeInTheDocument()
     expect(calls).toEqual(['/api/console/me'])
+  })
+
+  it('names a disabled Tenant instead of asking for an assignment', async () => {
+    stubConsole({
+      me: {tenant_id: 't-1', tenant_name: '已停用租户', tenant_status: 2, allowed_models: ['*'], workspace_usable: false},
+      keys: [],
+      logs: {data: [], limit: 5, offset: 0},
+    })
+    render(<ConsoleOverviewPage />)
+
+    expect(await screen.findByText('所属租户已停用')).toBeInTheDocument()
+    expect(screen.getByText(/请联系管理员启用租户/)).toBeInTheDocument()
+    expect(screen.queryByText('尚未分配租户')).not.toBeInTheDocument()
   })
 
   it('shows the assigned Tenant and a usable workspace', async () => {

@@ -118,6 +118,12 @@ services:
       # draw quota and models from. Every account that joins the same Tenant
       # shares its quota, so a deployment that bills by department leaves this
       # unset and assigns Tenants by hand.
+      #
+      # When registration is enabled and this is set, the named Tenant must
+      # exist and be enabled or the gateway refuses to start. The account
+      # INSERT and its membership are one transaction; a Tenant deleted or
+      # disabled later makes registration answer 409 without creating either.
+      # Changing either variable requires recreating this container.
       PUBLIC_REGISTRATION_ENABLED: "${PUBLIC_REGISTRATION_ENABLED:-false}"
       PUBLIC_REGISTER_TENANT_ID: "${PUBLIC_REGISTER_TENANT_ID:-}"
     depends_on:

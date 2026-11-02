@@ -69,6 +69,7 @@ type consoleMeBody struct {
 	Status          int      `json:"status"`
 	TenantID        string   `json:"tenant_id"`
 	TenantName      string   `json:"tenant_name"`
+	TenantStatus    int      `json:"tenant_status"`
 	AllowedModels   []string `json:"allowed_models"`
 	WorkspaceUsable bool     `json:"workspace_usable"`
 }
@@ -108,6 +109,9 @@ func TestConsoleMeReturnsMemberIdentityAndTenant(t *testing.T) {
 	if body.TenantID != "tenant-campus" || body.TenantName != "校园信息化" {
 		t.Fatalf("tenant = %q/%q", body.TenantID, body.TenantName)
 	}
+	if body.TenantStatus != 1 {
+		t.Fatalf("tenant_status = %d, want enabled (1)", body.TenantStatus)
+	}
 	if len(body.AllowedModels) != 1 || body.AllowedModels[0] != model.AllModelsWildcard {
 		t.Fatalf("allowed_models = %v, want the column default wildcard", body.AllowedModels)
 	}
@@ -137,6 +141,9 @@ func TestConsoleMeReportsUnassignedTenant(t *testing.T) {
 	body := decodeConsoleMe(t, rec)
 	if body.TenantID != "" || body.TenantName != "" {
 		t.Fatalf("unassigned tenant must be empty, got %q/%q", body.TenantID, body.TenantName)
+	}
+	if body.TenantStatus != 0 {
+		t.Fatalf("an unassigned account has no tenant status, got %d", body.TenantStatus)
 	}
 	if len(body.AllowedModels) != 0 {
 		t.Fatalf("an unassigned account has no model ceiling, got %v", body.AllowedModels)

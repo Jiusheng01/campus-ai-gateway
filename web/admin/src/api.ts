@@ -451,6 +451,12 @@ export type ConsoleMe={
   tenant_id:string
   tenant_name:string
   /**
+   * The Tenant's stored status: 1 enabled, 2 disabled, 0 when there is no
+   * Tenant. It is separate from workspace_usable so the console can say
+   * "waiting for assignment" and "Tenant disabled" as different states.
+   */
+  tenant_status:number
+  /**
    * The Tenant's model allowlist: ["*"], an explicit list, or [] (none).
    * This is the ceiling the create drawer offers; the gateway enforces the same
    * list again inside the create transaction.
@@ -580,7 +586,7 @@ export type ConsoleModel={
  */
 export type ConsoleModels={
   models:ConsoleModel[]
-  empty_reason?:'no_tenant'|'tenant_allows_none'|'no_eligible_models'
+  empty_reason?:'no_tenant'|'tenant_disabled'|'tenant_allows_none'|'no_eligible_models'
 }
 
 export async function getConsoleModels(){

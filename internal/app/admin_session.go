@@ -81,6 +81,12 @@ type adminStore interface {
 	// passwordResetRequired travels with the hash so an operator-chosen
 	// password can never be stored without its "temporary" marking.
 	CreateUser(ctx context.Context, username, displayName, passwordHash string, roles []string, passwordResetRequired bool) (model.AdminUser, error)
+	// CreateUserWithTenant inserts the account and its Tenant Membership in
+	// one transaction. Registration and administrator account creation both
+	// use it: a membership failure must not leave an account behind, and a
+	// Tenant disabled or deleted between the check and the insert must be
+	// observed inside the write, not before it.
+	CreateUserWithTenant(ctx context.Context, in storage.AdminUserCreate) (model.AdminUser, error)
 	// UpdateAdminUserAccount is the only way an existing account is changed.
 	// Roles, status and display name go through one transaction so a rejected
 	// patch cannot half-apply, and so auth_version moves at most once.

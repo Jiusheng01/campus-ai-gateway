@@ -219,9 +219,12 @@ func (a *adminAuthService) updateUser(ctx context.Context, targetID string, in u
 //     is. The operator chose it and can read it, so it proves a handover, not
 //     an identity; the account must choose its own before it can do anything.
 //
-// A Tenant may be assigned in the same call. It is written after the account
-// exists because the row has to exist first, and a failure there is reported as
-// a partial success rather than undoing an account the operator asked for.
+// A Tenant may be assigned in the same call. The account and the membership are
+// written in one storage transaction, so a Tenant that disappears between the
+// operator's choice and the INSERT leaves no orphan account behind. That is the
+// same consistency rule public registration follows. Unlike registration, the
+// Tenant does not have to be enabled: preparing an account under a Tenant that
+// is still being set up is a legitimate staging step.
 func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (model.AdminUser, error) {
 	username := strings.TrimSpace(in.Username)
 	displayName := strings.TrimSpace(in.DisplayName)
@@ -239,21 +242,6 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 	if err := validateAdminPassword(username, in.Password); err != nil {
 		return model.AdminUser{}, err
 	}
-	if in.TenantID != "" {
-		// Checked before the account is inserted so a mistyped Tenant does not
-		// leave an orphan account the operator has to find and delete.
-		//
-		// A missing Tenant answers (nil, nil) from the allowlist read, which is
-		// the same answer as "a Tenant that grants nothing", so existence is
-		// asked for directly rather than inferred from that read.
-		exists, err := a.store.TenantExists(ctx, in.TenantID)
-		if err != nil {
-			return model.AdminUser{}, ErrAdminInternal
-		}
-		if !exists {
-			return model.AdminUser{}, ErrAdminTenantNotFound
-		}
-	}
 
 	hash, err := security.HashPassword(in.Password)
 	if err != nil {
@@ -262,26 +250,35 @@ func (a *adminAuthService) createUser(ctx context.Context, in adminUserCreate) (
 	// The flag rides in the same INSERT as the hash. Splitting them would leave
 	// a failure between the two as an operator-chosen password that never
 	// expires — the one outcome the reset fence exists to prevent.
+	if in.TenantID != "" {
+		created, err := a.store.CreateUserWithTenant(ctx, storage.AdminUserCreate{
+			Username:              username,
+			DisplayName:           displayName,
+			PasswordHash:          hash,
+			Roles:                 roles,
+			PasswordResetRequired: true,
+			TenantID:              in.TenantID,
+			RequireEnabledTenant:  false,
+		})
+		switch {
+		case err == nil:
+			return created, nil
+		case errors.Is(err, storage.ErrAdminUsernameTaken):
+			return model.AdminUser{}, ErrAdminUsernameTaken
+		case errors.Is(err, storage.ErrAdminTenantNotFound):
+			return model.AdminUser{}, ErrAdminTenantNotFound
+		default:
+			log.Printf("user management: create account %s with Tenant %s failed: %v", username, in.TenantID, err)
+			return model.AdminUser{}, ErrAdminInternal
+		}
+	}
+
 	created, err := a.store.CreateUser(ctx, username, displayName, hash, roles, true)
 	if err != nil {
 		if errors.Is(err, storage.ErrAdminUsernameTaken) {
 			return model.AdminUser{}, ErrAdminUsernameTaken
 		}
 		return model.AdminUser{}, ErrAdminInternal
-	}
-
-	if in.TenantID != "" {
-		// Go through the service wrapper so the Tenant assignment used here and
-		// the one used by self-registration share their error translation.
-		assigned, err := a.assignUserTenant(ctx, created.ID, in.TenantID)
-		if err != nil {
-			log.Printf("user management: account %s created but joining Tenant %s failed, an operator must assign it: %v",
-				created.Username, in.TenantID, err)
-			created.TenantID = ""
-			created.TenantName = ""
-			return created, nil
-		}
-		return assigned, nil
 	}
 	updated, err := a.store.FindAdminUserByID(ctx, created.ID)
 	if err != nil {

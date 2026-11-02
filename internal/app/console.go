@@ -86,6 +86,11 @@ type consoleMeResponse struct {
 	// projected for display; the id is the identifier.
 	TenantID   string `json:"tenant_id"`
 	TenantName string `json:"tenant_name"`
+	// TenantStatus is the Tenant's stored status (1 enabled, 2 disabled), and 0
+	// when the Account has no Tenant or the row has disappeared. It is
+	// separate from WorkspaceUsable because "waiting for assignment" and
+	// "assigned to a switched-off Tenant" need different sentences.
+	TenantStatus int `json:"tenant_status"`
 	// AllowedModels is the Tenant's model allowlist, as stored: ["*"],
 	// an explicit sorted list, or [] (the Tenant grants no models). The create
 	// drawer uses it as the bound on a key's model scope. It is empty for an
@@ -185,6 +190,7 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 	// as an unassigned Account rather than a 500 on a page that would otherwise
 	// still be usable.
 	allowedModels := make([]string, 0)
+	tenantStatus := 0
 	if user.TenantID != "" {
 		models, err := s.adminAuth.store.TenantAllowedModels(r.Context(), user.TenantID)
 		if err != nil {
@@ -194,6 +200,23 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 		}
 		if models != nil {
 			allowedModels = models
+		}
+		// The status is not part of the account row, so it is read beside the
+		// allowlist. A fake-backed unit server has no pool; there, "assigned"
+		// is the whole fact and the status reads as enabled.
+		tenantStatus = 1
+		if s.pg != nil {
+			tenant, err := s.pg.TenantByID(r.Context(), user.TenantID)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				tenantStatus = 0
+			case err != nil:
+				log.Printf("console me: read tenant %s: %v", user.TenantID, err)
+				writeAdminError(w, reqID, ErrAdminInternal)
+				return
+			default:
+				tenantStatus = tenant.Status
+			}
 		}
 	}
 
@@ -220,8 +243,9 @@ func (s *Server) handleConsoleMe(w http.ResponseWriter, r *http.Request) {
 		Status:          user.Status,
 		TenantID:        user.TenantID,
 		TenantName:      user.TenantName,
+		TenantStatus:    tenantStatus,
 		AllowedModels:   allowedModels,
-		WorkspaceUsable: user.TenantID != "",
+		WorkspaceUsable: user.TenantID != "" && tenantStatus == 1,
 		KeyCount:        keyCount,
 	})
 }
@@ -496,6 +520,9 @@ func (s *Server) writePersonalKeyWriteError(w http.ResponseWriter, reqID string,
 	case errors.Is(err, storage.ErrPersonalTenantUnassigned):
 		httpx.Error(w, http.StatusConflict, "tenant_not_assigned",
 			"Your account is not assigned to a tenant yet. Ask an administrator to assign one.", reqID)
+	case errors.Is(err, storage.ErrPersonalTenantDisabled):
+		httpx.Error(w, http.StatusConflict, "tenant_disabled",
+			"Your tenant has been disabled, so no key can be written.", reqID)
 	case errors.Is(err, storage.ErrPersonalTenantModelsEmpty):
 		httpx.Error(w, http.StatusConflict, "tenant_models_empty",
 			"Your tenant does not allow any models, so no key can be written.", reqID)
@@ -531,6 +558,7 @@ func writeConsoleError(w http.ResponseWriter, status int, reqID, code, message s
 // three cases stay distinct rather than collapsing into an empty list.
 const (
 	consoleModelsNoTenant         = "no_tenant"
+	consoleModelsTenantDisabled   = "tenant_disabled"
 	consoleModelsTenantAllowsNone = "tenant_allows_none"
 	consoleModelsNoneEligible     = "no_eligible_models"
 )
@@ -603,6 +631,16 @@ func (s *Server) handleConsoleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeAdminError(w, reqID, ErrAdminInternal)
+		return
+	}
+	// A disabled Tenant has no callable model. The data plane already refuses
+	// every key under it, so offering the allowlist here would advertise a
+	// model whose first request answers tenant_disabled.
+	if tenant.Status != 1 {
+		writeJSON(w, http.StatusOK, consoleModelsResponse{
+			Models:      []consoleModel{},
+			EmptyReason: consoleModelsTenantDisabled,
+		})
 		return
 	}
 	// The Tenant allowlist is turned into the same Identity the data plane uses,
