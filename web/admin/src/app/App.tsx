@@ -163,6 +163,14 @@ function Console() {
           ? '会话已被撤销，请重新登录。如果刚有管理员调整了你的权限或账号状态，重新登录后即可看到变化。'
           : '登录状态已过期，请重新登录。',
       )
+      // A member who signs in at /console leaves that address in the URL. The
+      // next account to use this tab may be an administrator, and honouring
+      // the previous account's workspace would strand them in the personal
+      // console. The shared entrance picks the landing from the new roles.
+      if (window.location.pathname !== '/admin-ui') {
+        window.history.replaceState({}, '', '/admin-ui')
+        setPath('/admin-ui')
+      }
       setPhase('login')
     })
   }, [authConfig])
@@ -279,6 +287,14 @@ function Console() {
     setWho(null)
     setAuthNotice('已安全退出登录。')
     toast.clear()
+    // Do not leave the login screen at the previous account's workspace: the
+    // next account may belong to the other one. /admin-ui serves the same
+    // shared login card, and a member who signs in there is redirected to the
+    // personal console by the workspace-root rule.
+    if (window.location.pathname !== '/admin-ui') {
+      window.history.replaceState({}, '', '/admin-ui')
+      setPath('/admin-ui')
+    }
     setPhase('login')
   }
 
@@ -295,6 +311,16 @@ function Console() {
   function goHome() {
     const target = landingPath(roles)
     if (window.location.pathname !== target) window.history.replaceState({}, '', target)
+    setPath(target)
+  }
+
+  // An account with a management role may use both workspaces. Switching is a
+  // navigation, not a new session: the URL carries the workspace and the same
+  // identity renders the other navigation.
+  function switchWorkspace() {
+    const current = resolveRoute(path)
+    const target = current?.workspace === 'admin' ? pathFor('console', 'overview') : landingPath(roles)
+    if (window.location.pathname !== target) window.history.pushState({}, '', target)
     setPath(target)
   }
 
@@ -374,6 +400,7 @@ function Console() {
       sessionMode={isSessionMode()}
       refreshing={false}
       onSignOut={() => void signOut().catch(e => toast.error(e instanceof Error ? e.message : '退出登录失败'))}
+      onSwitchWorkspace={switchWorkspace}
     >
       {route.workspace === 'console' ? (
         <>
