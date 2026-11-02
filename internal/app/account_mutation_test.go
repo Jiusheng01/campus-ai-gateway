@@ -168,7 +168,7 @@ func TestNoopRoleAndStatusUpdatesKeepSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	operator, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin})
+	operator, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRoleChangeInvalidatesExistingTokensImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin})
+	target, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestGatewayAdminCannotPromoteItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gatewayAdmin, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin})
+	gatewayAdmin, err := store.CreateUser(context.Background(), "zhangsan", "张三", hash, []string{RoleGatewayAdmin}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

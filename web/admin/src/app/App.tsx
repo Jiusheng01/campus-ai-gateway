@@ -20,7 +20,7 @@ import {ConfirmProvider} from '../components/ui/ConfirmDialog'
 import {AuthSplash} from '../auth/AuthSplash'
 import {AuthUnsupported} from '../auth/AuthUnsupported'
 import {IdentityRequired} from '../auth/IdentityRequired'
-import {LoginPage} from '../auth/LoginPage'
+import {LoginPage, PasswordResetRequiredPage} from '../auth/LoginPage'
 import {SetupPage} from '../auth/SetupPage'
 import {WorkspaceForbidden, WorkspaceNotFound} from '../auth/WorkspaceBoundary'
 import {DashboardPage} from '../pages/DashboardPage'
@@ -58,6 +58,14 @@ type LogSeed = {model?: string; provider?: string; tenant_id?: string; api_key_i
 const authModeOf = (cfg: AuthConfig | null) => (cfg?.auth_mode || '').toLowerCase()
 
 const isWorkspacePath = (path: string) => path.startsWith('/admin-ui') || path.startsWith('/console')
+
+// A workspace root is the entrance to a workspace, not a page inside it. The
+// shared login screen is served under both roots, so a bare /admin-ui says
+// nothing about which workspace the account meant to use.
+const isWorkspaceRoot = (path: string) => {
+  const clean = path.replace(/\/+$/, '')
+  return clean === '/admin-ui' || clean === '/console'
+}
 
 function Console() {
   const toast = useToast()
@@ -162,15 +170,30 @@ function Console() {
   const roles = who?.roles || []
   const canOpenRawLogs = roles.includes('super_admin') || roles.includes('auditor')
 
-  // If the account arrives at a path that names no workspace at all (most
-  // commonly "/"), send it to the landing its roles choose. A path that names a
-  // real workspace is left alone: a member asking for /admin-ui must see the
-  // 403 page, not a redirect that hides what happened.
+  // Resolve where a signed-in account belongs after authentication.
+  //
+  // A path that names no workspace (most commonly "/") goes to the landing its
+  // roles choose. A workspace root does too when the account cannot use that
+  // workspace: the root is the shared entrance — registration and sign-in are
+  // served there — so a member who just created an account must not be shown a
+  // 403 for the address the login form happened to live at. A specific page
+  // under a workspace the account cannot use is left alone and gets the 403
+  // page, because that address was an explicit request and a silent rewrite
+  // would hide why it was refused.
   useEffect(() => {
     if (phase !== 'ready' || !who) return
-    if (resolveRoute(path)) return
+    const accountRoles = who.roles || []
+    const route = resolveRoute(path)
+    if (route) {
+      if (isWorkspaceRoot(path) && !mayUseWorkspace(route.workspace, accountRoles)) {
+        const target = landingPath(accountRoles)
+        window.history.replaceState({}, '', target)
+        setPath(target)
+      }
+      return
+    }
     if (isWorkspacePath(path)) return
-    const target = landingPath(who.roles || [])
+    const target = landingPath(accountRoles)
     window.history.replaceState({}, '', target)
     setPath(target)
   }, [phase, who, path])
@@ -237,6 +260,11 @@ function Console() {
             username: result.user.username,
             roles: resultRoles,
             auth_mode: authModeOf(authConfig) || 'session',
+            // Carried from the sign-in response rather than fetched: whoami is
+            // skipped while an identity is already seeded, so an account held
+            // by the reset fence would otherwise land in a console whose every
+            // request answers 403.
+            password_reset_required: result.user.password_reset_required,
           }
         : null,
     )
@@ -284,6 +312,14 @@ function Console() {
   // to 个人资料; here it would briefly show a 403 to a legitimate member.
   if (!who) return <AuthSplash text="正在读取账号身份…" />
 
+  // A reset password is one an administrator chose and may still hold. The
+  // gateway refuses every page but the password form, so the app does not
+  // render a workspace it knows will answer 403 — it asks for the new password
+  // first. Signing out is still offered, and lands on the ordinary login page.
+  if (who.password_reset_required) {
+    return <PasswordResetRequiredPage onSignedOut={() => void signOut()} />
+  }
+
   const route = resolveRoute(path)
   if (!route) {
     if (isWorkspacePath(path)) return <WorkspaceNotFound onHome={goHome} />
@@ -291,6 +327,10 @@ function Console() {
   }
 
   if (!mayUseWorkspace(route.workspace, roles)) {
+    // The effect above is already sending the account away from a workspace
+    // root it cannot use. Showing the 403 for the frame between this render and
+    // that effect would be a flash of the wrong answer, so hold the splash.
+    if (isWorkspaceRoot(path)) return <AuthSplash text="正在打开工作台…" />
     return (
       <WorkspaceForbidden
         workspace={route.workspace}

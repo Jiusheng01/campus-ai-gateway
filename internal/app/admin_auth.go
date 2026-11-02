@@ -19,6 +19,11 @@ type adminPrincipal struct {
 	Roles     map[string]bool
 	SessionID string
 	AuthMode  string
+	// PasswordResetRequired reports that this account is holding a password an
+	// administrator handed over and has not yet chosen one of its own. It is
+	// read from the account row on every request, so it also covers a reset
+	// that happens in the middle of a session.
+	PasswordResetRequired bool
 }
 
 type adminPrincipalKey struct{}

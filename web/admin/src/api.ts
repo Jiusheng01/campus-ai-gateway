@@ -55,7 +55,20 @@ export type DataPlane='direct'
 export type CircuitView={provider:string;state:'closed'|'open'|'half-open';failures:number;retry_in_ms:number}
 export type RouteCacheStatus={built_at:string|null;stale:boolean;last_error_kind?:string;generation:number}
 export type DashboardStatus={gateway:boolean;postgres:boolean;redis:boolean;data_plane?:DataPlane;stats:{today_requests:number;today_tokens:number;today_errors:number;avg_latency_ms:number;p95_latency_ms:number;failover_count:number};provider_stats:ProviderStat[];circuits?:CircuitView[];route_cache?:RouteCacheStatus;config_counts?:{models:number;enabled_models:number;providers:number;enabled_providers:number}}
-export type WhoAmI={user:string;username?:string;user_id?:string;session_id?:string;roles:string[];auth_mode:string}
+export type WhoAmI={
+  user:string
+  username?:string
+  user_id?:string
+  session_id?:string
+  roles:string[]
+  auth_mode:string
+  /**
+   * The account is still holding a password an administrator handed over. The
+   * gateway refuses every page but the password form until it is replaced, so
+   * the app routes on this rather than showing a workspace full of 403s.
+   */
+  password_reset_required?:boolean
+}
 
 /**
  * RequestLogSummary aggregates the whole filtered set, not the page on screen.
@@ -136,7 +149,18 @@ export type AuthConfig={
   registration_enabled:boolean
 }
 
-export type AdminUserView={id:string;username:string;display_name:string;roles:string[]}
+export type AdminUserView={
+  id:string
+  username:string
+  display_name:string
+  roles:string[]
+  /**
+   * The account is still holding a password an administrator handed over. The
+   * sign-in response carries it so the app can route to the password screen
+   * immediately; waiting for whoami would show a console that answers 403.
+   */
+  password_reset_required?:boolean
+}
 
 /**
  * A row in the user management table. Deliberately narrow: the API never sends
@@ -152,6 +176,13 @@ export type AccountUser={
   /** The Account's Tenant Membership. Empty means unassigned, not a Tenant named "". */
   tenant_id:string
   tenant_name:string
+  /**
+   * True while the account is still holding a password an administrator handed
+   * over. Such an account can sign in but cannot reach any page until it
+   * chooses a password of its own, so the operator needs to see that the
+   * handover was never completed.
+   */
+  password_reset_required:boolean
   last_login_at:string|null
   created_at:string
 }
@@ -652,6 +683,31 @@ export async function updateUser(id:string,patch:UserPatch){
 }
 
 /**
+ * createUser opens an account on somebody's behalf.
+ *
+ * The password is chosen by the operator and handed over out of band, so the
+ * gateway marks the account reset-required: it can sign in, but cannot reach a
+ * single page until it chooses a password of its own. The response never
+ * carries the password back.
+ *
+ * An omitted `roles` list means an ordinary member account. Sending one is how
+ * the operator grants authority, which is why this is super_admin only.
+ */
+export async function createUser(input:{
+  username:string
+  display_name:string
+  password:string
+  roles:string[]
+  tenant_id?:string
+}){
+  const d=await api<{data:AccountUser}>('/admin/users',{
+    method:'POST',
+    body:JSON.stringify(input),
+  })
+  return d.data
+}
+
+/**
  * assignUserTenant sets an Account's Tenant Membership, or clears it when the
  * id is empty.
  *
@@ -663,6 +719,26 @@ export async function assignUserTenant(id:string,tenantId:string){
   const d=await api<{data:AccountUser}>(`/admin/users/${encodeURIComponent(id)}/tenant`,{
     method:'PUT',
     body:JSON.stringify({tenant_id:tenantId}),
+  })
+  return d.data
+}
+
+/**
+ * resetUserPassword replaces another account's password.
+ *
+ * The password is chosen by the operator and handed over out of band — read
+ * aloud, written down, pasted into a chat. That is why the gateway marks the
+ * account reset-required: every session it opens is held to "choose a new
+ * password" until the account holder replaces the one the operator can still
+ * read. Every session the account had is revoked at the same moment.
+ *
+ * There is no server-generated password: the operator types one, so it is never
+ * generated, transmitted or displayed by the gateway.
+ */
+export async function resetUserPassword(id:string,newPassword:string){
+  const d=await api<{data:AccountUser}>(`/admin/users/${encodeURIComponent(id)}/password-reset`,{
+    method:'POST',
+    body:JSON.stringify({new_password:newPassword}),
   })
   return d.data
 }

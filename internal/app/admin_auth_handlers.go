@@ -57,6 +57,12 @@ type adminAccountView struct {
 	Username    string   `json:"username"`
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
+	// PasswordResetRequired reports that this account is still holding a
+	// password an administrator handed over. The sign-in response carries it so
+	// the browser can go straight to the password screen: waiting for whoami
+	// would drop the account into a console whose every request answers 403,
+	// because whoami is only fetched when no identity has been seeded yet.
+	PasswordResetRequired bool `json:"password_reset_required"`
 }
 
 // adminSessionView is the safe projection of a session.
@@ -448,7 +454,8 @@ func loginResponseFrom(t adminTokens) adminLoginResponse {
 			DisplayName: t.User.DisplayName,
 			// Normalised so the client never has to reason about whether
 			// "member" sits alongside a management role.
-			Roles: NormalizeAccountRoles(t.User.Roles),
+			Roles:                 NormalizeAccountRoles(t.User.Roles),
+			PasswordResetRequired: t.User.PasswordResetRequired,
 		},
 	}
 }

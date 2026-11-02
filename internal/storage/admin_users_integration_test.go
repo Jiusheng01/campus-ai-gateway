@@ -133,7 +133,7 @@ func quoteIdent(name string) string {
 func insertAccount(t *testing.T, pg *Postgres, username string, roles []string, status int) model.AdminUser {
 	t.Helper()
 	ctx := context.Background()
-	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles)
+	user, err := pg.CreateUser(ctx, username, username, "argon2id-placeholder", roles, false)
 	if err != nil {
 		t.Fatalf("insert %s: %v", username, err)
 	}
@@ -515,6 +515,18 @@ func TestDisplayNameOnlyLeavesAuthVersionAlone(t *testing.T) {
 	}
 	if !changes.DisplayNameChanged {
 		t.Fatal("the display name change must be reported")
+	}
+}
+
+func TestTenantExistsTreatsAMalformedIDAsMissing(t *testing.T) {
+	pg := testPostgres(t)
+
+	exists, err := pg.TenantExists(context.Background(), "not-a-uuid")
+	if err != nil {
+		t.Fatalf("TenantExists on a malformed id returned an error: %v", err)
+	}
+	if exists {
+		t.Fatal("TenantExists on a malformed id reported a Tenant")
 	}
 }
 

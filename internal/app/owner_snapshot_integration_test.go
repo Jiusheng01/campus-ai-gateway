@@ -119,7 +119,7 @@ func TestDataPlaneSnapshotsTheKeysOwnerIntoTheRequestLog(t *testing.T) {
 
 	tenant := usageSeedTenant(t, pg, "snapshot-owned-tenant", 0, 0, 0)
 	account, err := pg.CreateUser(context.Background(),
-		"owner-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:8], "Owner", "hash", []string{"member"})
+		"owner-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:8], "Owner", "hash", []string{"member"}, false)
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}

@@ -27,7 +27,7 @@ export function AnalyticsPage() {
 
       <Panel
         title="渠道状态"
-        sub="按渠道归因的请求量与成功率，数据来自线路遥测；未知数据不会被猜测。"
+        sub="按渠道归因的请求量与成功率。"
         actions={
           <span className="panelFootnote">
             <Route aria-hidden />

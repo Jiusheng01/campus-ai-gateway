@@ -78,6 +78,11 @@ var (
 	// ErrAdminPasswordUnchanged means the new password equals the current one.
 	ErrAdminPasswordUnchanged = errors.New("the new password must differ from the current password")
 
+	// ErrAdminPasswordResetRequired refuses every request from an account that
+	// is still holding a password an administrator handed over. See
+	// resetFenceAllows for why the account is held shut.
+	ErrAdminPasswordResetRequired = errors.New("a new password must be chosen before this account can be used")
+
 	// ErrAdminCSRFRejected means a cookie-authenticated state-changing request
 	// failed the same-origin check.
 	ErrAdminCSRFRejected = errors.New("cross-site request rejected")
@@ -197,6 +202,11 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusBadRequest, "password_policy_violation"
 	case errors.Is(err, ErrAdminPasswordUnchanged):
 		return http.StatusBadRequest, "password_unchanged"
+	case errors.Is(err, ErrAdminPasswordResetRequired):
+		// 403 rather than 401: the credential is valid and the session is
+		// real. Answering 401 would make the client discard a session that is
+		// exactly what the account needs to set its own password.
+		return http.StatusForbidden, "password_reset_required"
 	case errors.Is(err, ErrAdminBadRequest):
 		return http.StatusBadRequest, "invalid_request"
 	default:

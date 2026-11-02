@@ -368,7 +368,7 @@ export function DashboardPage({
           {/* 配置概况 4-Tile Grid Card */}
           <Panel
             title="配置概况"
-            sub="配置数量与启用情况，健康状态见下方依赖探测。"
+            sub="配置数量与启用情况。"
             className="overviewConfigPanel"
           >
             <div className="configTilesGrid">
@@ -478,7 +478,7 @@ export function DashboardPage({
             {/* Left: 路由配置快照 */}
             <Panel
               title="线路配置"
-              sub="展示配置清单前 5 条；运行时缓存状态单独列出。"
+              sub="最近 5 条配置。"
               actions={
                 canReadRoutes && onNavigate && (
                   <button

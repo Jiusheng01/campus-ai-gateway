@@ -381,7 +381,7 @@ function WorkspaceSummary({keyCount, onNavigate}: {keyCount: number; onNavigate?
 
   return (
     <>
-      <Panel title="今日概览" sub="今日请求、Tokens 与错误率来自你的个人调用记录；时间边界按本机时区计算。">
+      <Panel title="今日概览" sub="今日个人调用概览（按本机时区）。">
         <div className="panelPad">
           <StatGrid columns={3}>
             <StatCard label="我的 API Key" value={num(keyCount)} tone="info" subtext="你拥有的个人凭据" />

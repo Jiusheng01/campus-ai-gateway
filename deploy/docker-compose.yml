@@ -69,6 +69,57 @@ services:
       # switched to the break-glass ADMIN_AUTH_MODE=token; token mode refuses a
       # placeholder at startup.
       ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      # Signing keys. Neither has a usable default in production: the gateway
+      # derives a development key when they are absent and says so in the log,
+      # which is fine for a laptop and wrong for a deployment. Forwarding them
+      # here is what lets an operator set them in the host environment instead
+      # of editing this file.
+      ADMIN_SESSION_SECRET: "${ADMIN_SESSION_SECRET:-}"
+      CREDENTIAL_ENCRYPTION_KEY: "${CREDENTIAL_ENCRYPTION_KEY:-}"
+      # First-run administrator. Only consulted while no super administrator
+      # exists; remove both from the host environment once the account is
+      # created, because the password stays valid for as long as it is set.
+      ADMIN_BOOTSTRAP_USERNAME: "${ADMIN_BOOTSTRAP_USERNAME:-}"
+      ADMIN_BOOTSTRAP_PASSWORD: "${ADMIN_BOOTSTRAP_PASSWORD:-}"
+      # Login throttling. Per person only when TRUSTED_PROXY_CIDRS above names
+      # the real proxy; otherwise the whole deployment shares one counter.
+      ADMIN_LOGIN_MAX_ATTEMPTS: "${ADMIN_LOGIN_MAX_ATTEMPTS:-8}"
+      ADMIN_LOGIN_WINDOW: "${ADMIN_LOGIN_WINDOW:-15m}"
+      # Safe defaults that an operator should still be able to see and change.
+      ADMIN_SETUP_LOCAL_ONLY: "${ADMIN_SETUP_LOCAL_ONLY:-true}"
+      ADMIN_COOKIE_SECURE: "${ADMIN_COOKIE_SECURE:-false}"
+      ADMIN_PUBLIC_ORIGIN: "${ADMIN_PUBLIC_ORIGIN:-}"
+      PUBLIC_REGISTER_MAX_ATTEMPTS: "${PUBLIC_REGISTER_MAX_ATTEMPTS:-5}"
+      PUBLIC_REGISTER_WINDOW: "${PUBLIC_REGISTER_WINDOW:-1h}"
+      PERSONAL_KEY_LIMIT: "${PERSONAL_KEY_LIMIT:-10}"
+      # The nginx container sits in front of this one, so without this every
+      # request looks like it came from the proxy's address. The consequence is
+      # not cosmetic: login and registration throttling are keyed on the source
+      # address, so one shared key means one person's five failed attempts lock
+      # out the whole campus. Audit rows also record the proxy instead of the
+      # caller.
+      #
+      # The default below is a deliberate over-approximation, not a considered
+      # setting: it covers the private space Docker allocates from, so the stack
+      # starts and throttling is per-person out of the box. Two things follow
+      # that an operator must know. Anything listed here may set
+      # X-Forwarded-For, and a caller who can set it chooses the address the
+      # counters are keyed on — so the list must be narrowed to this stack's own
+      # network, found with `docker network inspect <project>_default`. And a
+      # deployment that reaches the gateway through any other proxy needs that
+      # proxy's range instead, or its callers all share one counter.
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}"
+      # Self-service registration. Off unless the host environment turns it on:
+      # the gateway refuses it until a super administrator exists, and every
+      # account it creates is a plain member with no management role.
+      #
+      # PUBLIC_REGISTER_TENANT_ID is what makes a signup usable — without it the
+      # account can sign in but cannot create a key, because it has no Tenant to
+      # draw quota and models from. Every account that joins the same Tenant
+      # shares its quota, so a deployment that bills by department leaves this
+      # unset and assigns Tenants by hand.
+      PUBLIC_REGISTRATION_ENABLED: "${PUBLIC_REGISTRATION_ENABLED:-false}"
+      PUBLIC_REGISTER_TENANT_ID: "${PUBLIC_REGISTER_TENANT_ID:-}"
     depends_on:
       postgres:
         condition: service_healthy

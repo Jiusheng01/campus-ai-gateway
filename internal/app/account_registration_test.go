@@ -34,7 +34,7 @@ func seedMember(t *testing.T, store *fakeAdminStore, username, password string) 
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	u, err := store.CreateUser(context.Background(), username, "Test Member", hash, []string{RoleMember})
+	u, err := store.CreateUser(context.Background(), username, "Test Member", hash, []string{RoleMember}, false)
 	if err != nil {
 		t.Fatalf("seed member: %v", err)
 	}
@@ -246,6 +246,105 @@ func TestRegisterCreatesMemberAndSession(t *testing.T) {
 	}
 	if loginMethod != loginMethodRegister {
 		t.Fatalf("session login_method = %q, want %q", loginMethod, loginMethodRegister)
+	}
+}
+
+// registrationTenantConfig returns a config that opens registration and joins
+// every signup to the named Tenant.
+func registrationTenantConfig(tenantID string) Config {
+	cfg := testConfig()
+	cfg.PublicRegistrationEnabled = true
+	cfg.PublicRegisterTenantID = tenantID
+	return cfg
+}
+
+func TestRegisterJoinsTheConfiguredTenant(t *testing.T) {
+	cfg := registrationTenantConfig("11111111-1111-1111-1111-111111111111")
+	s, store, _ := newTestServerWithRegistration(t, cfg)
+	store.tenants[cfg.PublicRegisterTenantID] = "全校公共"
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	user, err := store.FindAdminUserByUsername(context.Background(), "zhangsan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.TenantID != cfg.PublicRegisterTenantID {
+		t.Fatalf("registered account must join the configured Tenant, got %q", user.TenantID)
+	}
+	if user.TenantName != "全校公共" {
+		t.Fatalf("the joined Tenant's name must be projected, got %q", user.TenantName)
+	}
+	// Joining a Tenant is a membership change, not a credential change: the
+	// account must still start at auth_version 1 so its first session works.
+	if user.AuthVersion != 1 {
+		t.Fatalf("joining a Tenant must not bump auth_version, got %d", user.AuthVersion)
+	}
+}
+
+func TestRegisterWithoutTenantConfigLeavesAccountUnassigned(t *testing.T) {
+	s, store, _ := newTestServerWithRegistration(t, registrationTenantConfig(""))
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+
+	user, err := store.FindAdminUserByUsername(context.Background(), "zhangsan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.TenantID != "" {
+		t.Fatalf("without a configured Tenant the account must stay unassigned, got %q", user.TenantID)
+	}
+}
+
+// A Tenant deleted between startup and the first signup must not turn
+// registration into a failure: the account is the user's, and an operator can
+// repair the membership. Refusing the signup would strand a person who did
+// nothing wrong.
+func TestRegisterSucceedsWhenTheConfiguredTenantIsGone(t *testing.T) {
+	cfg := registrationTenantConfig("22222222-2222-2222-2222-222222222222")
+	s, store, _ := newTestServerWithRegistration(t, cfg)
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register",
+		registerBody("zhangsan", "张三", "Campus#2026Gate"), nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a missing Tenant must not fail the signup, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	user, err := store.FindAdminUserByUsername(context.Background(), "zhangsan")
+	if err != nil {
+		t.Fatalf("the account must still exist: %v", err)
+	}
+	if user.TenantID != "" {
+		t.Fatalf("an unjoinable Tenant must leave the account unassigned, got %q", user.TenantID)
+	}
+}
+
+// The Tenant is a deployment fact, not a request field. A body that names one
+// is rejected by DisallowUnknownFields rather than quietly ignored, so nobody
+// can sign themselves into a department they were not invited to.
+func TestRegisterRejectsATenantInTheBody(t *testing.T) {
+	cfg := registrationTenantConfig("11111111-1111-1111-1111-111111111111")
+	s, store, _ := newTestServerWithRegistration(t, cfg)
+	store.tenants[cfg.PublicRegisterTenantID] = "全校公共"
+	store.tenants["33333333-3333-3333-3333-333333333333"] = "财务处"
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+
+	body := `{"username":"zhangsan","display_name":"张三","password":"Campus#2026Gate",` +
+		`"confirm_password":"Campus#2026Gate","tenant_id":"33333333-3333-3333-3333-333333333333"}`
+	rec := postJSON(t, http.HandlerFunc(s.handleAccountRegister), http.MethodPost, "/auth/register", body, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a request naming its own Tenant must be refused, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.FindAdminUserByUsername(context.Background(), "zhangsan"); err == nil {
+		t.Fatal("a refused registration must not create an account")
 	}
 }
 
@@ -650,7 +749,7 @@ func TestOnlySuperAdminReachesUserManagement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.CreateUser(context.Background(), name, name, hash, []string{role}); err != nil {
+			if _, err := store.CreateUser(context.Background(), name, name, hash, []string{role}, false); err != nil {
 				t.Fatal(err)
 			}
 			token := accessTokenFor(t, s, name, "Campus#2026Gate")
@@ -1238,7 +1337,7 @@ func seedSetupAdminViaStore(t *testing.T, store *fakeAdminStore, username string
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := store.CreateUser(context.Background(), username, username, hash, []string{RoleSuperAdmin})
+	u, err := store.CreateUser(context.Background(), username, username, hash, []string{RoleSuperAdmin}, false)
 	if err != nil {
 		t.Fatalf("seed super admin: %v", err)
 	}

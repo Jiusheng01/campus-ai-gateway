@@ -36,9 +36,17 @@ type AdminUser struct {
 	// display; it is never used as an identifier, because names are not unique.
 	TenantID    string
 	TenantName  string
-	LastLoginAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// PasswordResetRequired is set when an administrator resets the password,
+	// and cleared only when the account holder chooses a password of their own.
+	//
+	// It exists because a reset password is a password the console shows to
+	// somebody else. Signing in with it proves possession of the slip, not of
+	// the account, so every session it opens is fenced to "choose a new
+	// password" until the account holder replaces it.
+	PasswordResetRequired bool
+	LastLoginAt           *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // AdminUserStats backs the summary strip on the user management page. It is

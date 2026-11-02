@@ -413,7 +413,7 @@ export function ProvidersPage({
           上游渠道, which read as two pages with one address. */}
       <PageBanner
         title="上游渠道"
-        subtitle="维护模型服务的连接配置、凭据与候选模型。启用状态与最近诊断分别展示。"
+        subtitle="上游连接、凭据与候选模型。"
       />
 
       <section aria-label="渠道概览统计" className="providersSummarySection">

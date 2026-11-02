@@ -47,7 +47,7 @@ export function AuditPage() {
     <>
       <RecordList
         title="审计日志"
-        sub="记录管理员对控制面发起的修改操作与登录事件。这是管理变更记录，不是模型调用记录：这里不包含请求或响应的正文。"
+        sub="管理员操作与登录事件，不含模型调用内容。"
         filters={
           <RecordFilters
             search={search}

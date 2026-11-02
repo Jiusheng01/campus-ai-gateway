@@ -268,6 +268,7 @@ func finalSchemaContract() (tables []contractTable, keys []contractKey, fks []co
 				{"roles", "jsonb", true},
 				{"status", "smallint", true},
 				{"auth_version", "bigint", true},
+				{"password_reset_required", "boolean", true},
 				{"last_login_at", "timestamp with time zone", false},
 				{"created_at", "timestamp with time zone", true},
 				{"updated_at", "timestamp with time zone", true},
@@ -458,6 +459,7 @@ func finalColumnDefaults() map[string]string {
 		"gateway_admin_user.id": "gen_random_uuid()", "gateway_admin_user.display_name": "''::character varying",
 		"gateway_admin_user.roles": "'[\"auditor\"]'::jsonb", "gateway_admin_user.status": "1",
 		"gateway_admin_user.auth_version": "1", "gateway_admin_user.created_at": "now()", "gateway_admin_user.updated_at": "now()",
+		"gateway_admin_user.password_reset_required": "false",
 
 		"gateway_admin_session.sid": "gen_random_uuid()", "gateway_admin_session.version": "1",
 		"gateway_admin_session.user_auth_version": "1", "gateway_admin_session.status": "1",

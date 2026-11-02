@@ -20,6 +20,7 @@ function user(over: Partial<AccountUser> = {}): AccountUser {
     status: 1,
     tenant_id: 't-1',
     tenant_name: '计算机学院',
+    password_reset_required: false,
     last_login_at: '2026-10-20T08:00:00Z',
     created_at: '2026-01-01T00:00:00Z',
     ...over,
@@ -82,6 +83,18 @@ describe('UsersPage summary honesty', () => {
     expect((screen.getByText('总用户').closest('.kpi') as HTMLElement)).toHaveTextContent('3')
     expect((screen.getByText('管理员').closest('.kpi') as HTMLElement)).toHaveTextContent('1')
     expect((screen.getByText('停用账号').closest('.kpi') as HTMLElement)).toHaveTextContent('1')
+  })
+})
+
+describe('UsersPage reset handover', () => {
+  // ADR-0021 makes an unfinished handover a fact the operator must be able to
+  // scan for; the drawer alone hides it until the row is opened.
+  it('marks an unfinished handover in the list, not only in the drawer', async () => {
+    stub({users: [user({password_reset_required: true})], stats: {total: 1, members: 1, admins: 0, disabled: 0}})
+    renderPage()
+
+    const row = (await screen.findByText('zhangsan')).closest('tr') as HTMLElement
+    expect(within(row).getByText('待设置新密码')).toBeInTheDocument()
   })
 })
 

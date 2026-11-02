@@ -1,6 +1,6 @@
 import {useState, type FormEvent} from 'react'
 import {AlertTriangle, Loader2, UserPlus} from 'lucide-react'
-import {ApiError, register, type AuthConfig} from '../api'
+import {ApiError, register, type AuthConfig, type LoginResult} from '../api'
 import {PasswordInput} from '../components/ui/PasswordInput'
 import {friendlyError} from '../lib/errors'
 
@@ -23,12 +23,11 @@ export function RegisterPage({
   onAccountCreated,
 }: {
   config: AuthConfig | null
-  onDone: () => void
+  onDone: (result?: LoginResult) => void
   onSwitchToLogin: () => void
   onAccountCreated: (username: string) => void
 }) {
   const [username, setUsername] = useState('')
-  const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
@@ -46,8 +45,12 @@ export function RegisterPage({
     setBusy(true)
     setError('')
     try {
-      await register({username: username.trim(), display_name: displayName.trim(), password, confirm_password: confirmPassword})
-      onDone()
+      // Self-registration no longer asks for a display name; the server accepts
+      // an empty one and the console falls back to the username.
+      const result = await register({username: username.trim(), display_name: '', password, confirm_password: confirmPassword})
+      // Hand the signed-in identity back so the app can choose the workspace
+      // its roles actually open instead of leaving it where the login form was.
+      onDone(result)
     } catch (err) {
       // The account exists even though the automatic sign-in did not happen.
       // Retrying the registration would only be answered "username taken",
@@ -82,26 +85,13 @@ export function RegisterPage({
       </label>
 
       <label className="field">
-        <span className="fieldLabel">显示名称（可选）</span>
-        <input
-          value={displayName}
-          placeholder="例如 张三"
-          autoComplete="nickname"
-          onChange={e => setDisplayName(e.target.value)}
-        />
-      </label>
-
-      <label className="field">
         <span className="fieldLabel">密码</span>
         <PasswordInput
           autoComplete="new-password"
           value={password}
-          placeholder={`至少 ${min} 位`}
+          placeholder={`至少 ${min} 位，需包含字母、数字、符号中的至少两类`}
           onChange={setPassword}
         />
-        <small className="fieldHint">
-          至少 {min} 位，且需包含字母、数字、符号中的至少两类；不能与用户名相同。
-        </small>
       </label>
 
       <label className="field">

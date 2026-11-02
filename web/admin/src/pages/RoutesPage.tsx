@@ -173,7 +173,7 @@ export function RoutesPage() {
     <div className="stack">
       <PageBanner
         title="路由策略"
-        subtitle="查看和编辑所有对外模型的线路。优先级数字越小越先尝试；同层权重只表示配置目标，不代表实际成功率。"
+        subtitle="为对外模型配置线路。优先级越小越先尝试，同层按权重分流。"
       />
 
       <section aria-label="线路概况">

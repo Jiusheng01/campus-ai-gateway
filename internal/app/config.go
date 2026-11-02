@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // AdminSessionSecretMinBytes is the minimum length accepted for an explicitly
@@ -208,6 +210,21 @@ type Config struct {
 	PublicRegisterMaxAttempts int64
 	PublicRegisterWindow      time.Duration
 
+	// PublicRegisterTenantID is the Tenant a publicly registered Account joins
+	// automatically, and empty means "join none and wait for an operator".
+	//
+	// Without it, registration produces an Account that cannot create a key,
+	// cannot reach a model and shows "no Tenant assigned" on every personal
+	// page, so an operator has to visit the user list once per signup. With
+	// it, signup is a complete path: register, create a key, call a model.
+	//
+	// The trade is explicit: every self-registered Account spends the same
+	// Tenant's quota and is bound by the same rate limits, so the default
+	// Tenant's ceiling is the whole self-service population's ceiling. A
+	// deployment that bills or throttles by department must leave this empty
+	// and assign Tenants by hand.
+	PublicRegisterTenantID string
+
 	// PersonalKeyLimit is the maximum number of API Keys one Account may own.
 	// It bounds a personal credential's blast radius and the size of the My API
 	// Keys page. A non-positive value reads as the default — see
@@ -255,6 +272,7 @@ func LoadConfig() (Config, error) {
 		PublicRegistrationEnabled: getenvBool("PUBLIC_REGISTRATION_ENABLED", false),
 		PublicRegisterMaxAttempts: getenvInt64("PUBLIC_REGISTER_MAX_ATTEMPTS", 5),
 		PublicRegisterWindow:      getenvDuration("PUBLIC_REGISTER_WINDOW", time.Hour),
+		PublicRegisterTenantID:    strings.TrimSpace(os.Getenv("PUBLIC_REGISTER_TENANT_ID")),
 
 		PersonalKeyLimit: getenvInt64("PERSONAL_KEY_LIMIT", personalKeyLimitDefault),
 	}
@@ -350,6 +368,23 @@ func LoadConfig() (Config, error) {
 	for _, entry := range cfg.ProviderHTTPAllowlist {
 		if _, err := parseHostAllowlist([]string{entry}); err != nil {
 			return Config{}, errors.New("PROVIDER_HTTP_ALLOWLIST contains an invalid entry: " + entry)
+		}
+	}
+	// A Tenant id is a UUID, and a malformed one would not fail until the
+	// first signup — long after the deployment was declared healthy, and for a
+	// user who has no way to act on it. Refuse it at startup instead.
+	// Registration being disabled does not make a stale value safe: it would
+	// activate silently the day the operator flips the switch.
+	if cfg.PublicRegisterTenantID != "" {
+		// uuid.Parse also accepts spellings PostgreSQL does not — a URN prefix,
+		// 32 bare hex digits — so the canonical form is required as well.
+		// Otherwise a value could pass startup and only fail the ::uuid cast on
+		// the first signup, which is the failure mode this check exists to
+		// prevent.
+		parsed, err := uuid.Parse(cfg.PublicRegisterTenantID)
+		if err != nil || strings.ToLower(cfg.PublicRegisterTenantID) != parsed.String() {
+			return Config{}, errors.New("PUBLIC_REGISTER_TENANT_ID must be a Tenant UUID in canonical form, " +
+				"for example 4a3f29c0-0943-4dad-91a1-832725781aa2")
 		}
 	}
 	// The same predicate the request path uses, so the rule applied at load

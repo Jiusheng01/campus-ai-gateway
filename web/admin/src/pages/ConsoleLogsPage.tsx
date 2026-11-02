@@ -113,11 +113,11 @@ export function ConsoleLogsPage() {
     <div className="stack">
       <PageBanner
         title="调用日志"
-        subtitle="只显示属于你的请求记录。打开一条记录可以查看它的尝试链路与结果。"
+        subtitle="仅显示你的请求记录。"
         illustration={false}
       />
 
-      <Panel title="我的请求记录" sub="按时间、模型、状态或 Key 筛选；这些条件都只能缩小你自己的记录范围。">
+      <Panel title="我的请求记录" sub="按时间、模型、状态或 Key 筛选。">
         <div className="filters">
           <LogFilterField label="起始时间">
             <input type="datetime-local" value={filters.from} onChange={f('from')} />
