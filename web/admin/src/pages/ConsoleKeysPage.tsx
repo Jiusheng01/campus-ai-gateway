@@ -78,6 +78,7 @@ export function ConsoleKeysPage() {
   const availableModels = catalog.data?.models || []
   const modelAliases = availableModels.map(m => m.alias)
   const emptyReason = catalog.data?.empty_reason
+  const tenantDisabled = me.data?.tenant_status === 2
   const canCreate = !!me.data?.workspace_usable && modelAliases.length > 0
 
   const filtered = useMemo(() => {
@@ -186,9 +187,11 @@ export function ConsoleKeysPage() {
             title={
               canCreate
                 ? undefined
-                : me.data?.workspace_usable
-                  ? '暂无可签发的模型'
-                  : '请先联系管理员为你的账号分配租户'
+                : tenantDisabled
+                  ? '所属租户已停用，请联系管理员'
+                  : me.data?.workspace_usable
+                    ? '暂无可签发的模型'
+                    : '请先联系管理员为你的账号分配租户'
             }
             onClick={() => setCreating(true)}
           >
@@ -238,6 +241,12 @@ export function ConsoleKeysPage() {
           }} />
         ) : loading ? (
           <SkeletonRows rows={5} columns={5} />
+        ) : tenantDisabled ? (
+          <EmptyState
+            icon={<KeyRound />}
+            title="所属租户已停用"
+            description="你的账号所属租户已被管理员停用，因此暂时不能创建或使用 API Key。请联系管理员启用租户。"
+          />
         ) : !me.data?.workspace_usable ? (
           <EmptyState
             icon={<KeyRound />}
@@ -753,6 +762,8 @@ function createKeyErrorMessage(e: unknown, fallback = '创建 API Key 失败'): 
     switch (e.code) {
       case 'tenant_not_assigned':
         return '你的账号尚未分配租户，无法创建或修改 API Key。请联系管理员分配租户。'
+      case 'tenant_disabled':
+        return '你的账号所属租户已停用，无法创建或修改 API Key。请联系管理员启用租户。'
       case 'tenant_models_empty':
         return '你的租户当前未开放任何模型，无法创建或修改 API Key。请联系管理员调整租户的模型授权。'
       case 'key_limit_reached': {

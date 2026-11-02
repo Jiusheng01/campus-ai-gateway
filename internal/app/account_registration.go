@@ -70,37 +70,9 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 		return model.AdminUser{}, adminTokens{}, ErrAdminInternal
 	}
 
-	user, err := a.store.CreateUser(ctx, username, displayName, hash, publicRegistrationRoles, false)
+	user, err := a.createRegisteredAccount(ctx, username, displayName, hash)
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrAdminUsernameTaken):
-			return model.AdminUser{}, adminTokens{}, ErrAdminUsernameTaken
-		case errors.Is(err, storage.ErrAdminUserNotFound):
-			return model.AdminUser{}, adminTokens{}, ErrAdminInternal
-		default:
-			return model.AdminUser{}, adminTokens{}, ErrAdminInternal
-		}
-	}
-
-	// Membership is joined before the session is opened, so the first page the
-	// new Account loads already reflects reality. Assigning it afterwards
-	// would let the personal console's very first fetch — which happens
-	// immediately after sign-in — read "no Tenant assigned" and cache that
-	// answer in the page the user is looking at.
-	//
-	// A failure here is not allowed to undo the registration: the account and
-	// its password are already committed, and the operator can still assign
-	// the Tenant by hand. It is logged loudly because the deployment was
-	// configured to do this automatically and silently not doing it is exactly
-	// the state this setting exists to prevent.
-	if a.registrationTenantID != "" {
-		assigned, err := a.assignUserTenant(ctx, user.ID, a.registrationTenantID)
-		if err != nil {
-			log.Printf("registration: account %s created but joining Tenant %s failed, an operator must assign it: %v",
-				user.Username, a.registrationTenantID, err)
-		} else {
-			user = assigned
-		}
+		return model.AdminUser{}, adminTokens{}, err
 	}
 
 	tokens, err := a.openSession(ctx, user, ip, userAgent, loginMethodRegister)
@@ -117,6 +89,61 @@ func (a *adminAuthService) register(ctx context.Context, username, displayName, 
 	}
 	a.store.TouchAdminUserLogin(ctx, user.ID)
 	return user, tokens, nil
+}
+
+// createRegisteredAccount writes the member account, and its configured Tenant
+// Membership, as one decision.
+//
+// Without a configured Tenant the account is created unassigned, which is the
+// deliberate "wait for an operator" policy. With one, the account and the
+// membership are inserted in a single storage transaction: a Tenant that is
+// missing, deleted or disabled inside that transaction (or an INSERT that
+// fails for any other reason) rolls the account back too. That is the
+// difference between "registration failed, try again once the operator fixes
+// it" and the old half-success: an account that exists, a session that opens,
+// and a personal console that can never issue a key.
+func (a *adminAuthService) createRegisteredAccount(ctx context.Context, username, displayName, passwordHash string) (model.AdminUser, error) {
+	if a.registrationTenantID == "" {
+		user, err := a.store.CreateUser(ctx, username, displayName, passwordHash, publicRegistrationRoles, false)
+		if err != nil {
+			switch {
+			case errors.Is(err, storage.ErrAdminUsernameTaken):
+				return model.AdminUser{}, ErrAdminUsernameTaken
+			default:
+				log.Printf("registration: create account %s failed: %v", username, err)
+				return model.AdminUser{}, ErrAdminInternal
+			}
+		}
+		return user, nil
+	}
+
+	user, err := a.store.CreateUserWithTenant(ctx, storage.AdminUserCreate{
+		Username:              username,
+		DisplayName:           displayName,
+		PasswordHash:          passwordHash,
+		Roles:                 publicRegistrationRoles,
+		PasswordResetRequired: false,
+		TenantID:              a.registrationTenantID,
+		RequireEnabledTenant:  true,
+	})
+	switch {
+	case err == nil:
+		return user, nil
+	case errors.Is(err, storage.ErrAdminUsernameTaken):
+		return model.AdminUser{}, ErrAdminUsernameTaken
+	case errors.Is(err, storage.ErrAdminTenantNotFound):
+		log.Printf("registration: configured Tenant %s no longer exists; refusing signup for %s",
+			a.registrationTenantID, username)
+		return model.AdminUser{}, ErrAdminRegistrationTenantNotFound
+	case errors.Is(err, storage.ErrAdminTenantDisabled):
+		log.Printf("registration: configured Tenant %s is disabled; refusing signup for %s",
+			a.registrationTenantID, username)
+		return model.AdminUser{}, ErrAdminRegistrationTenantDisabled
+	default:
+		log.Printf("registration: create account %s with Tenant %s failed: %v",
+			username, a.registrationTenantID, err)
+		return model.AdminUser{}, ErrAdminInternal
+	}
 }
 
 // consumeRegistrationBudget charges one attempt against the caller's address.
@@ -165,6 +192,10 @@ func registrationAuditAction(err error) string {
 		return "account_register_before_setup"
 	case errors.Is(err, ErrAdminUsernameTaken):
 		return "account_register_username_taken"
+	case errors.Is(err, ErrAdminRegistrationTenantNotFound):
+		return "account_register_tenant_missing"
+	case errors.Is(err, ErrAdminRegistrationTenantDisabled):
+		return "account_register_tenant_disabled"
 	case errors.Is(err, ErrAdminAccountCreatedLoginFailed):
 		return "account_created_login_failed"
 	default:

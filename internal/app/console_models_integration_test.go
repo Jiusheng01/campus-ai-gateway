@@ -260,6 +260,35 @@ func TestConsoleModelsEmptyAllowlistReportsTenantAllowsNone(t *testing.T) {
 	}
 }
 
+// A disabled Tenant is not "unassigned" and not "allows nothing": the data
+// plane refuses every key under it, so the catalog must say disabled and stop
+// advertising models that could only fail on the first call.
+func TestConsoleModelsDisabledTenantReportsTenantDisabled(t *testing.T) {
+	pg := usagePostgres(t)
+	consoleModelsClear(t, pg)
+	s := consoleModelsServer(t, pg)
+
+	consoleModelsSeed(t, pg, "disabled-ready", "Ready", "", 1, 1, 1)
+	tenant := consoleModelsTenant(t, pg, "models-disabled", []string{model.AllModelsWildcard})
+	if _, err := pg.Pool.Exec(context.Background(),
+		`UPDATE gateway_tenant SET status=2 WHERE id=$1::uuid`, tenant.ID); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+	token := consoleModelsMember(t, s, pg, tenant.ID)
+
+	rec := consoleModelsCall(t, s, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/console/models = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeConsoleModels(t, rec)
+	if len(body.Models) != 0 {
+		t.Fatalf("models = %v, want none", consoleModelAliases(body))
+	}
+	if body.EmptyReason != consoleModelsTenantDisabled {
+		t.Fatalf("empty_reason = %q, want %q", body.EmptyReason, consoleModelsTenantDisabled)
+	}
+}
+
 // An Account with no Tenant Membership has no workspace to call from. The
 // endpoint answers the state rather than an error, so the page can explain it.
 func TestConsoleModelsWithoutTenantReportsNoTenant(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jiusheng01/campus-ai-gateway/internal/model"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -685,5 +686,276 @@ func TestRemovingTenantAdminRoleAlongWithScopeSucceeds(t *testing.T) {
 	}
 	if containsRole(updated.Roles, roleTenantAdmin) {
 		t.Fatal("role still present after downgrade")
+	}
+}
+
+// --- transactional account + membership -------------------------------------
+
+func createTenantForRegistration(t *testing.T, pg *Postgres, status int) model.Tenant {
+	t.Helper()
+	tenant, err := pg.CreateTenant(context.Background(), model.Tenant{
+		Code:   "reg-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8],
+		Name:   "Registration Tenant",
+		Status: status,
+	})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	return tenant
+}
+
+func countAccountsWithName(t *testing.T, pg *Postgres, username string) int64 {
+	t.Helper()
+	var n int64
+	if err := pg.Pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM gateway_admin_user WHERE lower(username)=lower($1)`, username).Scan(&n); err != nil {
+		t.Fatalf("count accounts: %v", err)
+	}
+	return n
+}
+
+func registrationInput(username string, requireEnabled bool, tenantID string) AdminUserCreate {
+	return AdminUserCreate{
+		Username:              username,
+		DisplayName:           username,
+		PasswordHash:          "argon2id-placeholder",
+		Roles:                 []string{"member"},
+		PasswordResetRequired: false,
+		TenantID:              tenantID,
+		RequireEnabledTenant:  requireEnabled,
+	}
+}
+
+func TestCreateUserWithTenantCommitsBothRows(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant := createTenantForRegistration(t, pg, 1)
+	username := "together-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+
+	created, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, tenant.ID))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.TenantID != tenant.ID || created.TenantName != tenant.Name {
+		t.Fatalf("returned membership = %q/%q, want %q/%q", created.TenantID, created.TenantName, tenant.ID, tenant.Name)
+	}
+	if created.AuthVersion != 1 {
+		t.Fatalf("auth_version = %d, want 1", created.AuthVersion)
+	}
+
+	reloaded, err := pg.FindAdminUserByUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.TenantID != tenant.ID || reloaded.TenantName != tenant.Name {
+		t.Fatalf("stored membership = %q/%q", reloaded.TenantID, reloaded.TenantName)
+	}
+}
+
+func TestCreateUserWithTenantWritesNothingWhenTenantIsMissing(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	username := "missing-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	if _, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, uuid.NewString())); !errors.Is(err, ErrAdminTenantNotFound) {
+		t.Fatalf("error = %v, want ErrAdminTenantNotFound", err)
+	}
+	if got := countAccountsWithName(t, pg, username); got != 0 {
+		t.Fatalf("a failed create left %d accounts", got)
+	}
+}
+
+func TestCreateUserWithTenantRefusesDisabledTenantForRegistration(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant := createTenantForRegistration(t, pg, 2)
+	username := "disabled-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	if _, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, tenant.ID)); !errors.Is(err, ErrAdminTenantDisabled) {
+		t.Fatalf("error = %v, want ErrAdminTenantDisabled", err)
+	}
+	if got := countAccountsWithName(t, pg, username); got != 0 {
+		t.Fatalf("a refused create left %d accounts", got)
+	}
+
+	// The administrator path may deliberately stage an account under a Tenant
+	// that is not switched on yet.
+	adminName := "staged-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	created, err := pg.CreateUserWithTenant(ctx, registrationInput(adminName, false, tenant.ID))
+	if err != nil {
+		t.Fatalf("admin create against a disabled Tenant: %v", err)
+	}
+	if created.TenantID != tenant.ID {
+		t.Fatalf("staged membership = %q, want %q", created.TenantID, tenant.ID)
+	}
+}
+
+// A duplicate username is reported as a conflict and leaves the original row —
+// including its membership — exactly as it was.
+func TestCreateUserWithTenantLeavesTheExistingAccountOnADuplicate(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	first := createTenantForRegistration(t, pg, 1)
+	second := createTenantForRegistration(t, pg, 1)
+	username := "duplicate-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+
+	original, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, first.ID))
+	if err != nil {
+		t.Fatalf("create original: %v", err)
+	}
+	if _, err := pg.CreateUserWithTenant(ctx, registrationInput(strings.ToUpper(username), true, second.ID)); !errors.Is(err, ErrAdminUsernameTaken) {
+		t.Fatalf("error = %v, want ErrAdminUsernameTaken", err)
+	}
+
+	reloaded, err := pg.FindAdminUserByID(ctx, original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TenantID != first.ID {
+		t.Fatalf("the duplicate changed the original membership: %q", reloaded.TenantID)
+	}
+	if got := countAccountsWithName(t, pg, username); got != 1 {
+		t.Fatalf("duplicate registration produced %d accounts", got)
+	}
+}
+
+// Concurrent signups with the same username must produce exactly one account:
+// the unique index is the arbiter, and the losing transaction writes neither
+// the key nor the membership.
+func TestConcurrentCreateUserWithTenantProducesOneAccount(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant := createTenantForRegistration(t, pg, 1)
+	username := "concurrent-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+
+	const attempts = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var succeeded int
+	var conflicts int
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, tenant.ID))
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				succeeded++
+			case errors.Is(err, ErrAdminUsernameTaken):
+				conflicts++
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if succeeded != 1 || conflicts != attempts-1 {
+		t.Fatalf("succeeded=%d conflicts=%d, want 1 and %d", succeeded, conflicts, attempts-1)
+	}
+	if got := countAccountsWithName(t, pg, username); got != 1 {
+		t.Fatalf("concurrent registrations left %d accounts", got)
+	}
+}
+
+// A Tenant deleted while the registration transaction is running must make the
+// registration fail, not create an account whose membership was written from a
+// stale read. The DELETE holds the row lock; the insert waits for it and then
+// sees no Tenant.
+func TestCreateUserWithTenantLosesCleanlyToAConcurrentTenantDelete(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant := createTenantForRegistration(t, pg, 1)
+	username := "deleted-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+
+	tx, err := pg.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway_tenant WHERE id=$1::uuid`, tenant.ID); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("delete tenant: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, tenant.ID))
+		done <- err
+	}()
+
+	// Give the registration time to reach the locked row, then let the DELETE
+	// commit. The registration must observe "no Tenant" rather than proceed.
+	time.Sleep(150 * time.Millisecond)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit delete: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAdminTenantNotFound) {
+			t.Fatalf("error = %v, want ErrAdminTenantNotFound", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration did not finish after the Tenant delete committed")
+	}
+	if got := countAccountsWithName(t, pg, username); got != 0 {
+		t.Fatalf("a lost race left %d accounts", got)
+	}
+}
+
+// A failure inside the INSERT itself must roll the whole transaction back. The
+// trigger makes the database, not the Go code, the source of the failure, which
+// is what proves the rollback rather than merely the absence of a Go-side
+// write.
+func TestCreateUserWithTenantRollsBackOnInsertFailure(t *testing.T) {
+	pg := testPostgres(t)
+	clearAccounts(t, pg)
+	ctx := context.Background()
+
+	tenant := createTenantForRegistration(t, pg, 1)
+	username := "trigger-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+
+	if _, err := pg.Pool.Exec(ctx, `
+CREATE OR REPLACE FUNCTION reject_registration_insert() RETURNS trigger AS $$
+BEGIN
+  IF NEW.username = '`+username+`' THEN
+    RAISE EXCEPTION 'injected insert failure';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pg.Pool.Exec(ctx, `
+CREATE TRIGGER reject_registration_insert_trigger
+BEFORE INSERT ON gateway_admin_user
+FOR EACH ROW EXECUTE FUNCTION reject_registration_insert()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pg.Pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS reject_registration_insert_trigger ON gateway_admin_user`)
+		_, _ = pg.Pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS reject_registration_insert()`)
+	})
+
+	if _, err := pg.CreateUserWithTenant(ctx, registrationInput(username, true, tenant.ID)); err == nil {
+		t.Fatal("the injected insert failure must be reported")
+	}
+	if got := countAccountsWithName(t, pg, username); got != 0 {
+		t.Fatalf("a rolled-back insert left %d accounts", got)
 	}
 }

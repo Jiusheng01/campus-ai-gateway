@@ -109,6 +109,19 @@ var (
 	// a cache outage is worse than briefly refusing them.
 	ErrAdminRegistrationUnavailable = errors.New("registration is temporarily unavailable")
 
+	// ErrAdminRegistrationTenantNotFound means PUBLIC_REGISTER_TENANT_ID names
+	// a Tenant that no longer exists. Registration is refused rather than
+	// creating an account with no membership: the operator configured a
+	// complete path, and silently downgrading it to "wait for manual
+	// assignment" is the half-finished state this rule exists to prevent.
+	ErrAdminRegistrationTenantNotFound = errors.New("the configured registration tenant no longer exists")
+
+	// ErrAdminRegistrationTenantDisabled means PUBLIC_REGISTER_TENANT_ID names
+	// a Tenant that has been switched off. Joining it would produce an account
+	// that can sign in but whose every data-plane request answers
+	// tenant_disabled, which is a successful signup that cannot be used.
+	ErrAdminRegistrationTenantDisabled = errors.New("the configured registration tenant is disabled")
+
 	// ErrAdminUsernameTaken means the requested username already exists. The
 	// comparison is case-insensitive.
 	ErrAdminUsernameTaken = errors.New("username is already taken")
@@ -190,6 +203,12 @@ func adminErrorStatus(err error) (int, string) {
 		return http.StatusTooManyRequests, "registration_rate_limited"
 	case errors.Is(err, ErrAdminRegistrationUnavailable):
 		return http.StatusServiceUnavailable, "registration_unavailable"
+	case errors.Is(err, ErrAdminRegistrationTenantNotFound):
+		// 409, not 400: the request was well formed and the caller cannot fix
+		// it. The operator must repair the deployment's Tenant configuration.
+		return http.StatusConflict, "registration_tenant_not_found"
+	case errors.Is(err, ErrAdminRegistrationTenantDisabled):
+		return http.StatusConflict, "registration_tenant_disabled"
 	case errors.Is(err, ErrAdminUsernameTaken):
 		return http.StatusConflict, "username_taken"
 	case errors.Is(err, ErrAdminAccountCreatedLoginFailed):

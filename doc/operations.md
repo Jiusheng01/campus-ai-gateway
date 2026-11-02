@@ -203,6 +203,87 @@ scripts/
 
 ---
 
+## 开放注册与默认租户
+
+公开注册默认关闭。要让“注册 → 自动入租户 → 登录 → 创建 Key → 调用模型”成为完整闭环，需要**同时**设置两个变量并重启网关：
+
+```text
+PUBLIC_REGISTRATION_ENABLED=true
+PUBLIC_REGISTER_TENANT_ID=<默认租户 UUID>
+```
+
+### 1. 创建默认租户并取得 UUID
+
+在 `/admin-ui/tenants` 创建一个启用的租户。控制台列表按层级展示名称；UUID 以数据库为准（只读查询，不改数据）：
+
+```bash
+docker exec deploy-postgres-1 psql -U campus -d campus_gateway \
+  -c "select id, code, name, status from gateway_tenant order by created_at;"
+```
+
+`status` 必须是 `1`（启用）。`PUBLIC_REGISTER_TENANT_ID` 必须是标准 UUID 形式（小写、带连字符）。
+
+### 2. Docker Compose
+
+```bash
+export PUBLIC_REGISTRATION_ENABLED=true
+export PUBLIC_REGISTER_TENANT_ID=<默认租户 UUID>
+export PERSONAL_KEY_LIMIT=10          # 可选，默认 10
+export TRUSTED_PROXY_CIDRS=172.16.0.0/12
+docker compose -f deploy/docker-compose.yml up -d --force-recreate gateway-server
+```
+
+`deploy/docker-compose.yml` 已把 `PUBLIC_REGISTRATION_ENABLED`、`PUBLIC_REGISTER_TENANT_ID`、`PERSONAL_KEY_LIMIT`、`TRUSTED_PROXY_CIDRS` 转发给容器；值来自执行 compose 的主机环境。只修改主机环境而不重建容器时，容器内仍是旧值。compose 为 `PERSONAL_KEY_LIMIT` 和 `TRUSTED_PROXY_CIDRS` 提供了 `${...:-10}` 与 `${...:-172.16.0.0/12}` 的容器内默认值；`scripts/dev.ps1` 不覆盖这两个变量，因此本地直跑时使用网关自身默认（Key 上限 10，信任代理列表为空）。
+
+### 3. Windows PowerShell（`scripts/dev.ps1`）
+
+`dev.ps1` 直接 `go run` 网关，读取**当前进程环境**；脚本会把用户/机器级同名变量导入进程。先设置再启动：
+
+```powershell
+$env:PUBLIC_REGISTRATION_ENABLED = "true"
+$env:PUBLIC_REGISTER_TENANT_ID   = "<默认租户 UUID>"
+$env:PERSONAL_KEY_LIMIT          = "10"
+$env:TRUSTED_PROXY_CIDRS         = "127.0.0.1/32"
+.\scripts\dev.ps1 -ForceRestart
+```
+
+`-ForceRestart` 会停掉占用 8080 的旧网关并重新启动；仅修改 `$env:` 而不重启，正在运行的进程不会读到新值。也可以把变量写入用户环境（`[Environment]::SetEnvironmentVariable(..., "User")`）后重开终端。
+
+### 4. 启动预检查
+
+公开注册开启且配置了默认租户时，网关在启动阶段检查该租户存在且 `status=1`；不满足会拒绝启动并在日志中指明变量。运行期间租户被删除或停用不受启动检查保护，但注册事务会锁定并再次校验，返回：
+
+- `409 registration_tenant_not_found`
+- `409 registration_tenant_disabled`
+
+两种情况都不会创建账号或 Session。
+
+### 5. 关闭或留空默认租户
+
+`PUBLIC_REGISTRATION_ENABLED=false` 会关闭注册入口；`PUBLIC_REGISTER_TENANT_ID` 留空时仍可注册，但新账号处于“等待管理员分配租户”状态：可以登录个人控制台，不能创建 API Key。
+
+### 6. 补分配已注册但未分配租户的旧账号
+
+由 `super_admin` 在 `/admin-ui/users` 选择账号、分配租户；或调用：
+
+```http
+PUT /admin/users/{id}/tenant
+Content-Type: application/json
+
+{"tenant_id":"<租户 UUID>"}
+```
+
+账号仍拥有任何 API Key 时该请求会返回 `409 user_owns_keys` 和 `owned_key_count`，需要先删除其 Key。分配不改变密码、不需要重新登录。
+
+### 7. 验证普通用户已具备模型调用能力
+
+1. 以新账号登录，应落在 `/console/overview`，且显示租户名称而不是“等待分配租户”。
+2. `/console/models` 应列出该租户允许且网关可路由的模型；若为空，页面会区分“租户未开放模型”“租户已停用”“没有可用线路”。
+3. `/console/keys` 创建 Key，完整 Key 只显示一次；用 `curl` 调用 `/v1/models` 与 `/v1/chat/completions`。
+4. `/console/usage` 与 `/console/request-logs` 应只出现该账号自己的请求；同租户另一个账号看不到这些记录。
+
+任何环境变量的修改都需要重启网关进程；数据库迁移和密钥变量不需要为本次功能修改。
+
 ## 测试与验收
 
 常规检查：

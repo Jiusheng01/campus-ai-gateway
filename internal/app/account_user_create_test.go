@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -168,6 +169,28 @@ func TestAdminCreateRefusesAnUnknownTenant(t *testing.T) {
 	}
 	if _, err := store.FindAdminUserByUsername(context.Background(), "wangwu"); err == nil {
 		t.Fatal("a refused create must not leave an account behind")
+	}
+}
+
+// The account and its Tenant Membership are one transaction. A failure between
+// them must not leave an account the operator did not ask for; that is the same
+// partial success public registration no longer permits.
+func TestAdminCreateRollsBackWhenTheTenantWriteFails(t *testing.T) {
+	s, store := newTestServer(t, testConfig())
+	const tenantID = "11111111-1111-1111-1111-111111111111"
+	store.tenants[tenantID] = "计算机学院"
+	store.createWithTenantErr = errors.New("insert failed")
+	seedSetupAdmin(t, s, "campus-admin", "Campus#2026Gate")
+	adminToken := accessTokenFor(t, s, "campus-admin", "Campus#2026Gate")
+
+	body := `{"username":"wangwu","display_name":"王五","password":"Interim#2026New","roles":["member"],` +
+		`"tenant_id":"` + tenantID + `"}`
+	code, resp := createUserVia(t, s, adminToken, body)
+	if code != http.StatusInternalServerError {
+		t.Fatalf("failed create: expected 500, got %d: %s", code, resp)
+	}
+	if _, err := store.FindAdminUserByUsername(context.Background(), "wangwu"); err == nil {
+		t.Fatal("a failed create must not leave an account behind")
 	}
 }
 

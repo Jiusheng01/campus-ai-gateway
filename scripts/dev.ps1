@@ -114,6 +114,18 @@ Write-Host ""
 
 Refresh-Path
 Import-UserEnv "DASHSCOPE_API_KEY"
+# These are read by go run below from the process environment. Importing them
+# from the user/machine scope means a value set once (for example
+# PUBLIC_REGISTRATION_ENABLED=true) survives a new shell; an unset variable is
+# left unset, so the gateway's own defaults apply.
+foreach ($name in @(
+        "PUBLIC_REGISTRATION_ENABLED",
+        "PUBLIC_REGISTER_TENANT_ID",
+        "PERSONAL_KEY_LIMIT",
+        "TRUSTED_PROXY_CIDRS"
+    )) {
+    Import-UserEnv $name
+}
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Fail "Go not found. Install Go or add C:\Program Files\Go\bin to Windows PATH."

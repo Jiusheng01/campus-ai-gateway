@@ -78,6 +78,64 @@ describe('App routes a fenced account to the password screen', () => {
 // root and answer 403 — a screen that says the account did something wrong
 // when it had only used the entrance it was given. The root belongs to both
 // workspaces, so the account must be moved to the one its roles open.
+// The sign-in card is served at both workspace roots. A member who signed in
+// at /console left that address in the tab; the next account — an
+// administrator — must not be opened there. Sign-out returns to the shared
+// entrance so the next sign-in chooses its workspace from the new roles.
+describe('App does not carry a workspace across accounts', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearSession()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('returns to the shared entrance on sign-out', async () => {
+    window.history.replaceState({}, '', '/console/overview')
+    const adminSession = {
+      access_token: 'token',
+      expires_at: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'u-admin',
+        username: 'campus-admin',
+        display_name: '管理员',
+        roles: ['super_admin'],
+        password_reset_required: false,
+      },
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/admin/auth-config') {
+        return jsonResponse({
+          auth_mode: 'session',
+          login_enabled: true,
+          needs_setup: false,
+          setup_local_only: true,
+          setup_allowed_here: false,
+          min_password_length: 10,
+          access_ttl_seconds: 900,
+          registration_enabled: false,
+        })
+      }
+      if (url === '/admin/auth/refresh') return jsonResponse(adminSession)
+      if (url === '/admin/whoami') {
+        return jsonResponse({user: 'campus-admin', username: 'campus-admin', roles: ['super_admin'], auth_mode: 'session'})
+      }
+      if (url === '/admin/auth/logout') return jsonResponse({ok: true})
+      return jsonResponse({error: {code: 'not_found'}}, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', {name: /campus-admin/}))
+    await user.click(screen.getByRole('menuitem', {name: '退出登录'}))
+
+    await waitFor(() => expect(window.location.pathname).toBe('/admin-ui'))
+    expect(await screen.findByPlaceholderText('请输入用户名')).toBeInTheDocument()
+  })
+})
+
 describe('App sends a new member to the personal console', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"github.com/Jiusheng01/campus-ai-gateway/internal/security"
 	"github.com/Jiusheng01/campus-ai-gateway/internal/storage"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 const auditCaptureLimit = 1 << 20
@@ -97,7 +99,7 @@ type requestEnvelope struct {
 
 type auditResponseWriter struct {
 	http.ResponseWriter
-	status int
+	status  int
 	capture bytes.Buffer
 	// usage observes the whole response, independent of the bounded audit
 	// capture, so a stream whose usage block arrives after the capture limit is
@@ -166,6 +168,16 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Registration is configured with a complete path or not at all. A Tenant
+	// that is missing or disabled at startup would turn every signup into a
+	// 409, so the deployment is stopped here where an operator can read why —
+	// instead of accepting traffic and failing one visitor at a time. The check
+	// is repeated inside the registration transaction, because the Tenant can
+	// change after this point.
+	if err := checkRegistrationTenant(ctx, pg, cfg); err != nil {
+		pg.Close()
+		return nil, err
+	}
 	rd, err := storage.OpenRedis(ctx, cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 	if err != nil {
 		pg.Close()
@@ -218,6 +230,33 @@ func NewServer(cfg Config) (*Server, error) {
 	s.limit.SetQuotaRebuildSource(s.currentMonthQuotaUsage)
 	s.rebuildQuotaCounters(ctx)
 	return s, nil
+}
+
+// checkRegistrationTenant refuses startup when public registration is open and
+// the configured default Tenant is missing or disabled.
+//
+// It deliberately does not run while registration is closed: a stale value is
+// allowed to sit there, but the day an operator flips the switch the check runs
+// and names the problem before the first visitor meets it.
+func checkRegistrationTenant(ctx context.Context, pg *storage.Postgres, cfg Config) error {
+	if !cfg.PublicRegistrationOpen() || cfg.PublicRegisterTenantID == "" {
+		return nil
+	}
+	tenant, err := pg.TenantByID(ctx, cfg.PublicRegisterTenantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("PUBLIC_REGISTER_TENANT_ID names a tenant that does not exist (%s); "+
+			"create the tenant or clear PUBLIC_REGISTRATION_ENABLED before starting the gateway",
+			cfg.PublicRegisterTenantID)
+	}
+	if err != nil {
+		return fmt.Errorf("PUBLIC_REGISTER_TENANT_ID could not be checked: %w", err)
+	}
+	if tenant.Status != 1 {
+		return fmt.Errorf("PUBLIC_REGISTER_TENANT_ID names a disabled tenant (%s); "+
+			"enable it or clear PUBLIC_REGISTRATION_ENABLED before starting the gateway",
+			cfg.PublicRegisterTenantID)
+	}
+	return nil
 }
 
 // sealingKey returns the credential sealing key. A Server built outside

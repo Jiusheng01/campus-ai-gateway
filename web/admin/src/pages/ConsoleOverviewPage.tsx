@@ -81,6 +81,10 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
 
   const roles = data?.roles?.length ? data.roles : ['member']
   const displayName = data?.display_name || data?.username || ''
+  // An assigned Tenant can still be switched off. That is not the same state as
+  // waiting for an assignment, and it asks the member to contact a different
+  // administrator action.
+  const tenantDisabled = data?.tenant_status === 2
 
   return (
     <div className="stack">
@@ -124,6 +128,26 @@ export function ConsoleOverviewPage({onNavigate}: {onNavigate?: Navigate} = {}) 
               </Panel>
 
               <WorkspaceSummary keyCount={data.key_count} onNavigate={onNavigate} />
+            </>
+          ) : tenantDisabled ? (
+            <>
+              <section aria-label="接下来">
+                <Panel title="接下来" sub="所属租户已停用，这一步需要管理员处理。">
+                  <ol className="nextSteps">
+                    <li className="nextStep blocked">
+                      <b>联系管理员启用租户</b>
+                      <span>租户停用期间无法调用模型；恢复后刷新本页即可继续。</span>
+                    </li>
+                  </ol>
+                </Panel>
+              </section>
+              <Panel title="租户与工作台" sub="租户决定你使用的配额与可调用的模型。">
+                <EmptyState
+                  icon={<Building2 />}
+                  title="所属租户已停用"
+                  description="你的账号已归属一个租户，但该租户已被管理员停用，因此暂时没有可使用的配额。请联系管理员启用租户；恢复后刷新本页即可看到工作台状态。"
+                />
+              </Panel>
             </>
           ) : (
             <>

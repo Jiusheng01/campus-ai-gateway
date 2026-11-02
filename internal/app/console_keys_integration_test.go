@@ -229,6 +229,31 @@ func TestConsoleKeyCreateRefusesUnassignedAccount(t *testing.T) {
 	}
 }
 
+// A disabled Tenant cannot issue a usable key: the data plane would reject
+// every request made with it. The write is refused before the row exists.
+func TestConsoleKeyCreateRefusesDisabledTenant(t *testing.T) {
+	pg := usagePostgres(t)
+	tenantAssignmentClear(t, pg)
+	s := consoleKeysServer(t, pg, 10)
+
+	tenant := consoleKeysTenant(t, pg, "keys-disabled", []string{model.AllModelsWildcard})
+	if _, err := pg.Pool.Exec(context.Background(),
+		`UPDATE gateway_tenant SET status=2 WHERE id=$1::uuid`, tenant.ID); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+	member := tenantAssignmentAccount(t, pg, uniqueAccountName("keys-disabled-member"), []string{RoleMember})
+	consoleKeysAssign(t, pg, member.ID, tenant.ID)
+	token := tenantAssignmentToken(t, s, member.Username)
+
+	rec := consoleKeysCall(t, s, token, http.MethodPost, `{"name":"disabled","allowed_models":["*"]}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("create under a disabled Tenant = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if code, _ := consoleErrorCodeAndDetail(t, rec, "code"); code != "tenant_disabled" {
+		t.Fatalf("error code = %q, want tenant_disabled", code)
+	}
+}
+
 // A Tenant whose allowlist is [] has denied every model. No personal key may
 // be written, even one that asks for the wildcard.
 func TestConsoleKeyCreateRefusesEmptyTenantAllowlist(t *testing.T) {

@@ -32,6 +32,12 @@ var ErrLastSuperAdmin = errors.New("the last enabled super administrator cannot 
 // answer "unknown tenant" without leaking a constraint name.
 var ErrAdminTenantNotFound = errors.New("tenant not found")
 
+// ErrAdminTenantDisabled means the Tenant exists but has been switched off.
+// Public registration must not join a disabled Tenant: the resulting account
+// could sign in and own a key, but every data-plane call would answer
+// tenant_disabled, which is a successful signup with no usable workspace.
+var ErrAdminTenantDisabled = errors.New("tenant is disabled")
+
 // ErrAdminScopeRequired refuses a tenant_admin grant without a subtree. The
 // role reaches every tenant inside a scope and nothing outside it; without a
 // scope there is no subtree, so the grant has no meaning and must not be stored.
@@ -288,6 +294,109 @@ RETURNING ` + adminUserColumns
 		}
 		return model.AdminUser{}, err
 	}
+	return user, nil
+}
+
+// AdminUserCreate is the write-side input of an account that is inserted
+// together with its Tenant Membership.
+//
+// TenantID is not an optional decoration: when it is set, the row and the
+// membership are one fact and are written in one transaction. Keeping them off
+// the legacy CreateUser signature means an existing caller cannot accidentally
+// pass a Tenant and get a half-applied account.
+type AdminUserCreate struct {
+	Username              string
+	DisplayName           string
+	PasswordHash          string
+	Roles                 []string
+	PasswordResetRequired bool
+	TenantID              string
+	// RequireEnabledTenant rejects a Tenant whose status is anything but 1.
+	// Public registration sets it; an administrator creating an account may
+	// deliberately prepare one under a Tenant that is still being set up.
+	RequireEnabledTenant bool
+}
+
+// CreateUserWithTenant inserts an account and assigns its Tenant in one
+// transaction.
+//
+// The Tenant row is read with FOR SHARE before the insert. That lock is what
+// makes the check and the write the same decision: a concurrent UPDATE status
+// or DELETE waits until this transaction ends, so the account cannot be created
+// against a Tenant that was disabled or removed between the read and the
+// INSERT. The foreign key remains the last line of defence if a row is removed
+// by a path that did not take the same lock.
+//
+// A failure anywhere rolls the whole thing back. There is deliberately no
+// compensating delete: an account that briefly existed and then vanished would
+// still consume the username and could be observed by a concurrent request.
+func (p *Postgres) CreateUserWithTenant(ctx context.Context, in AdminUserCreate) (model.AdminUser, error) {
+	tenantID := strings.TrimSpace(in.TenantID)
+	if tenantID == "" {
+		return model.AdminUser{}, ErrAdminTenantNotFound
+	}
+	// A malformed id must read as "no such Tenant", not as a failed uuid cast
+	// that leaks a PostgreSQL error to the caller.
+	parsed, err := uuid.Parse(tenantID)
+	if err != nil {
+		return model.AdminUser{}, ErrAdminTenantNotFound
+	}
+	tenantID = parsed.String()
+
+	encoded, err := json.Marshal(in.Roles)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var tenantName string
+	var tenantStatus int
+	err = tx.QueryRow(ctx,
+		`SELECT name, status FROM gateway_tenant WHERE id=$1::uuid FOR SHARE`, tenantID).
+		Scan(&tenantName, &tenantStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.AdminUser{}, ErrAdminTenantNotFound
+	}
+	if err != nil {
+		return model.AdminUser{}, err
+	}
+	if in.RequireEnabledTenant && tenantStatus != 1 {
+		return model.AdminUser{}, ErrAdminTenantDisabled
+	}
+
+	user, err := scanAdminUser(tx.QueryRow(ctx, `
+INSERT INTO gateway_admin_user (username, display_name, password_hash, roles, password_reset_required, tenant_id)
+VALUES ($1, $2, $3, $4::jsonb, $5, $6::uuid)
+RETURNING `+adminUserColumns,
+		in.Username, in.DisplayName, in.PasswordHash, encoded, in.PasswordResetRequired, tenantID))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505":
+				return model.AdminUser{}, ErrAdminUsernameTaken
+			case "23503", "22P02":
+				// The Tenant disappeared between the lock and the insert (a
+				// path that did not take FOR SHARE), or the cast rejected the
+				// id. Both are the same answer to the caller.
+				return model.AdminUser{}, ErrAdminTenantNotFound
+			}
+		}
+		return model.AdminUser{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.AdminUser{}, err
+	}
+	// The INSERT ... RETURNING cannot join the tenant table, so the name read
+	// under the same lock is projected onto the returned account.
+	user.TenantID = tenantID
+	user.TenantName = tenantName
 	return user, nil
 }
 

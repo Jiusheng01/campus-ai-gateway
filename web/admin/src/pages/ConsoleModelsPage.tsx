@@ -236,6 +236,14 @@ function CatalogEmptyState({data}: {data: ConsoleModels | null}) {
           description="你的账号还没有加入任何租户，因此没有可调用的模型。请联系管理员在「用户」中为你的账号分配租户；分配后刷新本页即可看到可用模型。"
         />
       )
+    case 'tenant_disabled':
+      return (
+        <EmptyState
+          icon={<ShieldOff />}
+          title="所属租户已停用"
+          description="你的账号所属租户已被管理员停用，因此暂时不能调用任何模型。请联系管理员启用租户；恢复后刷新本页即可。"
+        />
+      )
     case 'tenant_allows_none':
       return (
         <EmptyState

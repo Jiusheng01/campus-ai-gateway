@@ -16,6 +16,7 @@ const me = {
   status: 1,
   tenant_id: 't-1',
   tenant_name: '校园信息化',
+  tenant_status: 1,
   allowed_models: ['campus-chat', 'campus-embed'],
   workspace_usable: true,
 }
@@ -190,6 +191,18 @@ describe('personal console API keys', () => {
     renderPage()
 
     expect(await screen.findByText('尚未分配租户')).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: /创建 API Key/})).toBeDisabled()
+  })
+
+  it('distinguishes a disabled Tenant from an unassigned account', async () => {
+    stubConsole({
+      me: {tenant_id: 't-1', tenant_name: '已停用租户', tenant_status: 2, allowed_models: ['campus-chat'], workspace_usable: false},
+      keys: [],
+    })
+    renderPage()
+
+    expect(await screen.findByText('所属租户已停用')).toBeInTheDocument()
+    expect(screen.queryByText('尚未分配租户')).not.toBeInTheDocument()
     expect(screen.getByRole('button', {name: /创建 API Key/})).toBeDisabled()
   })
 

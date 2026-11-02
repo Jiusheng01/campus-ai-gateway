@@ -66,6 +66,13 @@ type fakeAdminStore struct {
 	// tenants maps a Tenant id to its display name. The fake only needs the
 	// name because it is not asked to enforce quota or key membership.
 	tenants map[string]string
+	// disabledTenants names tenants whose status is 2. Absent means enabled,
+	// mirroring the column default.
+	disabledTenants map[string]bool
+	// createWithTenantErr, when set, makes CreateUserWithTenant fail without
+	// writing anything. It models the transaction rolling back after the
+	// Tenant check: the account must not be observable.
+	createWithTenantErr error
 	// tenantModels optionally maps a Tenant id to its model allowlist. An
 	// absent entry reads as the wildcard, which is the column default.
 	tenantModels map[string][]string
@@ -83,12 +90,13 @@ type revokeCall struct {
 
 func newFakeAdminStore() *fakeAdminStore {
 	return &fakeAdminStore{
-		users:        map[string]model.AdminUser{},
-		names:        map[string]string{},
-		sessions:     map[string]model.AdminSession{},
-		tenants:      map[string]string{},
-		tenantModels: map[string][]string{},
-		ownedKeys:    map[string]int64{},
+		users:           map[string]model.AdminUser{},
+		names:           map[string]string{},
+		sessions:        map[string]model.AdminSession{},
+		tenants:         map[string]string{},
+		disabledTenants: map[string]bool{},
+		tenantModels:    map[string][]string{},
+		ownedKeys:       map[string]int64{},
 	}
 }
 
@@ -216,6 +224,41 @@ func (f *fakeAdminStore) CreateUser(_ context.Context, username, displayName, ha
 	}
 	f.users[id] = u
 	f.names[strings.ToLower(username)] = id
+	return u, nil
+}
+
+// CreateUserWithTenant mirrors the real transaction's all-or-nothing outcome:
+// the Tenant is checked before anything is written, and a failure leaves no
+// half-created account for a later call to collide with.
+func (f *fakeAdminStore) CreateUserWithTenant(_ context.Context, in storage.AdminUserCreate) (model.AdminUser, error) {
+	if in.TenantID == "" {
+		return model.AdminUser{}, storage.ErrAdminTenantNotFound
+	}
+	if _, exists := f.tenants[in.TenantID]; !exists {
+		return model.AdminUser{}, storage.ErrAdminTenantNotFound
+	}
+	if in.RequireEnabledTenant && f.disabledTenants[in.TenantID] {
+		return model.AdminUser{}, storage.ErrAdminTenantDisabled
+	}
+	if f.createWithTenantErr != nil {
+		return model.AdminUser{}, f.createWithTenantErr
+	}
+	if _, taken := f.names[strings.ToLower(strings.TrimSpace(in.Username))]; taken {
+		return model.AdminUser{}, storage.ErrAdminUsernameTaken
+	}
+	f.seq++
+	id := uuid.NewString()
+	now := time.Now().UTC()
+	u := model.AdminUser{
+		ID: id, Username: in.Username, DisplayName: in.DisplayName, PasswordHash: in.PasswordHash,
+		Roles: in.Roles, Status: model.AdminStatusEnabled, AuthVersion: 1,
+		PasswordResetRequired: in.PasswordResetRequired,
+		TenantID:              in.TenantID,
+		TenantName:            f.tenants[in.TenantID],
+		CreatedAt:             now, UpdatedAt: now,
+	}
+	f.users[id] = u
+	f.names[strings.ToLower(strings.TrimSpace(in.Username))] = id
 	return u, nil
 }
 
@@ -1743,6 +1786,8 @@ func TestAdminErrorStatusMapping(t *testing.T) {
 		{ErrAdminSetupRemoteForbidden, 403, "setup_required_but_remote_forbidden"},
 		{ErrAdminCSRFRejected, 403, "csrf_rejected"},
 		{ErrAdminRateLimited, 429, "too_many_attempts"},
+		{ErrAdminRegistrationTenantNotFound, 409, "registration_tenant_not_found"},
+		{ErrAdminRegistrationTenantDisabled, 409, "registration_tenant_disabled"},
 		{ErrAdminPasswordWeak, 400, "password_policy_violation"},
 		{ErrAdminPasswordUnchanged, 400, "password_unchanged"},
 		{ErrAdminBadRequest, 400, "invalid_request"},

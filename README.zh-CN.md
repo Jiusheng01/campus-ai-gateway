@@ -139,6 +139,30 @@ docker compose -p campus-gateway-sandbox -f deploy/docker-compose.yml up -d --bu
 
 成员使用**个人控制台**：登录后进入 <http://127.0.0.1:8080/console>（管理员也可以打开，但只看到自己名下的资源）。成员先由 `super_admin` 在「用户」页分配租户，再在「API Key」页于租户模型白名单内创建自己的 Key，并查看自己的模型、用量与调用日志；没有租户时页面会明确提示等待分配。
 
+要让新用户**注册后立刻可用**，可开启公开注册并指定一个默认租户（默认关闭）。先在控制台「租户」页创建租户，用下面的 SQL 取到它的 UUID，然后重启网关：
+
+```powershell
+# PowerShell（scripts/dev.ps1 启动的本地网关）
+$env:PUBLIC_REGISTRATION_ENABLED = "true"
+$env:PUBLIC_REGISTER_TENANT_ID   = "<租户 UUID>"
+.\scripts\dev.ps1 -ForceRestart
+```
+
+```bash
+# Docker Compose
+export PUBLIC_REGISTRATION_ENABLED=true
+export PUBLIC_REGISTER_TENANT_ID=<租户 UUID>
+docker compose -f deploy/docker-compose.yml up -d --force-recreate gateway-server
+```
+
+```bash
+# 取默认租户 UUID（数据库内只读查询；容器名按实际 compose 项目名调整）
+docker exec deploy-postgres-1 psql -U campus -d campus_gateway \
+  -c "select id, code, name, status from gateway_tenant order by created_at;"
+```
+
+默认租户必须存在且 `status=1`，否则网关在公开注册开启时会拒绝启动。注册事务会把账号与租户归属一起提交；运行中租户被删除或停用则返回 `409`，不会留下半完成账号。留空 `PUBLIC_REGISTER_TENANT_ID` 时仍可注册，但账号会等待管理员分配租户。完整步骤与旧账号补分配见[认证与账号](doc/authentication.md)和[运维](doc/operations.md#开放注册与默认租户)。
+
 > 全部配置来自**进程环境变量**，**不读取 `.env` 文件**。Provider API Key 是例外：在渠道表单里粘贴后由网关加密存入 PostgreSQL。[`.env.example`](.env.example) 只是变量名参考清单——见[配置](doc/configuration.md)。
 
 > **升级提示 — Provider 出站**：渠道 `base_url` 必须是 `https://`；`http://` 目标只有在 host 命中 `PROVIDER_HTTP_ALLOWLIST` 时才允许。存量 `http://` 渠道需要迁到 HTTPS 或加入 allowlist。loopback 目标无法加入 allowlist，一律在建立连接前拒绝。

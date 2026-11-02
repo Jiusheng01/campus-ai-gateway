@@ -86,6 +86,16 @@ describe('personal model catalog', () => {
     expect(screen.queryByText('暂无可调用的模型')).not.toBeInTheDocument()
   })
 
+  it('explains a disabled Tenant without calling it unassigned', async () => {
+    stubCatalog({models: [], empty_reason: 'tenant_disabled'})
+    renderPage()
+
+    expect(await screen.findByText('所属租户已停用')).toBeInTheDocument()
+    expect(screen.getByText(/请联系管理员启用租户/)).toBeInTheDocument()
+    expect(screen.queryByText('尚未分配租户')).not.toBeInTheDocument()
+    expect(screen.queryByText('当前租户未开放任何模型')).not.toBeInTheDocument()
+  })
+
   it('explains a Tenant that allows no models', async () => {
     stubCatalog({models: [], empty_reason: 'tenant_allows_none'})
     renderPage()

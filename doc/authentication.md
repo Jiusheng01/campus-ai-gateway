@@ -79,11 +79,13 @@ User
 - 该开关默认 `false`：生产入口是校园 SSO，新注册的 member 默认没有租户、也就没有数据面能力，
   需要管理员分配租户后才能创建自己的 Key；默认开放匿名密码注册只会扩大滥用面，
   需要本地账号时由运维显式开启，账号体系其余部分不受影响
-- 为了让自助注册成为一条完整的路径，可设置 `PUBLIC_REGISTER_TENANT_ID`：账号创建成功后、
-  开会话**之前**就把新 Account 归属到该 Tenant，于是注册后可以直接创建 Key、调用模型，不需要
-  管理员逐个分配。归属是独立的一次写入，因此失败时注册本身仍然成功（写日志，由管理员补分配）。代价是**该 Tenant 的配额与限流即全部自助注册用户的上限**，需要按院系
+- 为了让自助注册成为一条完整的路径，可设置 `PUBLIC_REGISTER_TENANT_ID`：账号 INSERT 与
+  Tenant 归属在**同一个事务**内完成，提交后才签发 Session，于是注册后可以直接创建 Key、调用模型，不需要
+  管理员逐个分配。代价是**该 Tenant 的配额与限流即全部自助注册用户的上限**，需要按院系
   分开计费的部署必须留空并手工分配。该字段不接受请求体指定——Tenant 是部署事实，不是
   注册者可以自选的属性
+- 配置了 `PUBLIC_REGISTER_TENANT_ID` 时，该 Tenant 必须在注册事务内存在且启用。若在启动后被人为删除、停用，或与注册并发变化，注册会返回 `409 registration_tenant_not_found` / `409 registration_tenant_disabled`，**不会**留下未分配的账号或 Session；前端分别提示“默认租户不存在”和“默认租户已停用”。启动时也会预检查（仅在公开注册开启时），不满足则拒绝启动
+- 未配置默认租户时保留原有策略：账号可以注册和登录，但个人控制台显示“等待管理员分配租户”，并且不能创建个人 API Key。旧的未分配账号由 `super_admin` 在「用户」页补分配，或调用 `PUT /admin/users/{id}/tenant`
 - 管理员角色只能由 super_admin 在「用户与权限」中授予；`/admin/users` 不在任何其它角色的
   允许列表里，gateway_admin 无法给自己提权
 - 角色与 `member` 互斥：拥有任一管理角色时 `member` 自动移除，由后端 normalize
@@ -110,7 +112,7 @@ PUBLIC_REGISTER_WINDOW=1h
 - **角色由管理员选择**：`auditor` / `operator` / `gateway_admin` / `super_admin`；不选任何管理角色即为普通 `member`。公开注册与此相反——它固定只产生 `member`，因为匿名调用者不能自选权限。
 - **不受公开注册的限制**：不检查 `PUBLIC_REGISTRATION_ENABLED`，也不消耗 `PUBLIC_REGISTER_MAX_ATTEMPTS` 配额。那个计数器约束的是匿名建号，管理员不是匿名调用者。
 - **初始密码由管理员输入**，网关不生成、不回显、不写入审计或响应体。建号后该账号被标记 `password_reset_required`，首次登录只能设置自己的新密码，随后才可用——与「重置密码」是同一套围栏（决策记录 0021）。
-- **可同时分配租户**。租户 id 在插入账号**之前**校验，避免拼错租户留下一个孤儿账号；赋值失败时账号仍然创建成功（日志告警），由管理员补分配。
+- **可同时分配租户**。账号 INSERT 与租户归属在同一个事务内完成：租户 id 拼错、或租户在写入过程中被删除，整个事务回滚，不会留下孤儿账号。与公开注册不同，管理员可以为仍然停用的租户预先建号（例如准备阶段）。
 - 该接口只在 session 模式下存在，与 `/admin/users` 同属 super_admin 的 RBAC 允许列表。
 
 这条路径让部署可以**保持公开注册关闭**：谁来用、给什么角色，完全由管理员在后台上决定。
@@ -146,6 +148,7 @@ http://127.0.0.1:8080/console
 - **Tenant Membership**：一个 Account 最多属于一个 Tenant（`gateway_admin_user.tenant_id`）。没有成员表，也不支持多租户或租户切换。
 - 只有 `super_admin` 能在「用户」页分配或清除归属；Account 不能给自己分配。Account 仍拥有任何 API Key 时，更改归属会被拒绝（`409 user_owns_keys`，响应带 `owned_key_count`），避免 Key 悄悄花掉它主人已经离开的租户。
 - 没有 Tenant 的 Account 仍能登录个人控制台，但会看到“等待分配租户”的空状态，并且不能创建 Key。
+- Tenant 被停用时，`/api/console/me` 返回 `tenant_status=2` 且 `workspace_usable=false`；模型页显示“所属租户已停用”，创建 Key 返回 `409 tenant_disabled`。数据面本来就会拒绝该租户下的所有 Key，个人页面不提前展示可用模型正是为了不制造“配置成功但调用必失败”的假象。
 - 删除 Tenant 时，原本属于它的 Account 保留，归属被置空（`ON DELETE SET NULL`），回到未分配状态。
 
 ### 登录后的落地页
