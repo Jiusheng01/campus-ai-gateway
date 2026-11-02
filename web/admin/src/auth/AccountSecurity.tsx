@@ -132,7 +132,7 @@ export function AccountSecurity({
   return (
     <>
       {showIdentity && (
-        <Panel title="当前管理员" sub="权限由账号角色决定，角色变更即时生效。">
+        <Panel title="当前管理员" sub="账号身份与登录方式。">
           <div className="kv">
             {identityRows.map(([k, v]) => (
               <div className="kvRow" key={k}>
@@ -143,7 +143,7 @@ export function AccountSecurity({
             {sessionMode && (
               <div className="kvRow">
                 <span>登录状态</span>
-                <b>安全会话 · 自动续期</b>
+                <b>已登录</b>
               </div>
             )}
           </div>
@@ -160,9 +160,7 @@ export function AccountSecurity({
       {!sessionMode && (
         <Panel title="账号与安全" sub="密码与登录设备由校园统一身份认证平台管理。">
           <div className="panelPad">
-            <p className="authHint">
-              本控制台不保存账号密码。如需修改密码或注销其他设备，请前往校园统一身份认证平台操作。
-            </p>
+            <p className="authHint">修改密码或注销其他设备，请前往学校统一身份认证平台。</p>
           </div>
         </Panel>
       )}

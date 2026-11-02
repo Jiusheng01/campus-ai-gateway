@@ -266,9 +266,6 @@ export function LoginPage({
             ) : (
               <p className="authHint">忘记密码请联系校园信息化管理部门重置账号。</p>
             )}
-            {config && config.access_ttl_seconds > 0 && (
-              <p className="authHint subtle">登录状态会安全保存并在后台自动续期，不会写入浏览器本地存储。</p>
-            )}
           </form>
         )}
       </div>

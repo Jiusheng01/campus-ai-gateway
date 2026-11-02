@@ -375,7 +375,7 @@ export function PublishedModelsPage({
 
       <Panel
         title="对外模型列表"
-        sub="业务系统调用 /v1/* 时使用这里的名称（alias）。渠道与线路在路由策略中维护。"
+        sub="/v1 请求使用的模型名称；线路在路由策略中维护。"
       >
         {loading && !data ? (
           <SkeletonCards count={3} />
@@ -567,7 +567,7 @@ export function PublishedModelsPage({
 
             {/* The diagnostic predates the redesign and must stay reachable
                 from the model it concerns, not only from the dashboard. */}
-            <Panel title="模型测试" sub="管理诊断不经过业务 API Key、租户配额或业务请求日志。">
+            <Panel title="模型测试" sub="管理诊断，不消耗配额，也不计入调用日志。">
               <div className="formActions">
                 <Button icon={<FlaskConical />} onClick={() => void openTest()}>运行模型诊断</Button>
               </div>

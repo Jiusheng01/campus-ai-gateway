@@ -82,7 +82,7 @@ print(resp.choices[0].message.content)`
     <div className="stack">
       <PageBanner
         title="模型"
-        subtitle="你的租户允许调用的模型，以及使用个人 API Key 接入的方式。"
+        subtitle="可调用模型与接入方式。"
         illustration={false}
       />
 
@@ -98,7 +98,7 @@ print(resp.choices[0].message.content)`
         <>
           <Panel
             title="可用模型"
-            sub="仅列出已启用且当前有可用线路的模型，这是网关的静态可路由集合，不是实时健康状态。"
+            sub="当前可调用的模型（按静态路由判定，非实时健康）。"
             actions={
               <Button size="sm" icon={<RefreshCw />} loading={loading} onClick={() => void reload()}>
                 刷新模型

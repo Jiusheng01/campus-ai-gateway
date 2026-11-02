@@ -81,7 +81,7 @@ export function UsersPage() {
     <>
       <Panel
         title="用户"
-        sub="管理注册用户和管理员角色。管理员角色只能由超级管理员授予。"
+        sub="管理账号与角色；管理角色仅超级管理员可授予。"
       >
         <div className="kpiGrid">
           {/* A count is a fact about the account table. Before it is read, or
@@ -96,7 +96,7 @@ export function UsersPage() {
 
       <Panel
         title="账号列表"
-        sub="点击「管理」可调整角色或停用账号。上方统计始终描述全部账号。"
+        sub="管理角色与账号状态；统计覆盖全部账号。"
         actions={
           <Button variant="primary" onClick={() => setCreating(true)}>
             <UserPlus aria-hidden />
