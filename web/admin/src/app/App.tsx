@@ -59,6 +59,14 @@ const authModeOf = (cfg: AuthConfig | null) => (cfg?.auth_mode || '').toLowerCas
 
 const isWorkspacePath = (path: string) => path.startsWith('/admin-ui') || path.startsWith('/console')
 
+// A workspace root is the entrance to a workspace, not a page inside it. The
+// shared login screen is served under both roots, so a bare /admin-ui says
+// nothing about which workspace the account meant to use.
+const isWorkspaceRoot = (path: string) => {
+  const clean = path.replace(/\/+$/, '')
+  return clean === '/admin-ui' || clean === '/console'
+}
+
 function Console() {
   const toast = useToast()
   const [phase, setPhase] = useState<AuthPhase>('loading')
@@ -162,15 +170,30 @@ function Console() {
   const roles = who?.roles || []
   const canOpenRawLogs = roles.includes('super_admin') || roles.includes('auditor')
 
-  // If the account arrives at a path that names no workspace at all (most
-  // commonly "/"), send it to the landing its roles choose. A path that names a
-  // real workspace is left alone: a member asking for /admin-ui must see the
-  // 403 page, not a redirect that hides what happened.
+  // Resolve where a signed-in account belongs after authentication.
+  //
+  // A path that names no workspace (most commonly "/") goes to the landing its
+  // roles choose. A workspace root does too when the account cannot use that
+  // workspace: the root is the shared entrance — registration and sign-in are
+  // served there — so a member who just created an account must not be shown a
+  // 403 for the address the login form happened to live at. A specific page
+  // under a workspace the account cannot use is left alone and gets the 403
+  // page, because that address was an explicit request and a silent rewrite
+  // would hide why it was refused.
   useEffect(() => {
     if (phase !== 'ready' || !who) return
-    if (resolveRoute(path)) return
+    const accountRoles = who.roles || []
+    const route = resolveRoute(path)
+    if (route) {
+      if (isWorkspaceRoot(path) && !mayUseWorkspace(route.workspace, accountRoles)) {
+        const target = landingPath(accountRoles)
+        window.history.replaceState({}, '', target)
+        setPath(target)
+      }
+      return
+    }
     if (isWorkspacePath(path)) return
-    const target = landingPath(who.roles || [])
+    const target = landingPath(accountRoles)
     window.history.replaceState({}, '', target)
     setPath(target)
   }, [phase, who, path])
@@ -304,6 +327,10 @@ function Console() {
   }
 
   if (!mayUseWorkspace(route.workspace, roles)) {
+    // The effect above is already sending the account away from a workspace
+    // root it cannot use. Showing the 403 for the frame between this render and
+    // that effect would be a flash of the wrong answer, so hold the splash.
+    if (isWorkspaceRoot(path)) return <AuthSplash text="正在打开工作台…" />
     return (
       <WorkspaceForbidden
         workspace={route.workspace}
