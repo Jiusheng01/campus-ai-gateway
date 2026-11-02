@@ -7,7 +7,7 @@ function jsonResponse(body: unknown, status = 200) {
   return {ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body)} as Response
 }
 
-function renderShell(roles: string[], workspace: 'admin' | 'console' = 'admin') {
+function renderShell(roles: string[], workspace: 'admin' | 'console' = 'admin', onSwitchWorkspace?: () => void) {
   return render(
     <Shell
       page={workspace === 'console' ? 'overview' : 'dashboard'}
@@ -21,6 +21,7 @@ function renderShell(roles: string[], workspace: 'admin' | 'console' = 'admin') 
       sessionMode
       refreshing={false}
       onSignOut={() => {}}
+      onSwitchWorkspace={onSwitchWorkspace}
     >
       <div>page content</div>
     </Shell>,
@@ -188,6 +189,24 @@ describe('Shell user menu', () => {
 
     await userEvent.click(screen.getByText('page content'))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('offers the administrator workspace to a manager in the personal console', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({data: []})))
+    const onSwitch = vi.fn()
+    renderShell(['super_admin'], 'console', onSwitch)
+
+    await userEvent.click(screen.getByRole('button', {name: /ops/}))
+    await userEvent.click(screen.getByRole('menuitem', {name: '切换到管理工作台'}))
+    expect(onSwitch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not offer a workspace a member cannot open', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({data: []})))
+    renderShell(['member'], 'console', vi.fn())
+
+    await userEvent.click(screen.getByRole('button', {name: /ops/}))
+    expect(screen.queryByRole('menuitem', {name: '切换到管理工作台'})).not.toBeInTheDocument()
   })
 })
 

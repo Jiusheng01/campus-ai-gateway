@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState, type ReactNode} from 'react'
 import {
+  ArrowLeftRight,
   Bell,
   ChevronDown,
   ChevronsLeft,
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react'
 import {consoleNavGroups, consolePageMeta, navGroups, pageMeta, type NavItem, type Page} from './navigation'
 import type {Workspace} from './routing'
-import {primaryRole, roleLabel} from '../lib/roles'
+import {isManagementRole, primaryRole, roleLabel} from '../lib/roles'
 import {api, type SecurityEvent, type WhoAmI} from '../api'
 import {containTab} from '../components/ui/focus'
 import {QuickSearchModal} from '../components/ui/QuickSearch'
@@ -55,6 +56,8 @@ type Props = {
   sessionMode: boolean
   refreshing: boolean
   onSignOut: () => void
+  /** Present when the account can reach the other workspace. */
+  onSwitchWorkspace?: () => void
   children: ReactNode
 }
 
@@ -76,9 +79,11 @@ export function Shell({
   sessionMode,
   refreshing,
   onSignOut,
+  onSwitchWorkspace,
   children,
 }: Props) {
   const isPersonal = workspace === 'console'
+  const canUseAdmin = (who?.roles || []).some(isManagementRole)
   const navSource = isPersonal ? consoleNavGroups : navGroups
   const meta = (isPersonal ? consolePageMeta[page] : undefined) ?? pageMeta[page]
   const items = visibleItems(navSource, who?.roles || [])
@@ -435,6 +440,20 @@ export function Shell({
                     <ShieldCheck aria-hidden />
                     <span>安全与访问</span>
                   </button>
+                  {onSwitchWorkspace && (isPersonal ? canUseAdmin : true) && (
+                    <button
+                      type="button"
+                      className="userDropdownItem"
+                      role="menuitem"
+                      onClick={() => {
+                        setUserMenuOpen(false)
+                        onSwitchWorkspace()
+                      }}
+                    >
+                      <ArrowLeftRight aria-hidden />
+                      <span>{isPersonal ? '切换到管理工作台' : '切换到个人工作台'}</span>
+                    </button>
+                  )}
                   {sessionMode && (
                     <>
                       <div className="userDropdownDivider" />
